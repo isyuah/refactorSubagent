@@ -688,10 +688,80 @@ DependencyController
 
 下一步最值得投入的不是更复杂的 prompt，而是：
 
-1. CMake / Ninja / Make / MSVC Build Adapter；
-2. ASan / UBSan 和未定义行为分类；
-3. 更完整的副作用观测；
-4. 可恢复 CLI；
-5. 结构化 session 报告。
+1. 完成主要 C 构建系统 Adapter；
+2. 增加 ASan / UBSan 和未定义行为分类；
+3. 扩展副作用观测、CTest 和进程树管理；
+4. 提供可恢复 CLI；
+5. 稳定后再扩展多语言。
 
-在这些基础设施完成前，模型能力继续增强的收益会被验证覆盖不足抵消。
+## 12. 当前临时目标：libuv 大型 CMake 基准
+
+### 12.1 固定测试对象
+
+- 项目：libuv；
+- 固定版本：`v1.52.1`；
+- 来源：官方 GitHub 仓库 `https://github.com/libuv/libuv.git`；
+- Windows 构建方式：CMake；
+- 测试构建开关：`BUILD_TESTING=ON`、`LIBUV_BUILD_TESTS=ON`，关闭 benchmark 以缩短第一阶段构建。
+
+### 12.2 分阶段目标
+
+1. **阶段一：CMake baseline**
+   - 获取固定版本源码；
+   - 识别 CMake 项目；
+   - CMake configure；
+   - Debug 构建 `uv_run_tests`；
+   - 确认多配置输出路径和构建产物。
+2. **阶段二：官方测试套件**
+   - 执行 `ctest -C Debug --output-on-failure`；
+   - 解析测试结果、失败日志和环境失败；
+   - 增加测试套件级 timeout 与子进程清理。
+3. **阶段三：Sanitizer 基线**
+   - 按 HostPreflight 能力选择 ASan / UBSan；
+   - 记录 sanitizer 构建和运行结果；
+   - 将未定义行为单独分类为验证失败。
+4. **阶段四：受控小范围重构**
+   - 先选择 `src/strscpy.c`、`src/strtok.c`、`src/version.c` 等低风险单文件；
+   - 保持 ABI/API、官方测试、sanitizer 结果不变；
+   - 暂不直接重构网络、线程、进程和平台核心代码。
+
+### 12.3 阶段一验收标准
+
+```text
+fixed libuv v1.52.1
+→ ProjectDetection.primary_build_system = cmake
+→ ProjectDetection.status = ready
+→ CMake configure succeeds
+→ Debug build succeeds
+→ build/Debug/uv_run_tests.exe exists on this Windows host
+```
+
+阶段一脚本：
+
+```bash
+bun run demo:libuv
+```
+
+源码默认放在临时目录，不提交第三方源码到本仓库；也可以通过 `--source <path>` 使用已有 checkout。
+
+当前建议先完成阶段一，再决定是否把 CTest 结果协议并入主 Orchestrator。
+
+### 12.4 阶段一实测结果
+
+已执行：
+
+```bash
+bun run demo:libuv
+```
+
+结果：
+
+- 固定版本 `v1.52.1` clone 成功；
+- `ProjectDetection.primary_build_system = cmake`；
+- `ProjectDetection.status = ready`；
+- 当前 Windows 主机 CMake 使用 Visual Studio 多配置生成器；
+- `uv_run_tests` Debug target 构建成功；
+- 实际产物：`build/Debug/uv_run_tests.exe`；
+- 构建日志中没有报告编译失败。
+
+本次只完成阶段一 baseline，尚未执行 libuv 官方 CTest 套件。

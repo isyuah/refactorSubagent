@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "demo": "bun run scripts/demo.ts",
+    "demo:libuv": "bun run scripts/demo-libuv.ts",
     "test": "bun test"
   },
   "dependencies": {
