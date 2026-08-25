@@ -5,8 +5,8 @@ import {
   Artifact,
   type AnyArtifact,
   ObservationTrace,
+  HostPreflight,
 } from "../artifacts/index.js";
-
 /**
  * SessionStore — durable state for one refactoring attempt.
  *
@@ -129,6 +129,23 @@ export class SessionStore {
     return ObservationTrace.parse(JSON.parse(readFileSync(path, "utf8")));
   }
 
+  /** Persist measured host facts outside the Artifact state transition union. */
+  saveHostPreflight(raw: unknown): HostPreflight {
+    const parsed = HostPreflight.parse(raw);
+    writeFileSync(
+      join(this.sessionDir, "artifacts", "host-preflight.json"),
+      JSON.stringify(parsed, null, 2) + "\n",
+    );
+    return parsed;
+  }
+
+  /** Load measured host facts for workflow recovery. */
+  hostPreflight(): HostPreflight | null {
+    const path = join(this.sessionDir, "artifacts", "host-preflight.json");
+    if (!existsSync(path)) return null;
+    return HostPreflight.parse(JSON.parse(readFileSync(path, "utf8")));
+  }
+
   /** Validate then durably store an artifact (no state transition — orchestrator decides that). */
   saveArtifact(raw: unknown): AnyArtifact {
     const parsed = Artifact.parse(raw);
@@ -142,7 +159,6 @@ export class SessionStore {
     );
     return parsed;
   }
-
   /** Record a completed transition and persist. Only the orchestrator calls this. */
   commitTransition(to: SessionState, artifactKind: string | null, note = "") {
     this.file = {

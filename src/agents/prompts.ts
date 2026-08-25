@@ -28,17 +28,22 @@ tests: { kind: "test-spec", version: 1, cases: [
 Include at least one differential case, unique ids, and expect_exit_code on every regression case.
 
 env: { kind: "environment-spec", version: 1,
-  build: {cc, flags: [], defines: {}, command: "full build command", binary: "repo-relative executable"},
+  build: {kind: "direct-compiler", compiler: "gcc", flags: [], defines: {}, sources: ["src/main.c"], output: "build/app"},
   determinism: {frozen_time_epoch_ms: number|null, random_seed: number|null, intercept_headers: []},
   sandbox: {run_cwd_strategy: "fresh_temp_dir"} }
 
+Use direct-compiler whenever the project can be built from explicit C sources. Do not emit shell commands, mkdir, cc aliases, platform-specific executable suffixes, or compiler include flags for determinism headers; the host injects declared intercept_headers and creates output directories. The compiler name must be one of the measured available tools.
+
 Be conservative. Cover normal, boundary, empty, invalid, and Unicode input where the program accepts text. Tests and baseline/** belong in forbidden_globs.`;
 
-export function analyzePrompt(extra?: string): string {
-  return `Analyze this C project and produce the JSON artifact proposal.${
-    extra ? "\n\nTask context:\n" + extra : ""
-  }`;
+export function analyzePrompt(extra?: string, hostContext?: string): string {
+  return [
+    "Analyze this C project and produce the JSON artifact proposal.",
+    hostContext ? `\nMeasured host environment:\n${hostContext}` : "",
+    extra ? `\nTask context:\n${extra}` : "",
+  ].join("\n");
 }
+
 
 export const REFACTOR_SYSTEM = `You are the refactoring module of a behavior-preserving refactoring system.
 You restructure C code while keeping externally observable behavior identical.

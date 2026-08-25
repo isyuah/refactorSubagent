@@ -6,6 +6,7 @@ import {
   ScopeManifest,
   TestSpec,
   type AnyArtifact,
+  type HostPreflight,
 } from "../artifacts/index.js";
 import { runAgent, extractJson } from "./driver.js";
 import { ANALYZE_SYSTEM, analyzePrompt } from "./prompts.js";
@@ -54,12 +55,16 @@ export interface AnalysisResult {
 export async function analyzeRepo(
   repoDir: string,
   taskContext?: string,
+  host?: HostPreflight,
 ): Promise<AnalysisResult> {
   let lastErrors = "";
-
   for (let attempt = 0; attempt < 2; attempt++) {
+
     const prompt =
-      analyzePrompt(taskContext) +
+      analyzePrompt(
+        taskContext,
+        host ? JSON.stringify(host, null, 2) : undefined,
+      ) +
       (lastErrors
         ? `\n\nYour previous JSON was REJECTED by validation:\n${lastErrors}\nFix these problems and reply again.`
         : "");

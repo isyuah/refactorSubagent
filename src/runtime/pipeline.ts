@@ -6,6 +6,7 @@ import type {
   ScopeManifest,
   TestSpec,
 } from "../artifacts/index.js";
+import type { HostPreflight } from "../artifacts/index.js";
 import { captureTrace } from "./runner.js";
 import { Orchestrator, type SubmitResult } from "../orchestrator/orchestrator.js";
 import { SessionStore } from "../orchestrator/store.js";
@@ -19,6 +20,8 @@ export interface VerifyRequest {
   candidateBranch: string;
   /** Pre-created pair (agent pipeline refactors in the candidate before verifying). */
   worktrees?: WorktreePair;
+  /** Measured once before analysis; reused for both builds. */
+  host?: HostPreflight;
   contract: BehaviorContract;
   scope: ScopeManifest;
   deps: DependencyManifest;
@@ -66,7 +69,7 @@ export function runVerification(
     createWorktrees(req.repoPath, store.sessionDir, req.candidateBranch);
 
   try {
-    const baseBuild = buildWorktree(wt.baselineDir, req.env);
+    const baseBuild = buildWorktree(wt.baselineDir, req.env, req.host);
     if (!baseBuild.ok) {
       results.push(orch.abort(`baseline build failed:\n${baseBuild.log}`));
       return finish(store, results);
@@ -83,7 +86,7 @@ export function runVerification(
     });
     if (!patchOk) return finish(store, results); // R4 gate
 
-    const candBuild = buildWorktree(wt.candidateDir, req.env);
+    const candBuild = buildWorktree(wt.candidateDir, req.env, req.host);
     if (!candBuild.ok) {
       results.push(orch.abort(`candidate build failed:\n${candBuild.log}`));
       return finish(store, results);

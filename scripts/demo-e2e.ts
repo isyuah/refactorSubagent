@@ -99,11 +99,12 @@ const request = (
     kind: "environment-spec",
     version: 1,
     build: {
-      cc: "gcc",
+      kind: "direct-compiler",
+      compiler: "gcc",
       flags: ["-O2", "-Wall"],
       defines: {},
-      command: `gcc -O2 -Wall src/main.c src/util.c -o app.exe`,
-      binary: "app.exe",
+      sources: ["src/main.c", "src/util.c"],
+      output: "app",
     },
     determinism: {
       frozen_time_epoch_ms: 1700000000000,

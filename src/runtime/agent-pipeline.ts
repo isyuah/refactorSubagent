@@ -8,6 +8,7 @@ import {
   resolveHead,
   type WorktreePair,
 } from "./worktree.js";
+import { probeHost } from "./host-preflight.js";
 import { runVerification } from "./pipeline.js";
 
 export interface AgentPipelineRequest {
@@ -49,9 +50,12 @@ export async function runAgentVerification(
   const store = SessionStore.create(req.sessionRoot, req.sessionId);
   const orch = new Orchestrator(store);
 
-  // 1. Analysis: proposals for contract/scope/deps/tests/env.
-  const analysis = await analyzeRepo(req.repoPath, req.task);
+  // Measure host capabilities before Claude reasons about build commands.
+  const host = probeHost(req.repoPath);
+  store.saveHostPreflight(host);
 
+  // 1. Analysis: proposals for contract/scope/deps/tests/env, grounded in measured host facts.
+  const analysis = await analyzeRepo(req.repoPath, req.task, host);
   // 2. Candidate branch at current HEAD; agent edits land in its worktree.
   const branch = `refactor/agent-${req.sessionId}`;
   const headBefore = resolveHead(req.repoPath);
@@ -100,6 +104,7 @@ export async function runAgentVerification(
       repoPath: req.repoPath,
       candidateBranch: branch,
       worktrees: wt,
+      host,
       contract: analysis.contract,
       scope: analysis.scope,
       deps: analysis.deps,
