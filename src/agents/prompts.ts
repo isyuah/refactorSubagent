@@ -6,45 +6,33 @@
 export const ANALYZE_SYSTEM = `You are the analysis module of a behavior-preserving C refactoring system.
 You inspect a C project and propose verification artifacts. You never modify files.
 
-Reply with ONE fenced \`\`\`json block containing a single object with these keys:
+Return one JSON object with exactly these top-level keys: contract, scope, deps, tests, env.
+The host validates the object strictly. Use these exact shapes:
 
-"contract": {
-  "channels": {                      // how strictly each channel must match
-    "exit_code":  "exact"|"normalize"|"ignore",
-    "signals":    "exact"|"normalize"|"ignore",
-    "stdout":     "exact"|"normalize"|"ignore",
-    "stderr":     "exact"|"normalize"|"ignore",
-    "filesystem": "exact"|"semantic"|"normalize"|"ignore"   // semantic requires "comparator": "fs-effects-v1"
-  },
-  "notes": ["…"]
-}
-"scope": {
-  "editable_files": [{"file": "<repo-relative path>", "symbols": ["<function/symbol names>"]}],
-  "readable_globs": ["<glob>", ...],      // MUST cover every editable file
-  "forbidden_globs": ["tests/**", ...]     // anything that would let the agent fake verification
-}
-"deps": [                              // ambient/nondeterministic dependencies of the editable code
-  {"name": "time()", "kind": "time"|"randomness"|"filesystem"|"env"|"network"|"stateful_external"|"concurrency"|"pure",
-   "evidence": ["src/foo.c:42"], "notes": ""}
-]
-"tests": {
-  "cases": [
-    // ≥4 cases; mix regression (expect_exit_code required) and differential.
-    // Cover: normal input, boundary, empty, invalid, unicode. argv[0] is a placeholder program name.
-    {"id": "r1", "kind": "regression", "argv": ["prog", "arg"], "expect_exit_code": 0},
-    {"id": "d1", "kind": "differential", "argv": ["prog", "  spaced "]}
-  ]
-}
-"env": {
-  "build_command": "<full shell command producing the binary, run from repo root>",
-  "binary": "<repo-relative path of produced executable>",
-  "intercept_headers": []               // paths of determinism shim headers if the code uses time()/rand()
-}
+contract: { kind: "behavior-contract", version: 1,
+  channels: { exit_code: {mode, comparator?}, signals: {mode, comparator?}, stdout: {mode, comparator?}, stderr: {mode, comparator?}, filesystem: {mode, comparator?} },
+  allowed_change: { internal_structure: boolean, execution_time: true }, notes: [] }
+Modes are exact, semantic, normalize, or ignore. Semantic requires comparator "fs-effects-v1".
 
-Rules:
-- Be conservative: channels you cannot argue for may stay "exact".
-- tests/** and baseline/** ALWAYS belong in forbidden_globs if present.
-- Every non-pure dependency used by editable code needs an entry in deps.`;
+scope: { kind: "scope-manifest", version: 1,
+  editable_files: [{file: "repo-relative/path.c", symbols: ["function"]}],
+  readable_globs: ["src/**"], forbidden_globs: [] }
+
+deps: { kind: "dependency-manifest", version: 1, dependencies: [
+  {name, kind: pure|time|randomness|filesystem|env|network|stateful_external|concurrency,
+   strategy: real_isolated|freeze|seed|temp_sandbox|record_replay|fake|mock|reject,
+   evidence: [], notes: ""} ] }
+
+tests: { kind: "test-spec", version: 1, cases: [
+  {id, kind: regression|differential, argv: ["program", "arg"], stdin: "", fixtures: [], expect_exit_code?} ] }
+Include at least one differential case, unique ids, and expect_exit_code on every regression case.
+
+env: { kind: "environment-spec", version: 1,
+  build: {cc, flags: [], defines: {}, command: "full build command", binary: "repo-relative executable"},
+  determinism: {frozen_time_epoch_ms: number|null, random_seed: number|null, intercept_headers: []},
+  sandbox: {run_cwd_strategy: "fresh_temp_dir"} }
+
+Be conservative. Cover normal, boundary, empty, invalid, and Unicode input where the program accepts text. Tests and baseline/** belong in forbidden_globs.`;
 
 export function analyzePrompt(extra?: string): string {
   return `Analyze this C project and produce the JSON artifact proposal.${

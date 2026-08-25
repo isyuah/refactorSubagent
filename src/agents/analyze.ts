@@ -10,6 +10,22 @@ import {
 import { runAgent, extractJson } from "./driver.js";
 import { ANALYZE_SYSTEM, analyzePrompt } from "./prompts.js";
 
+const ANALYZE_OUTPUT_FORMAT = {
+  type: "json_schema" as const,
+  schema: {
+    type: "object",
+    properties: {
+      contract: { type: "object" },
+      scope: { type: "object" },
+      deps: { type: "object" },
+      tests: { type: "object" },
+      env: { type: "object" },
+    },
+    required: ["contract", "scope", "deps", "tests", "env"],
+    additionalProperties: false,
+  },
+};
+
 /**
  * Analyze Agent — proposes the verification artifacts from repo inspection.
  * Proposals are DATA; the orchestrator re-validates every one against its
@@ -54,16 +70,18 @@ export async function analyzeRepo(
       systemPrompt: ANALYZE_SYSTEM,
       // Read-only toolset: analysis cannot mutate anything.
       allowedTools: ["Read", "Glob", "Grep"],
+      outputFormat: ANALYZE_OUTPUT_FORMAT,
       maxTurns: 24,
     });
 
     let raw: unknown;
     try {
-      raw = extractJson(run.result);
+      raw = run.structuredOutput ?? extractJson(run.result);
     } catch {
-      lastErrors = `response was not parsable as a single JSON object`;
+      lastErrors = `response was not parsable as structured JSON`;
       continue;
     }
+
 
     const parsed = Proposal.safeParse(raw);
     if (parsed.success) return parsed.data;

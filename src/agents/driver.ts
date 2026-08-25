@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { relative, isAbsolute } from "node:path";
 import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { matchGlob } from "../artifacts/scope-manifest.js";
@@ -16,6 +18,8 @@ const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 export interface DriverRun {
   /** Final assistant text (empty on error). */
   result: string;
+  /** Native SDK structured output, when outputFormat was requested. */
+  structuredOutput?: unknown;
   isError: boolean;
   /** Tool calls denied by the scope hook — surfaced for audit trails. */
   denials: string[];
@@ -26,13 +30,13 @@ export interface DriverOptions {
   prompt: string;
   systemPrompt?: string;
   allowedTools?: string[];
-  /**
-   * Repo-relative editable paths/globs. When set, Write/Edit outside these
-   * are denied at the hook layer. Omit for read-only agents.
-   */
+  /** Repo-relative editable paths/globs enforced by PreToolUse. */
   editableFiles?: string[];
   maxTurns?: number;
-}
+  /** Override Claude Code executable; defaults to the Windows .cmd shim when available. */
+  executable?: string;
+  outputFormat?: Options["outputFormat"];
+} 
 
 export async function runAgent(o: DriverOptions): Promise<DriverRun> {
   const denials: string[] = [];
@@ -71,6 +75,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
           ],
         };
 
+  const executable = o.executable ?? resolveClaudeExecutable();
   const q = query({
     prompt: o.prompt,
     options: {
@@ -79,19 +84,21 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       permissionMode: "acceptEdits",
       systemPrompt: o.systemPrompt,
       maxTurns: o.maxTurns ?? 32,
-      hooks,
+      ...(o.outputFormat ? { outputFormat: o.outputFormat } : {}),
+      ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
     },
   });
-
   let result = "";
+  let structuredOutput: unknown;
   let isError = true;
   for await (const msg of q) {
     if (msg.type === "result") {
       isError = msg.is_error;
       if ("result" in msg) result = msg.result;
+      if ("structured_output" in msg) structuredOutput = msg.structured_output;
     }
   }
-  return { result, isError, denials };
+  return { result, structuredOutput, isError, denials };
 }
 
 /** Absolute or already-relative paths are resolved against the agent cwd. */
@@ -121,4 +128,18 @@ export function extractJson(text: string): unknown {
     }
   }
   throw new Error("no parsable JSON in agent response");
+}
+
+function resolveClaudeExecutable(): string | undefined {
+  const configured = process.env.CLAUDE_CODE_EXECUTABLE;
+  if (configured && existsSync(configured)) return configured;
+  if (process.platform !== "win32") return undefined;
+
+  const candidates = [
+    process.env.APPDATA ? join(process.env.APPDATA, "npm", "claude.cmd") : "",
+    process.env.USERPROFILE
+      ? join(process.env.USERPROFILE, "AppData", "Roaming", "npm", "claude.cmd")
+      : "",
+  ];
+  return candidates.find((candidate) => candidate.length > 0 && existsSync(candidate));
 }

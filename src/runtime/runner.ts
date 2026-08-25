@@ -8,6 +8,7 @@ import type {
   TestSpec,
 } from "../artifacts/index.js";
 import { diffSnapshots, snapshotDir } from "./fs-snapshot.js";
+import { resolveBinaryPath } from "./builder.js";
 
 const CASE_TIMEOUT_MS = 10_000;
 
@@ -26,7 +27,7 @@ export function captureTrace(
   build: "baseline" | "candidate",
   envId: string,
 ): ObservationTrace {
-  const binaryAbs = join(worktreeDir, env.build.binary);
+  const binaryAbs = resolveBinaryPath(worktreeDir, env);
   const observations = [];
 
   for (const c of spec.cases) {
@@ -38,8 +39,22 @@ export function captureTrace(
         writeFileSync(dest, Buffer.from(f.content_b64, "base64"));
       }
       const before = snapshotDir(runDir);
+      const args = c.argv.slice(1);
+      if (args.some((arg) => arg.includes("\0"))) {
+        observations.push({
+          case_id: c.id,
+          status: "error" as const,
+          exit_code: -1,
+          signal: null,
+          stdout_b64: "",
+          stderr_b64: Buffer.from("argv contains NUL bytes").toString("base64"),
+          filesystem: [],
+          duration_ms: 0,
+        });
+        continue;
+      }
 
-      const r = spawnSync(binaryAbs, c.argv.slice(1), {
+      const r = spawnSync(binaryAbs, args, {
         cwd: runDir,
         timeout: CASE_TIMEOUT_MS,
         input: Buffer.from(c.stdin, "base64"),

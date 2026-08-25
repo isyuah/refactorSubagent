@@ -8,7 +8,12 @@ import { B64, RelPath } from "./common.js";
 export const TestCase = z.object({
   id: z.string().min(1),
   kind: z.enum(["regression", "differential"]),
-  argv: z.array(z.string()),
+  /** argv is passed to CreateProcess/exec; NUL cannot cross that boundary. */
+  argv: z.array(
+    z.string().refine((value) => !value.includes("\0"), {
+      message: "argv values cannot contain NUL bytes",
+    }),
+  ),
   stdin: B64.default(""),
   /** Files materialized into the fresh run cwd before execution. */
   fixtures: z
