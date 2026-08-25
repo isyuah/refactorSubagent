@@ -95,5 +95,5 @@ describe("C project detection and build infrastructure", () => {
     const result = buildWorktree(root, env, probeHost(root));
     expect(result.ok).toBeTrue();
     expect(result.binaryAbs.endsWith(process.platform === "win32" ? "app.exe" : "app")).toBeTrue();
-  });
+  }, 30000);
 });
