@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type {
   BuildAdapterId,
+  CMakeBuild,
   DirectCompilerBuild,
   EnvironmentSpec,
   HostPreflight,
@@ -14,22 +15,25 @@ export interface BuildResult {
   binaryAbs: string;
 }
 
-/** Resolved process invocation produced by an adapter, never a shell string. */
-export interface BuildPlan {
-  adapter: BuildAdapterId;
+export interface BuildCommand {
   program: string;
   args: string[];
-  output: string;
 }
 
-/** Build backend contract. Adapters own planning/execution; acceptance stays in Orchestrator. */
+/** A multi-step argv-only plan. Commands execute in order, without a shell. */
+export interface BuildPlan {
+  adapter: BuildAdapterId;
+  commands: BuildCommand[];
+  output: string;
+  outputCandidates?: string[];
+}
+
 export interface BuildAdapter {
   readonly id: BuildAdapterId;
   plan(worktreeDir: string, env: EnvironmentSpec, host: HostPreflight): BuildPlan;
   build(worktreeDir: string, env: EnvironmentSpec, host: HostPreflight): BuildResult;
 }
 
-/** Structured C compiler adapter: plans and executes argv-only invocations. */
 export class DirectCompilerAdapter implements BuildAdapter {
   readonly id = "direct-compiler" as const;
 
@@ -37,13 +41,11 @@ export class DirectCompilerAdapter implements BuildAdapter {
     if (!("kind" in env.build) || env.build.kind !== "direct-compiler") {
       throw new Error("direct-compiler adapter received a non-direct build spec");
     }
-
     const output = withExecutableSuffix(env.build.output, host);
     const compiler = host.tools[env.build.compiler];
     if (!compiler?.available || compiler.path === null) {
       throw new Error(`direct compiler unavailable: ${env.build.compiler}`);
     }
-
     const args = [
       ...removeInterceptFlags(env.build.flags, env.determinism.intercept_headers),
       ...Object.entries(env.build.defines).map(([key, value]) => `-D${key}=${value}`),
@@ -55,63 +57,101 @@ export class DirectCompilerAdapter implements BuildAdapter {
       args.push("-include", header);
     }
     args.push(...env.build.sources, "-o", output);
-
     return {
       adapter: this.id,
-      program: compiler.path,
-      args,
+      commands: [{ program: compiler.path, args }],
       output,
     };
   }
 
   build(worktreeDir: string, env: EnvironmentSpec, host: HostPreflight): BuildResult {
-    const output = "output" in env.build ? env.build.output : "";
-    const outputAbs = join(worktreeDir, withExecutableSuffix(output, host));
-    mkdirSync(dirname(outputAbs), { recursive: true });
+    return executePlan(worktreeDir, this.plan(worktreeDir, env, host));
+  }
+}
 
-    let plan: BuildPlan;
-    try {
-      plan = this.plan(worktreeDir, env, host);
-    } catch (error) {
-      return {
-        ok: false,
-        binaryAbs: outputAbs,
-        log: `${error instanceof Error ? error.message : String(error)}\n`,
-      };
+export class CMakeAdapter implements BuildAdapter {
+  readonly id = "cmake" as const;
+
+  plan(worktreeDir: string, env: EnvironmentSpec, host: HostPreflight): BuildPlan {
+    if (!("kind" in env.build) || env.build.kind !== "cmake") {
+      throw new Error("cmake adapter received a non-cmake build spec");
     }
+    const cmake = host.tools.cmake;
+    if (!cmake?.available || cmake.path === null) {
+      throw new Error("cmake is not available in HostPreflight");
+    }
+    const build = env.build;
+    const configureArgs = ["-S", build.source_dir, "-B", build.build_dir];
+    if (build.generator !== null) configureArgs.push("-G", build.generator);
+    configureArgs.push(...build.configure_flags);
+    const cFlags = env.determinism.intercept_headers
+      .map((header) => `-include "${join(worktreeDir, header).replaceAll("\\", "/")}"`)
+      .join(" ");
+    if (cFlags.length > 0) configureArgs.push(`-DCMAKE_C_FLAGS=${cFlags}`);
+    const buildArgs = ["--build", build.build_dir, ...build.build_flags];
+    if (build.target !== null) buildArgs.push("--target", build.target);
 
-    const result = spawnSync(plan.program, plan.args, {
+    return {
+      adapter: this.id,
+      commands: [
+        { program: cmake.path, args: configureArgs },
+        { program: cmake.path, args: buildArgs },
+      ],
+      output: withExecutableSuffix(build.output, host),
+      outputCandidates: cmakeOutputCandidates(build.output, host),
+    };
+  }
+
+  build(worktreeDir: string, env: EnvironmentSpec, host: HostPreflight): BuildResult {
+    return executePlan(worktreeDir, this.plan(worktreeDir, env, host));
+  }
+}
+
+function executePlan(worktreeDir: string, plan: BuildPlan): BuildResult {
+  const candidates = plan.outputCandidates ?? [plan.output];
+  const firstOutput = join(worktreeDir, candidates[0]!);
+  mkdirSync(dirname(firstOutput), { recursive: true });
+  let log = "";
+
+  for (const command of plan.commands) {
+    const result = spawnSync(command.program, command.args, {
       cwd: worktreeDir,
       encoding: "utf8",
       shell: false,
     });
-    const command = [plan.program, ...plan.args].map(shellQuote).join(" ");
-    const log =
-      `$ ${command}\n` +
-      (result.stdout ?? "") +
-      (result.stderr ?? "") +
-      (result.error ? String(result.error) : "");
-
-    return {
-      ok: result.status === 0 && existsSync(join(worktreeDir, plan.output)),
-      log,
-      binaryAbs: join(worktreeDir, plan.output),
-    };
+    const rendered = [command.program, ...command.args].map(shellQuote).join(" ");
+    log += `$ ${rendered}\n${result.stdout ?? ""}${result.stderr ?? ""}${result.error ? String(result.error) : ""}`;
+    if (result.status !== 0) {
+      return { ok: false, log, binaryAbs: firstOutput };
+    }
   }
+
+  const actual = candidates
+    .map((candidate) => join(worktreeDir, candidate))
+    .find((candidate) => existsSync(candidate));
+  return {
+    ok: actual !== undefined,
+    log,
+    binaryAbs: actual ?? firstOutput,
+  };
 }
 
-export function resolveBinaryPath(
-  worktreeDir: string,
-  env: EnvironmentSpec,
-): string {
+export function resolveBinaryPath(worktreeDir: string, env: EnvironmentSpec): string {
   const output = "output" in env.build ? env.build.output : env.build.binary;
-  const requested = join(worktreeDir, output);
-  if (existsSync(requested)) return requested;
-  if (process.platform === "win32" && !requested.toLowerCase().endsWith(".exe")) {
-    const exe = `${requested}.exe`;
-    if (existsSync(exe)) return exe;
-  }
-  return requested;
+  const candidates = "kind" in env.build && env.build.kind === "cmake"
+    ? cmakeOutputCandidates(output, { executable_suffix: process.platform === "win32" ? ".exe" : "" } as HostPreflight)
+    : [output, process.platform === "win32" && !output.toLowerCase().endsWith(".exe") ? `${output}.exe` : output];
+  return candidates
+    .map((candidate) => join(worktreeDir, candidate))
+    .find((candidate) => existsSync(candidate)) ?? join(worktreeDir, candidates[0]!);
+}
+
+function cmakeOutputCandidates(output: string, host: HostPreflight): string[] {
+  const base = withExecutableSuffix(output, host);
+  const parent = dirname(base);
+  const file = basename(base);
+  const configurations = ["Debug", "Release", "RelWithDebInfo", "MinSizeRel"];
+  return [base, ...configurations.map((configuration) => join(parent, configuration, file))];
 }
 
 function withExecutableSuffix(output: string, host: HostPreflight): string {
@@ -128,10 +168,7 @@ function removeInterceptFlags(flags: readonly string[], headers: readonly string
     const flag = flags[i]!;
     if (flag === "-include" && i + 1 < flags.length) {
       const candidate = flags[i + 1]!.replaceAll("\\", "/");
-      const duplicate = normalizedHeaders.some(
-        (header) => candidate === header || header.endsWith(`/${candidate}`),
-      );
-      if (duplicate) {
+      if (normalizedHeaders.some((header) => candidate === header || header.endsWith(`/${candidate}`))) {
         i++;
         continue;
       }

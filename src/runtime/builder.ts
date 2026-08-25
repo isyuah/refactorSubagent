@@ -8,14 +8,16 @@ import type {
 } from "../artifacts/index.js";
 import { probeHost } from "./host-preflight.js";
 import {
+  CMakeAdapter,
   DirectCompilerAdapter,
   resolveBinaryPath,
   type BuildResult,
 } from "./build-adapter.js";
-export { DirectCompilerAdapter, resolveBinaryPath } from "./build-adapter.js";
+export { CMakeAdapter, DirectCompilerAdapter, resolveBinaryPath } from "./build-adapter.js";
 export type { BuildResult } from "./build-adapter.js";
 
 const directCompiler = new DirectCompilerAdapter();
+const cmake = new CMakeAdapter();
 
 /**
  * Build entry point. New direct-compiler plans use an argv-only Adapter;
@@ -28,6 +30,9 @@ export function buildWorktree(
 ): BuildResult {
   if ("kind" in env.build && env.build.kind === "direct-compiler") {
     return directCompiler.build(worktreeDir, env, host);
+  }
+  if ("kind" in env.build && env.build.kind === "cmake") {
+    return cmake.build(worktreeDir, env, host);
   }
   return buildLegacyShell(worktreeDir, env);
 }

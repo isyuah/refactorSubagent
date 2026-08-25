@@ -53,7 +53,7 @@ export async function runAgentVerification(
 
   const host = probeHost(req.repoPath);
   store.saveHostPreflight(host);
-  const project = detectCProject(req.repoPath);
+  const project = detectCProject(req.repoPath, host);
   store.saveProjectDetection(project);
   if (project.status !== "ready") {
     orch.abort(`project build detection blocked: ${project.reason}`);

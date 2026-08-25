@@ -4,6 +4,7 @@ import {
   ProjectDetection,
   type BuildAdapterId,
   type BuildSystem,
+  type HostPreflight,
 } from "../artifacts/index.js";
 
 const SKIP_DIRS = new Set([
@@ -27,7 +28,10 @@ const MARKER_SYSTEM: Record<string, BuildSystem> = {
 
 
 /** Detect the project build system before an agent proposes a build plan. */
-export function detectCProject(repoRoot: string): ProjectDetection {
+export function detectCProject(
+  repoRoot: string,
+  host?: HostPreflight,
+): ProjectDetection {
   const markers: string[] = [];
   const sourceFiles: string[] = [];
   walk(repoRoot, repoRoot, markers, sourceFiles);
@@ -47,17 +51,19 @@ export function detectCProject(repoRoot: string): ProjectDetection {
   const adapter = chooseAdapter(primary, sourceFiles.length > 0);
   const status = sourceFiles.length === 0
     ? "no-c-sources"
-    : adapter === "direct-compiler" || adapter === "unsupported"
+    : adapter === "direct-compiler" || adapter === "unsupported" || adapterAvailable(adapter, host)
       ? "ready"
       : "needs-adapter";
 
   const reason = status === "ready" && adapter === "direct-compiler"
     ? "no supported project build marker; direct C compilation is available"
-    : status === "needs-adapter"
-      ? `project declares ${primary} but its execution adapter is not implemented`
-      : status === "no-c-sources"
-        ? "no .c translation units were found"
-        : `detected ${primary ?? "unknown"} project markers`;
+    : status === "ready"
+      ? `${primary} project detected and ${adapter} adapter is available`
+      : status === "needs-adapter"
+        ? `project declares ${primary} but its adapter or host tool is unavailable`
+        : status === "no-c-sources"
+          ? "no .c translation units were found"
+          : `detected ${primary ?? "unknown"} project markers`;
 
   return ProjectDetection.parse({
     kind: "project-detection",
@@ -114,4 +120,13 @@ function chooseAdapter(
   if (!hasSources) return "unsupported";
   if (primary === null) return "direct-compiler";
   return primary === "direct-c" ? "direct-compiler" : primary;
+}
+
+function adapterAvailable(
+  adapter: BuildAdapterId,
+  host?: HostPreflight,
+): boolean {
+  if (!host) return false;
+  if (adapter === "cmake") return host.tools.cmake?.available === true;
+  return false;
 }
