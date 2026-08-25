@@ -10,13 +10,15 @@ import { captureTrace } from "./runner.js";
 import { Orchestrator, type SubmitResult } from "../orchestrator/orchestrator.js";
 import { SessionStore } from "../orchestrator/store.js";
 import { buildWorktree } from "./builder.js";
+import { createWorktrees, resolveHead, type WorktreePair } from "./worktree.js";
 import { compare } from "./comparator.js";
-import { createWorktrees, resolveHead } from "./worktree.js";
 
 export interface VerifyRequest {
   /** Repo containing the C project (already has the candidate branch). */
   repoPath: string;
   candidateBranch: string;
+  /** Pre-created pair (agent pipeline refactors in the candidate before verifying). */
+  worktrees?: WorktreePair;
   contract: BehaviorContract;
   scope: ScopeManifest;
   deps: DependencyManifest;
@@ -58,13 +60,10 @@ export function runVerification(
   ) {
     return finish(store, results);
   }
-
   const baseSha = resolveHead(req.repoPath);
-  const wt = createWorktrees(
-    req.repoPath,
-    store.sessionDir,
-    req.candidateBranch,
-  );
+  const wt =
+    req.worktrees ??
+    createWorktrees(req.repoPath, store.sessionDir, req.candidateBranch);
 
   try {
     const baseBuild = buildWorktree(wt.baselineDir, req.env);
