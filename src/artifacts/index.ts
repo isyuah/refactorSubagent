@@ -18,6 +18,7 @@ export * from "./observation-trace.js";
 export * from "./patch-record.js";
 export * from "./comparison-result.js";
 export * from "./host-preflight.js";
+export * from "./project-detection.js";
 
 /** Union of every artifact kind the orchestrator accepts (some carry cross-field
  * refinements, so plain union instead of discriminatedUnion). */

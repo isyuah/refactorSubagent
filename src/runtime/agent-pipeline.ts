@@ -9,6 +9,7 @@ import {
   type WorktreePair,
 } from "./worktree.js";
 import { probeHost } from "./host-preflight.js";
+import { detectCProject } from "./project-detector.js";
 import { runVerification } from "./pipeline.js";
 
 export interface AgentPipelineRequest {
@@ -50,12 +51,22 @@ export async function runAgentVerification(
   const store = SessionStore.create(req.sessionRoot, req.sessionId);
   const orch = new Orchestrator(store);
 
-  // Measure host capabilities before Claude reasons about build commands.
   const host = probeHost(req.repoPath);
   store.saveHostPreflight(host);
+  const project = detectCProject(req.repoPath);
+  store.saveProjectDetection(project);
+  if (project.status !== "ready") {
+    orch.abort(`project build detection blocked: ${project.reason}`);
+    return {
+      store,
+      state: store.state,
+      refactorSummary: "",
+      scopeDenials: [],
+    };
+  }
 
-  // 1. Analysis: proposals for contract/scope/deps/tests/env, grounded in measured host facts.
-  const analysis = await analyzeRepo(req.repoPath, req.task, host);
+  // Analysis receives measured host and project facts.
+  const analysis = await analyzeRepo(req.repoPath, req.task, host, project);
   // 2. Candidate branch at current HEAD; agent edits land in its worktree.
   const branch = `refactor/agent-${req.sessionId}`;
   const headBefore = resolveHead(req.repoPath);

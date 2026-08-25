@@ -6,6 +6,7 @@ import {
   type AnyArtifact,
   ObservationTrace,
   HostPreflight,
+  ProjectDetection,
 } from "../artifacts/index.js";
 /**
  * SessionStore — durable state for one refactoring attempt.
@@ -144,6 +145,22 @@ export class SessionStore {
     const path = join(this.sessionDir, "artifacts", "host-preflight.json");
     if (!existsSync(path)) return null;
     return HostPreflight.parse(JSON.parse(readFileSync(path, "utf8")));
+  }
+
+  /** Persist project build-system detection separately from workflow Artifacts. */
+  saveProjectDetection(raw: unknown): ProjectDetection {
+    const parsed = ProjectDetection.parse(raw);
+    writeFileSync(
+      join(this.sessionDir, "artifacts", "project-detection.json"),
+      JSON.stringify(parsed, null, 2) + "\n",
+    );
+    return parsed;
+  }
+
+  projectDetection(): ProjectDetection | null {
+    const path = join(this.sessionDir, "artifacts", "project-detection.json");
+    if (!existsSync(path)) return null;
+    return ProjectDetection.parse(JSON.parse(readFileSync(path, "utf8")));
   }
 
   /** Validate then durably store an artifact (no state transition — orchestrator decides that). */

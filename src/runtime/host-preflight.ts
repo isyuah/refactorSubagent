@@ -3,7 +3,18 @@ import { delimiter, join } from "node:path";
 import process from "node:process";
 import { HostPreflight, type ToolProbe } from "../artifacts/host-preflight.js";
 
-const TOOL_NAMES = ["gcc", "cc", "clang", "cmake", "make", "ninja", "bash", "wsl"] as const;
+const TOOL_NAMES = [
+  "gcc",
+  "cc",
+  "clang",
+  "cl",
+  "cmake",
+  "make",
+  "ninja",
+  "msbuild",
+  "bash",
+  "wsl",
+] as const;
 
 /** Measure host facts once at workflow start. No model/tool call is involved. */
 export function probeHost(cwd = process.cwd()): HostPreflight {

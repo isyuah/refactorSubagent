@@ -36,10 +36,15 @@ Use direct-compiler whenever the project can be built from explicit C sources. D
 
 Be conservative. Cover normal, boundary, empty, invalid, and Unicode input where the program accepts text. Tests and baseline/** belong in forbidden_globs.`;
 
-export function analyzePrompt(extra?: string, hostContext?: string): string {
+export function analyzePrompt(
+  extra?: string,
+  hostContext?: string,
+  projectContext?: string,
+): string {
   return [
     "Analyze this C project and produce the JSON artifact proposal.",
     hostContext ? `\nMeasured host environment:\n${hostContext}` : "",
+    projectContext ? `\nMeasured project build detection:\n${projectContext}` : "",
     extra ? `\nTask context:\n${extra}` : "",
   ].join("\n");
 }

@@ -421,14 +421,13 @@ bun test
 最新结果：
 
 ```text
-15 pass
+18 pass
 0 fail
-28 expect() calls
-Ran 15 tests across 3 files.
+37 expect() calls
+Ran 18 tests across 4 files.
 ```
 
-覆盖内容：
-
+覆盖内容包括原有状态机、Agent、环境边界测试，以及本次新增的项目构建系统识别、DirectCompilerAdapter 真实 gcc 构建和 CMake 不静默降级测试。
 - 状态机合法路径到 ACCEPTED；
 - R1 越级/乱序拒绝；
 - R2 非法 Artifact 拒绝；
@@ -495,6 +494,29 @@ INIT → CONTRACT_READY → SCOPE_READY → DEPENDENCY_READY
 ```
 
 Claude 实际生成过的 BuildPlan 是 `direct-compiler`，compiler 为 `gcc`，sources 为 `src/main.c` 和 `src/util.c`，output 为 `build/app`。
+
+## 8.1 本次构建基础设施增量
+
+已新增：
+
+- `ProjectDetection`：记录 C 源文件、构建标记、主构建系统、Adapter 和状态；
+- `detectCProject()`：识别 CMake、Ninja、Make、MSVC solution/project，以及无构建标记的直接 C 源项目；
+- `BuildAdapter`：统一 `plan()` 和 `build()` 接口；
+- `DirectCompilerAdapter`：基于 HostPreflight 生成无 shell 的程序和 argv；
+- `SessionStore.projectDetection()`：保存项目探测结果供恢复和审计；
+- AgentPipeline：在 Analyze Agent 之前完成 HostPreflight + ProjectDetection，并将两者注入上下文。
+
+当前 Adapter 状态：
+
+| 构建系统 | 探测 | 执行 Adapter |
+|---|---:|---:|
+| direct C sources | 已实现 | DirectCompilerAdapter |
+| CMake | 已实现 | 待实现 |
+| Ninja | 已实现 | 待实现 |
+| Make | 已实现 | 待实现 |
+| MSVC `.sln` / `.vcxproj` | 已实现 | 待实现 |
+
+探测到 CMake、Ninja、Make 或 MSVC 时，系统会进入 `needs-adapter`，不会静默把项目当作一组 `.c` 文件直接编译。
 
 ## 8. 已知限制与风险
 
