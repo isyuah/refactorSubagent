@@ -25,9 +25,10 @@ export const EnvironmentSpec = z.object({
     /** Seed forced into rand()/srand shims. */
     random_seed: z.number().int().nullable(),
     /**
-     * Compile-time interception headers force-fed via `-include`, e.g.
-     * shim/time.h redefining time() to the frozen clock. Empty means the
-     * Dependency Manifest claims no nondeterministic ambient deps.
+     * Determinism shim headers force-fed into every TU via `cc -include`,
+     * e.g. a header that pins time()/rand(). Each must include the real
+     * system headers before defining its macros. Empty means the Dependency
+     * Manifest claims no nondeterministic ambient deps.
      */
     intercept_headers: z.array(RelPath).default([]),
   }),

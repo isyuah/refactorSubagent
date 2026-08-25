@@ -7,6 +7,7 @@ export const FsEffect = z.object({
   /** sha256 of content after the op; null for delete. */
   sha256: Sha256Hex.nullable(),
 });
+export type FsEffect = z.infer<typeof FsEffect>;
 
 /** One executed test case against one build. */
 export const CaseObservation = z.object({

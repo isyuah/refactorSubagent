@@ -87,15 +87,15 @@ export function trace(
     filesystem: [],
     duration_ms: 3,
   }));
-  return {
-    kind: "observation-trace",
-    version: 1,
+  const base = {
+    kind: "observation-trace" as const,
+    version: 1 as const,
     build,
     env_id: "env001",
     observations: obs,
-    failures: [],
-    ...overrides,
+    failures: [] as ObservationTrace["failures"],
   };
+  return { ...base, ...overrides };
 }
 
 export const patch = (changed: string[] = ["src/util.c"]): PatchRecord => ({
