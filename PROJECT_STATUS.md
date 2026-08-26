@@ -464,6 +464,16 @@ Ran 42 tests across 9 files.
 
 这仍是主进程 Broker 的策略边界，不宣称是 OS 级沙箱；任意用户项目的完整隔离仍需平台沙箱、网络禁用、磁盘配额和更细的资源控制。
 
+### 7.8 BuildWorkflow Agent Guidance
+
+已实现：
+
+- `BUILD_WORKFLOW_SYSTEM`：限定 Claude 只提出结构化 BuildWorkflow，不执行构建、不写文件、不访问主机 API；
+- `buildWorkflowPrompt()`：注入 workflow identity、HostPreflight、ProjectDetection 和任务上下文；
+- `proposeBuildWorkflow()`：只读 `Read/Glob/Grep` 工具、结构化 JSON 输出、`BuildWorkflowOutput` 程序校验、最多一次 schema 修正重试；
+- guidance 明确禁止 shell command、绝对路径、未测工具、平台后缀和猜测式 fallback；
+- Agent Guidance 测试覆盖 fail-closed 规则和事实上下文绑定。
+
 ### 7.3 不依赖 Claude 的真实 C 差分验证
 
 命令：
@@ -715,7 +725,7 @@ DependencyController
 1. **已完成：** CLI、Workflow Host、BuildWorkflow 规划、manifest、BuildArtifact 和注册表；
 2. **已完成：** Capability Context、Broker 权限策略、受控文件/进程能力和 C 构建便捷 Adapter；
 3. **已完成：** 通用 BuildWorkflow executor，以及固定 libuv v1.52.1 CMake Debug workflow；
-4. 为 Workflow Agent 编写指导 skill；
+4. **已完成：** BuildWorkflow Agent 指导、只读提案入口和结构化输出校验；
 5. 分析 libuv 并生成测试任务；
 6. 选择一个任务运行完整真实流程，根据证据优化系统；
 7. 暂不继续增加 Make/MSVC 等 Adapter，Adapter 只作为 Capability 层便捷方式。
