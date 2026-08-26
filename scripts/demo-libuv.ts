@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { probeHost } from "../src/runtime/host-preflight.js";
 import { detectCProject } from "../src/runtime/project-detector.js";
-import { buildWorktree } from "../src/runtime/builder.js";
 import { runCTest } from "../src/runtime/ctest-runner.js";
-import type { CTestSuiteSpec, EnvironmentSpec } from "../src/artifacts/index.js";
+import { resolveBuildWorkflow } from "../src/workflow/build-workflow.js";
+import { executeBuildWorkflow } from "../src/workflow/build-executor.js";
+import type { CTestSuiteSpec } from "../src/artifacts/index.js";
 
 const LIBUV_VERSION = "v1.52.1";
 const LIBUV_REPO = "https://github.com/libuv/libuv.git";
+const LIBUV_WORKFLOW_ID = "libuv-v1.52.1-cmake-debug";
 
 function run(program: string, args: string[], cwd: string): string {
   const result = spawnSync(program, args, {
@@ -60,42 +62,37 @@ if (detection.primary_build_system !== "cmake" || detection.status !== "ready") 
   throw new Error(`libuv CMake detection is not ready: ${detection.reason}`);
 }
 
-const env: EnvironmentSpec = {
-  kind: "environment-spec",
-  version: 1,
-  build: {
-    kind: "cmake",
-    source_dir: ".",
-    build_dir: "build",
-    generator: null,
-    target: null,
-    configure_flags: [
-      "-DBUILD_TESTING=ON",
-      "-DLIBUV_BUILD_TESTS=ON",
-      "-DLIBUV_BUILD_BENCH=OFF",
-    ],
-    build_flags: ["--config", "Debug"],
-    output: "build/uv_run_tests",
-  },
-  sanitizers: [],
-  determinism: {
-    frozen_time_epoch_ms: null,
-    random_seed: null,
-    intercept_headers: [],
-  },
-  sandbox: { run_cwd_strategy: "fresh_temp_dir" },
-};
-
-console.log("building libuv Debug uv_run_tests...");
-const result = buildWorktree(repo, env, host);
-console.log(result.log);
+const workflow = await resolveBuildWorkflow({
+  entry: "examples/workflows/libuv-build.ts",
+  workflowId: LIBUV_WORKFLOW_ID,
+  revision: 1,
+  cwd: process.cwd(),
+  host,
+  project: detection,
+});
 console.log(JSON.stringify({
-  ok: result.ok,
-  binary: result.binaryAbs,
-  exists: existsSync(result.binaryAbs),
+  workflow: workflow.manifest,
+  artifact: workflow.output.artifact,
 }, null, 2));
 
-if (!result.ok) {
+console.log("building libuv Debug test artifacts through BuildWorkflow...");
+const result = await executeBuildWorkflow({
+  cwd: repo,
+  output: workflow.output,
+  host,
+  policy: {
+    readableGlobs: ["**"],
+    writableGlobs: ["build/**"],
+    allowedTools: ["cmake"],
+    maxProcesses: 2,
+    maxOutputBytes: 8 * 1024 * 1024,
+    maxFileBytes: 32 * 1024 * 1024,
+  },
+  timeoutMs: 1_200_000,
+});
+console.log(JSON.stringify(result, null, 2));
+
+if (result.status !== "pass") {
   process.exitCode = 1;
 } else {
   const suite: CTestSuiteSpec = {

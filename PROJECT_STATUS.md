@@ -427,7 +427,7 @@ bun test
 Ran 42 tests across 9 files.
 ```
 
-覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation、BuildWorkflow 注册表，以及本阶段新增的 Capability Context 文件/进程/工具能力。
+覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation、BuildWorkflow 注册表与 executor，以及 Capability Context 文件/进程/工具能力。
 - 状态机合法路径到 ACCEPTED；
 - R1 越级/乱序拒绝；
 - R2 非法 Artifact 拒绝；
@@ -445,7 +445,11 @@ Ran 42 tests across 9 files.
 - CTest Not Run、TAP 内层失败及 shared/static target 归属解析；
 - CLI 参数、JSON 输入、错误码、Workflow timeout 和源策略拒绝；
 - BuildWorkflow identity/path/source-hash 校验、注册表保存/加载和候选 stale 分类；
-- Capability Context 的 brokered 文件读写、路径/符号链接边界、工具白名单、无 shell 进程、短命句柄、超时和输出上限。
+- Capability Context 的 brokered 文件读写、路径/符号链接边界、工具白名单、无 shell 进程、短命句柄、超时和输出上限；
+- 通用 BuildWorkflow executor 的 CMake configure/build、多配置 artifact 查找、Broker 事件和缺失 artifact fail-closed；
+- libuv 固定 workflow 声明的 CMake build 计划。
+
+本阶段 libuv 长流程实测另见 12.4；CTest 环境失败不会被普通 TypeScript 测试计数掩盖。
 
 ### 7.7 Capability Context
 
@@ -710,7 +714,7 @@ DependencyController
 
 1. **已完成：** CLI、Workflow Host、BuildWorkflow 规划、manifest、BuildArtifact 和注册表；
 2. **已完成：** Capability Context、Broker 权限策略、受控文件/进程能力和 C 构建便捷 Adapter；
-3. 用通用 BuildWorkflow 表达 libuv 构建流程；
+3. **已完成：** 通用 BuildWorkflow executor，以及固定 libuv v1.52.1 CMake Debug workflow；
 4. 为 Workflow Agent 编写指导 skill；
 5. 分析 libuv 并生成测试任务；
 6. 选择一个任务运行完整真实流程，根据证据优化系统；
@@ -731,15 +735,15 @@ DependencyController
 1. **阶段一：CMake baseline**
    - 获取固定版本源码；
    - 识别 CMake 项目；
-   - CMake configure；
-   - Debug 构建 `uv_run_tests`；
-   - 确认多配置输出路径和构建产物。
+   - 通过通用 BuildWorkflow 执行 CMake configure；
+   - 通过通用 BuildWorkflow 执行 Debug 构建；
+   - 确认 shared/static 多配置输出路径和构建产物。
 2. **阶段二：官方测试套件**
    - 执行 `ctest -C Debug --output-on-failure`；
    - 解析测试结果、失败日志和环境失败；
    - 增加测试套件级 timeout 与子进程清理。
    - **已完成实现与实测**：CTest Runner 已支持 shared/static 顶层 target、TAP 内层失败用例归属、Not Run 识别、超时和 Windows 进程树清理。
-   - libuv `v1.52.1` Debug shared/static 构建成功；CTest 两个顶层测试均执行，但当前 Windows 主机存在环境敏感失败：`fs_event_watch_dir_short_path`、`getaddrinfo_fail`、`getaddrinfo_fail_sync`、`tcp_connect_timeout`（static 目标另有同类短路径/DNS/连接超时结果）。因此阶段二结果为 **FAIL（可解释环境失败）**，不是 baseline 全通过。
+   - libuv `v1.52.1` Debug shared/static 构建成功；通用 BuildWorkflow 返回 configure/build 成功且 `missingArtifacts=[]`，CTest 两个顶层测试均执行，但当前 Windows 主机存在环境敏感失败，最终分类为 `test_failure`（2 个顶层 CTest 测试失败），不是 baseline 全通过。
 3. **阶段三：Sanitizer 基线**
    - 按 HostPreflight 能力选择 ASan / UBSan；
    - 记录 sanitizer 构建和运行结果；
