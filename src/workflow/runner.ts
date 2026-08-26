@@ -2,13 +2,14 @@ import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, resolve } from "node:path";
-import type { WorkflowRunResult } from "./types.js";
+import type { WorkflowFacts, WorkflowRunResult } from "./types.js";
 import { checkWorkflowSource } from "./source-policy.js";
 
 export interface RunWorkflowOptions {
   entry: string;
   cwd: string;
   input?: unknown;
+  facts?: WorkflowFacts;
   timeoutMs: number;
 }
 
@@ -39,7 +40,10 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
   const stderr: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
   child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-  child.stdin.end(JSON.stringify(options.input ?? null));
+  child.stdin.end(JSON.stringify({
+    input: options.input ?? null,
+    facts: options.facts ?? {},
+  }));
 
   let timedOut = false;
   const timer = setTimeout(() => {

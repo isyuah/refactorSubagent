@@ -1,7 +1,15 @@
+import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
+
+export interface WorkflowFacts {
+  readonly host?: HostPreflight;
+  readonly project?: ProjectDetection;
+}
+
 export interface WorkflowContext {
   readonly apiVersion: 1;
   readonly workspaceRoot: string;
   readonly input: unknown;
+  readonly facts: WorkflowFacts;
 }
 
 export type WorkflowFunction = (

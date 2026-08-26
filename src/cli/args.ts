@@ -16,10 +16,30 @@ export interface WorkflowRunCommand {
   format: CliFormat;
 }
 
+export interface WorkflowBuildCommand {
+  kind: "workflow-build";
+  entry: string;
+  workflowId: string;
+  revision: number;
+  cwd: string;
+  manifestOut: string | null;
+  save: boolean;
+  timeoutMs: number;
+  format: CliFormat;
+}
+
+export interface WorkflowListCommand {
+  kind: "workflow-list";
+  cwd: string;
+  format: CliFormat;
+}
+
 export type CliCommand =
   | { kind: "help" }
   | PreflightCommand
-  | WorkflowRunCommand;
+  | WorkflowRunCommand
+  | WorkflowBuildCommand
+  | WorkflowListCommand;
 
 export class CliUsageError extends Error {
   constructor(message: string) {
@@ -34,7 +54,6 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
     return { kind: "help" };
   }
-
   if (command === "preflight") return parsePreflight(args);
   if (command === "workflow") return parseWorkflow(args);
   throw new CliUsageError(`unknown command '${command}'`);
@@ -44,7 +63,6 @@ function parsePreflight(args: string[]): PreflightCommand {
   let repo = ".";
   let format: CliFormat = "human";
   let sawRepo = false;
-
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
     if (arg === "--format") {
@@ -56,27 +74,24 @@ function parsePreflight(args: string[]): PreflightCommand {
     repo = arg;
     sawRepo = true;
   }
-
   return { kind: "preflight", repo, format };
 }
 
-function parseWorkflow(args: string[]): WorkflowRunCommand {
+function parseWorkflow(args: string[]): WorkflowRunCommand | WorkflowBuildCommand | WorkflowListCommand {
   const subcommand = args.shift();
-  if (subcommand !== "run") {
-    throw new CliUsageError("workflow requires the 'run' subcommand");
-  }
+  if (subcommand === "run") return parseWorkflowRun(args);
+  if (subcommand === "build") return parseWorkflowBuild(args);
+  if (subcommand === "list") return parseWorkflowList(args);
+  throw new CliUsageError("workflow requires the 'run', 'build', or 'list' subcommand");
+}
 
-  const entry = args.shift();
-  if (entry === undefined || entry.startsWith("-")) {
-    throw new CliUsageError("workflow run requires an entry .ts file");
-  }
-
+function parseWorkflowRun(args: string[]): WorkflowRunCommand {
+  const entry = requiredEntry(args);
   let cwd = process.cwd();
   let inputJson: string | null = null;
   let inputFile: string | null = null;
   let timeoutMs = 60_000;
   let format: CliFormat = "human";
-
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
     if (arg === "--cwd") {
@@ -94,29 +109,100 @@ function parseWorkflow(args: string[]): WorkflowRunCommand {
       continue;
     }
     if (arg === "--timeout-ms") {
-      const raw = nextValue(args, ++index, "--timeout-ms");
-      timeoutMs = Number(raw);
-      if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-        throw new CliUsageError("--timeout-ms must be a positive integer");
-      }
+      timeoutMs = parsePositiveInteger(nextValue(args, ++index, "--timeout-ms"), "--timeout-ms");
       continue;
     }
     if (arg === "--format") {
       format = parseFormat(nextValue(args, ++index, "--format"));
       continue;
     }
-    throw new CliUsageError(`unknown workflow option '${arg}'`);
+    throw new CliUsageError(`unknown workflow run option '${arg}'`);
   }
-
   return { kind: "workflow-run", entry, cwd, inputJson, inputFile, timeoutMs, format };
+}
+
+function parseWorkflowBuild(args: string[]): WorkflowBuildCommand {
+  const entry = requiredEntry(args);
+  let workflowId: string | null = null;
+  let revision: number | null = null;
+  let cwd = process.cwd();
+  let manifestOut: string | null = null;
+  let save = false;
+  let timeoutMs = 60_000;
+  let format: CliFormat = "human";
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--id") {
+      workflowId = nextValue(args, ++index, "--id");
+      continue;
+    }
+    if (arg === "--revision") {
+      revision = parsePositiveInteger(nextValue(args, ++index, "--revision"), "--revision");
+      continue;
+    }
+    if (arg === "--cwd") {
+      cwd = nextValue(args, ++index, "--cwd");
+      continue;
+    }
+    if (arg === "--manifest-out") {
+      manifestOut = nextValue(args, ++index, "--manifest-out");
+      continue;
+    }
+    if (arg === "--save") {
+      save = true;
+      continue;
+    }
+    if (arg === "--timeout-ms") {
+      timeoutMs = parsePositiveInteger(nextValue(args, ++index, "--timeout-ms"), "--timeout-ms");
+      continue;
+    }
+    if (arg === "--format") {
+      format = parseFormat(nextValue(args, ++index, "--format"));
+      continue;
+    }
+    throw new CliUsageError(`unknown workflow build option '${arg}'`);
+  }
+  if (workflowId === null) throw new CliUsageError("workflow build requires --id");
+  if (revision === null) throw new CliUsageError("workflow build requires --revision");
+  return { kind: "workflow-build", entry, workflowId, revision, cwd, manifestOut, save, timeoutMs, format };
+}
+
+function parseWorkflowList(args: string[]): WorkflowListCommand {
+  let cwd = process.cwd();
+  let format: CliFormat = "human";
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--cwd") {
+      cwd = nextValue(args, ++index, "--cwd");
+      continue;
+    }
+    if (arg === "--format") {
+      format = parseFormat(nextValue(args, ++index, "--format"));
+      continue;
+    }
+    throw new CliUsageError(`unknown workflow list option '${arg}'`);
+  }
+  return { kind: "workflow-list", cwd, format };
+}
+
+function requiredEntry(args: string[]): string {
+  const entry = args.shift();
+  if (entry === undefined || entry.startsWith("-")) {
+    throw new CliUsageError("workflow command requires an entry .ts file");
+  }
+  return entry;
 }
 
 function nextValue(args: readonly string[], index: number, option: string): string {
   const value = args[index];
-  if (value === undefined || value.startsWith("--")) {
-    throw new CliUsageError(`${option} requires a value`);
-  }
+  if (value === undefined || value.startsWith("--")) throw new CliUsageError(`${option} requires a value`);
   return value;
+}
+
+function parsePositiveInteger(value: string, option: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new CliUsageError(`${option} must be a positive integer`);
+  return parsed;
 }
 
 function parseFormat(value: string): CliFormat {
@@ -127,11 +213,22 @@ function parseFormat(value: string): CliFormat {
 export const CLI_HELP = `Usage:
   refactor-subagent preflight [repo] [--format human|json]
   refactor-subagent workflow run <entry.ts> [options]
+  refactor-subagent workflow build <entry.ts> --id <id> --revision <n> [options]
+  refactor-subagent workflow list [--cwd <dir>] [--format human|json]
 
-Workflow options:
+Workflow run options:
   --cwd <dir>                 Working directory for the workflow process
   --input-json <json>         JSON input passed to the workflow
   --input-file <file>         Read JSON input from a file
+  --timeout-ms <n>            Maximum workflow duration (default: 60000)
+  --format human|json         Output format (default: human)
+
+Workflow build options:
+  --id <id>                   Stable workflow identifier
+  --revision <n>              Positive workflow revision
+  --cwd <dir>                 Project working directory
+  --manifest-out <path>       Save the generated manifest as JSON
+  --save                      Persist source, output, and manifest under .refactorsa
   --timeout-ms <n>            Maximum workflow duration (default: 60000)
   --format human|json         Output format (default: human)
 

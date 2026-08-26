@@ -1,6 +1,5 @@
 import { pathToFileURL } from "node:url";
-import type { WorkflowContext, WorkflowFunction } from "./types.js";
-
+import type { WorkflowContext, WorkflowFacts, WorkflowFunction } from "./types.js";
 interface WorkflowModule {
   default?: unknown;
   run?: unknown;
@@ -18,7 +17,9 @@ console.info = (...args: unknown[]) => console.error(...args);
 console.warn = (...args: unknown[]) => console.error(...args);
 
 try {
-  const input: unknown = JSON.parse(await Bun.stdin.text());
+  const payload: unknown = JSON.parse(await Bun.stdin.text());
+  const input = isPayload(payload) ? payload.input : payload;
+  const facts = isPayload(payload) ? payload.facts : {};
   // Runtime-selected workflow entry: this is the intentional plugin boundary.
   const loaded: unknown = await import(pathToFileURL(entry).href);
   if (!isWorkflowModule(loaded)) throw new Error("workflow module could not be loaded");
@@ -30,6 +31,7 @@ try {
     apiVersion: 1,
     workspaceRoot,
     input,
+    facts,
   };
   const result = await candidate(context);
   process.stdout.write(JSON.stringify({ ok: true, result: result ?? null }));
@@ -46,4 +48,13 @@ function isWorkflowModule(value: unknown): value is WorkflowModule {
 }
 function isWorkflowFunction(value: unknown): value is WorkflowFunction {
   return typeof value === "function";
+}
+
+interface WorkerPayload {
+  input: unknown;
+  facts: WorkflowFacts;
+}
+
+function isPayload(value: unknown): value is WorkerPayload {
+  return typeof value === "object" && value !== null && "input" in value && "facts" in value;
 }

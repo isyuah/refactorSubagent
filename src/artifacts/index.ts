@@ -22,6 +22,7 @@ export * from "./host-preflight.js";
 export * from "./project-detection.js";
 export * from "./ctest-suite.js";
 export * from "./sanitizer.js";
+export * from "./build-workflow.js";
 
 /** Union of every artifact kind the orchestrator accepts (some carry cross-field
  * refinements, so plain union instead of discriminatedUnion). */

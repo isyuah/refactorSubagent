@@ -421,13 +421,13 @@ bun test
 最新结果：
 
 ```text
-32 pass
+39 pass
 0 fail
-64 expect() calls
-Ran 32 tests across 7 files.
+79 expect() calls
+Ran 39 tests across 8 files.
 ```
 
-覆盖内容包括原有状态机、Agent、环境边界测试、C 项目构建系统识别、CTest 解析、sanitizer 能力门禁、Ninja 适配器，以及本次新增的 CLI 和 Workflow Foundation。
+覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation，以及本阶段新增的 BuildWorkflow 输出校验、source hash、manifest 注册表、保存/加载、候选发现和 stale 检测。
 - 状态机合法路径到 ACCEPTED；
 - R1 越级/乱序拒绝；
 - R2 非法 Artifact 拒绝；
@@ -443,17 +443,19 @@ Ran 32 tests across 7 files.
 - DirectCompilerAdapter / CMakeAdapter / NinjaAdapter 构建计划及门禁；
 - sanitizer unsupported、诊断分类和 baseline/candidate 结果隔离；
 - CTest Not Run、TAP 内层失败及 shared/static target 归属解析；
-- CLI 参数、JSON 输入、错误码、Workflow timeout 和源策略拒绝。
-### 7.5 CLI 与 Workflow Foundation
+- CLI 参数、JSON 输入、错误码、Workflow timeout 和源策略拒绝；
+- BuildWorkflow identity/path/source-hash 校验、注册表保存/加载和候选 stale 分类。
+
+### 7.6 BuildWorkflow 规划与注册表
 
 已实现：
 
-- `refactor-subagent preflight [repo] [--format human|json]`；
-- `refactor-subagent workflow run <entry.ts>`，支持 JSON 输入、工作目录、timeout 和 JSON 输出；
-- Workflow 在独立 Bun 子进程执行，stdout 使用机器可读 envelope；
-- 源策略拒绝直接访问 `node:` / `bun:`、`process.*`、`Bun.*` 等主机 API；
-- 当前版本只提供纯计算 Workflow Context，不提供文件、进程或网络能力；
-- 这是一层执行协议和策略检查，不宣称是最终 OS 级安全沙箱。
+- `BuildWorkflowOutput`：声明 EnvironmentSpec 和逻辑化 BuildArtifact；
+- `BuildWorkflowManifest`：固定 workflow id、revision、entry、source hash、API 版本和适用事实；
+- `workflow build`：执行并校验纯 BuildWorkflow，生成 source-hashed manifest；
+- `workflow build --save`：保存到 `.refactorsa/build-workflows/<id>/r<revision>/`；
+- `workflow list`：程序化校验并分类 `valid`、`draft`、`incompatible`、`stale`、`invalid`；
+- 同一 revision 不允许被不同源码覆盖；baseline/candidate 后续应锁定同一个 revision。
 
 ### 7.3 不依赖 Claude 的真实 C 差分验证
 
@@ -703,7 +705,7 @@ DependencyController
 
 下一步按以下顺序推进：
 
-1. 完成可运行的 BuildWorkflow 规划、manifest 和 BuildArtifact；
+1. **已完成：** CLI、Workflow Host、BuildWorkflow 规划、manifest、BuildArtifact 和注册表；
 2. 接入 Capability Context，替换 Workflow 的有限纯计算上下文；
 3. 用通用 BuildWorkflow 表达 libuv 构建流程；
 4. 为 Workflow Agent 编写指导 skill；
