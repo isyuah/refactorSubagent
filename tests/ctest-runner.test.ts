@@ -17,20 +17,28 @@ describe("CTest output parsing", () => {
     expect(result.summary).toEqual({ total: 2, passed: 0, failed: 2, not_run: 1 });
   });
 
-  test("retains TAP failures with their enclosing CTest target", () => {
+  test("retains TAP failures with target output evidence", () => {
     const result = parseCTestOutput([
       "    Start 1: uv_test",
       "1/2 Test #1: uv_test .........................***Failed    1.20 sec",
+      "stderr: short path unavailable",
       "not ok 53 - fs_event_watch_dir_short_path",
       "    Start 2: uv_test_a",
       "2/2 Test #2: uv_test_a .......................***Failed    1.30 sec",
-      "not ok 55 - fs_event_watch_dir_short_path",
+      "stderr: dns provider refused",
+      "not ok 55 - getaddrinfo_fail",
       "0% tests passed, 2 tests failed out of 2",
     ].join("\n"));
 
-    expect(result.failedTests.map((failure) => failure.name)).toEqual([
-      "uv_test:fs_event_watch_dir_short_path",
-      "uv_test_a:fs_event_watch_dir_short_path",
+    expect(result.failedTests).toEqual([
+      expect.objectContaining({
+        name: "uv_test:fs_event_watch_dir_short_path",
+        output: expect.stringContaining("short path unavailable"),
+      }),
+      expect.objectContaining({
+        name: "uv_test_a:getaddrinfo_fail",
+        output: expect.stringContaining("dns provider refused"),
+      }),
     ]);
   });
 });

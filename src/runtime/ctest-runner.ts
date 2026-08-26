@@ -154,6 +154,30 @@ function parseSummary(
 
 function parseFailures(output: string): CTestFailure[] {
   const names: string[] = [];
+  const outputByTarget = new Map<string, string>();
+  let activeTarget: string | null = null;
+  let activeLines: string[] = [];
+  const flush = (): void => {
+    if (activeTarget !== null) outputByTarget.set(activeTarget, activeLines.join("\n").trim());
+    activeLines = [];
+  };
+
+  for (const line of output.split(/\r?\n/)) {
+    const start = line.match(/^\s*Start\s+\d+:\s*(.+?)\s*$/i);
+    if (start?.[1]) {
+      flush();
+      activeTarget = start[1].trim();
+      continue;
+    }
+    if (activeTarget !== null) activeLines.push(line);
+    const tap = line.match(/^not ok\s+\d+\s+-\s+(.+?)(?:\s+#.*)?$/i);
+    if (tap?.[1]) {
+      const name = tap[1].trim();
+      names.push(activeTarget === null ? name : `${activeTarget}:${name}`);
+    }
+  }
+  flush();
+
   const marker = output.indexOf("The following tests FAILED:");
   if (marker >= 0) {
     for (const line of output.slice(marker).split(/\r?\n/).slice(1)) {
@@ -162,20 +186,11 @@ function parseFailures(output: string): CTestFailure[] {
     }
   }
 
-  let activeTarget: string | null = null;
-  for (const line of output.split(/\r?\n/)) {
-    const start = line.match(/^\s*Start\s+\d+:\s*(.+?)\s*$/i);
-    if (start?.[1]) {
-      activeTarget = start[1].trim();
-      continue;
-    }
-    const tap = line.match(/^not ok\s+\d+\s+-\s+(.+?)(?:\s+#.*)?$/i);
-    if (tap?.[1]) {
-      const name = tap[1].trim();
-      names.push(activeTarget === null ? name : `${activeTarget}:${name}`);
-    }
-  }
-  return [...new Set(names)].map((name) => ({ name, output: "" }));
+  return [...new Set(names)].map((name) => {
+    const separator = name.indexOf(":");
+    const target = separator < 0 ? name : name.slice(0, separator);
+    return { name, output: outputByTarget.get(target) ?? "" };
+  });
 }
 
 function resultError(explanation: string, category: "environment" | "unknown"): CTestSuiteResult {

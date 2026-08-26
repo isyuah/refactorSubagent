@@ -421,10 +421,10 @@ bun test
 最新结果：
 
 ```text
-42 pass
+44 pass
 0 fail
-93 expect() calls
-Ran 42 tests across 9 files.
+101 expect() calls
+Ran 44 tests across 10 files.
 ```
 
 覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation、BuildWorkflow 注册表与 executor，以及 Capability Context 文件/进程/工具能力。
@@ -485,6 +485,16 @@ Ran 42 tests across 9 files.
 - `version.c` 在 v1.52.1 checkout 中没有专门 `test-version.c`，标记为 `dedicated-harness-required`；
 - 6 个首批 case：strscpy 零长度/精确填充/截断，strtok 空分隔符/多分隔符，version 公共值；
 - 失败 baseline 必须有显式分类，环境失败仍保留为阻断证据，不会自动忽略。
+
+### 7.10 Real Run：strscpy baseline/candidate
+
+已完成：
+
+- 完整 candidate CTest 通过可观察会话运行 415.38 秒，输出持续显示 477 个内部用例进度，最终 `uv_test` 与 `uv_test_a` 均完成；
+- candidate CTest 最终为 `0% tests passed, 2 tests failed out of 2`，失败集中在 `udp_connect6`、`udp_dual_stack`、`udp_multicast_join6`、`udp_options6` 等 Windows IPv6/UDP 环境敏感用例；
+- shared/static 两个目标中的 `strscpy`、`strtok` 均为 `ok`，未出现候选修改相关失败；
+- CTest parser 现在保留内层失败所属顶层 target、断言输出和 timeout 信息，能够支持后续环境分类；
+- 完整 CTest 不是绿色验收证据，但已完成真实执行、可观察进度和 fail-closed 结果记录。
 
 ### 7.3 不依赖 Claude 的真实 C 差分验证
 
@@ -739,7 +749,7 @@ DependencyController
 3. **已完成：** 通用 BuildWorkflow executor，以及固定 libuv v1.52.1 CMake Debug workflow；
 4. **已完成：** BuildWorkflow Agent 指导、只读提案入口和结构化输出校验；
 5. **已完成：** libuv CTest 基线分析、失败分类、RefactorTestTask 和首批差分测试计划；
-6. 选择一个任务运行完整真实流程，根据证据优化系统；
+6. **已完成：** `strscpy.c` baseline/candidate 真实运行、目标用例对比、完整 candidate CTest 可观察执行和 parser 证据增强；完整套件保持 fail-closed；
 7. 暂不继续增加 Make/MSVC 等 Adapter，Adapter 只作为 Capability 层便捷方式。
 
 ## 12. 当前临时目标：libuv 大型 CMake 基准
