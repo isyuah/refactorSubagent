@@ -421,13 +421,13 @@ bun test
 最新结果：
 
 ```text
-39 pass
+42 pass
 0 fail
-79 expect() calls
-Ran 39 tests across 8 files.
+93 expect() calls
+Ran 42 tests across 9 files.
 ```
 
-覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation，以及本阶段新增的 BuildWorkflow 输出校验、source hash、manifest 注册表、保存/加载、候选发现和 stale 检测。
+覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation、BuildWorkflow 注册表，以及本阶段新增的 Capability Context 文件/进程/工具能力。
 - 状态机合法路径到 ACCEPTED；
 - R1 越级/乱序拒绝；
 - R2 非法 Artifact 拒绝；
@@ -444,18 +444,21 @@ Ran 39 tests across 8 files.
 - sanitizer unsupported、诊断分类和 baseline/candidate 结果隔离；
 - CTest Not Run、TAP 内层失败及 shared/static target 归属解析；
 - CLI 参数、JSON 输入、错误码、Workflow timeout 和源策略拒绝；
-- BuildWorkflow identity/path/source-hash 校验、注册表保存/加载和候选 stale 分类。
+- BuildWorkflow identity/path/source-hash 校验、注册表保存/加载和候选 stale 分类；
+- Capability Context 的 brokered 文件读写、路径/符号链接边界、工具白名单、无 shell 进程、短命句柄、超时和输出上限。
 
-### 7.6 BuildWorkflow 规划与注册表
+### 7.7 Capability Context
 
 已实现：
 
-- `BuildWorkflowOutput`：声明 EnvironmentSpec 和逻辑化 BuildArtifact；
-- `BuildWorkflowManifest`：固定 workflow id、revision、entry、source hash、API 版本和适用事实；
-- `workflow build`：执行并校验纯 BuildWorkflow，生成 source-hashed manifest；
-- `workflow build --save`：保存到 `.refactorsa/build-workflows/<id>/r<revision>/`；
-- `workflow list`：程序化校验并分类 `valid`、`draft`、`incompatible`、`stale`、`invalid`；
-- 同一 revision 不允许被不同源码覆盖；baseline/candidate 后续应锁定同一个 revision。
+- Workflow Worker 与主进程 Broker 之间的 JSONL 双向 capability 协议；
+- `context.fs`：受 readable/writable globs 和单文件大小上限控制的读写、目录创建、存在性、snapshot/diff；
+- `context.process`：无 shell argv 执行、测量工具解析、工作区 executable、stdin、环境键白名单、进程数/超时/输出上限和进程树清理；
+- `context.tools`：只报告 HostPreflight 已测量且策略允许的工具；
+- `context.adapters`：CMake、Ninja、CTest、compiler 便捷接口，统一走 process capability；
+- capability 调用事件随 Workflow 结果持久化返回，失败事件不会被吞掉。
+
+这仍是主进程 Broker 的策略边界，不宣称是 OS 级沙箱；任意用户项目的完整隔离仍需平台沙箱、网络禁用、磁盘配额和更细的资源控制。
 
 ### 7.3 不依赖 Claude 的真实 C 差分验证
 
@@ -706,7 +709,7 @@ DependencyController
 下一步按以下顺序推进：
 
 1. **已完成：** CLI、Workflow Host、BuildWorkflow 规划、manifest、BuildArtifact 和注册表；
-2. 接入 Capability Context，替换 Workflow 的有限纯计算上下文；
+2. **已完成：** Capability Context、Broker 权限策略、受控文件/进程能力和 C 构建便捷 Adapter；
 3. 用通用 BuildWorkflow 表达 libuv 构建流程；
 4. 为 Workflow Agent 编写指导 skill；
 5. 分析 libuv 并生成测试任务；

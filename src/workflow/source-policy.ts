@@ -6,8 +6,8 @@ const FORBIDDEN_IMPORTS = [
   /import\s*\(\s*["'](?:node:|bun:)/,
   /require\s*\(\s*["'](?:node:|bun:)/,
   /from\s*["'](?:fs|child_process|worker_threads|net|http|https|os|process)["']/,
-  /\bprocess\s*\./,
-  /\bBun\s*\./,
+  /(?<![\w.])process\s*\.(?!run\b|start\b|wait\b|stop\b)/,
+  /(?<![\w.])Bun\s*\./,
 ];
 
 export interface WorkflowSourceCheck {
