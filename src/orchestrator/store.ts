@@ -100,11 +100,12 @@ export class SessionStore {
     return this.file.history;
   }
 
-  /** Storage file stem: observation traces exist per build, other kinds are unique. */
+  /** Storage file stem: build-scoped artifacts keep baseline/candidate separate. */
   private static storageStem(a: AnyArtifact): string {
-    return a.kind === "observation-trace"
-      ? `observation-trace.${a.build}`
-      : a.kind;
+    if (a.kind === "observation-trace" || a.kind === "sanitizer-result") {
+      return `${a.kind}.${a.build}`;
+    }
+    return a.kind;
   }
 
   /** Load a previously stored, already-validated artifact; null if absent. */
@@ -128,6 +129,19 @@ export class SessionStore {
     );
     if (!existsSync(path)) return null;
     return ObservationTrace.parse(JSON.parse(readFileSync(path, "utf8")));
+  }
+  /** Load the stored sanitizer result for one build; null if absent. */
+  sanitizer(build: "baseline" | "candidate") {
+    const path = join(
+      this.sessionDir,
+      "artifacts",
+      `sanitizer-result.${build}.json`,
+    );
+    if (!existsSync(path)) return null;
+    return Artifact.parse(JSON.parse(readFileSync(path, "utf8"))) as Extract<
+      AnyArtifact,
+      { kind: "sanitizer-result" }
+    >;
   }
 
   /** Persist measured host facts outside the Artifact state transition union. */

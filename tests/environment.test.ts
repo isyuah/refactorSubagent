@@ -21,4 +21,8 @@ describe("host preflight and execution-boundary contracts", () => {
     });
     expect(result.success).toBeFalse();
   });
+  test("does not compile sanitizer probes unless explicitly requested", () => {
+    const quick = probeHost("E:/Proj/refactorSubagent");
+    expect(quick.sanitizers).toEqual({});
+  });
 });

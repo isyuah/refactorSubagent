@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { detectCProject } from "../src/runtime/project-detector.js";
 import { probeHost } from "../src/runtime/host-preflight.js";
-import { buildWorktree } from "../src/runtime/builder.js";
+import { buildWorktree, NinjaAdapter } from "../src/runtime/builder.js";
 import type { EnvironmentSpec } from "../src/artifacts/index.js";
 
 function tempProject(): string {
@@ -35,6 +35,52 @@ describe("C project detection and build infrastructure", () => {
     expect(detection.adapter).toBe("cmake");
     expect(detection.status).toBe(host.tools.cmake?.available ? "ready" : "needs-adapter");
   });
+  test("detects and builds a real Ninja C project", () => {
+    const root = tempProject();
+    mkdirSync(join(root, "build"));
+    writeFileSync(join(root, "main.c"), "int main(void){return 0;}\n");
+    writeFileSync(
+      join(root, "build", "build.ninja"),
+      [
+        "rule cc",
+        "  command = gcc ../main.c -o app.exe",
+        "build app.exe: cc",
+        "default app.exe",
+        "",
+      ].join("\n"),
+    );
+
+    const host = probeHost(root);
+    if (!host.tools.ninja?.available || !host.tools.gcc?.available) return;
+    const detection = detectCProject(root, host);
+    expect(detection.primary_build_system).toBe("ninja");
+    expect(detection.adapter).toBe("ninja");
+    expect(detection.status).toBe("ready");
+
+    const env: EnvironmentSpec = {
+      kind: "environment-spec",
+      version: 1,
+      build: {
+        kind: "ninja",
+        build_dir: "build",
+        target: null,
+        build_flags: [],
+        output: "build/app",
+      },
+      sanitizers: [],
+      determinism: {
+        frozen_time_epoch_ms: null,
+        random_seed: null,
+        intercept_headers: [],
+      },
+      sandbox: { run_cwd_strategy: "fresh_temp_dir" },
+    };
+    const plan = new NinjaAdapter().plan(root, env, host);
+    expect(plan.commands[0]!.args).toEqual(["-C", "build"]);
+    const result = buildWorktree(root, env, host);
+    expect(result.ok).toBeTrue();
+    expect(result.binaryAbs.endsWith(process.platform === "win32" ? "app.exe" : "app")).toBeTrue();
+  }, 30000);
 
   test("cmake adapter configures and builds a real executable", () => {
     const root = tempProject();
@@ -59,6 +105,7 @@ describe("C project detection and build infrastructure", () => {
         build_flags: [],
         output: "build/smoke",
       },
+      sanitizers: [],
       determinism: {
         frozen_time_epoch_ms: null,
         random_seed: null,
@@ -84,6 +131,7 @@ describe("C project detection and build infrastructure", () => {
         sources: ["main.c"],
         output: "build/app",
       },
+      sanitizers: [],
       determinism: {
         frozen_time_epoch_ms: null,
         random_seed: null,

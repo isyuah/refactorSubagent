@@ -10,14 +10,21 @@ import { probeHost } from "./host-preflight.js";
 import {
   CMakeAdapter,
   DirectCompilerAdapter,
+  NinjaAdapter,
   resolveBinaryPath,
   type BuildResult,
 } from "./build-adapter.js";
-export { CMakeAdapter, DirectCompilerAdapter, resolveBinaryPath } from "./build-adapter.js";
+export {
+  CMakeAdapter,
+  DirectCompilerAdapter,
+  NinjaAdapter,
+  resolveBinaryPath,
+} from "./build-adapter.js";
 export type { BuildResult } from "./build-adapter.js";
 
 const directCompiler = new DirectCompilerAdapter();
 const cmake = new CMakeAdapter();
+const ninja = new NinjaAdapter();
 
 /**
  * Build entry point. New direct-compiler plans use an argv-only Adapter;
@@ -28,16 +35,35 @@ export function buildWorktree(
   env: EnvironmentSpec,
   host = probeHost(worktreeDir),
 ): BuildResult {
-  if ("kind" in env.build && env.build.kind === "direct-compiler") {
-    return directCompiler.build(worktreeDir, env, host);
+  try {
+    if ("kind" in env.build && env.build.kind === "direct-compiler") {
+      return directCompiler.build(worktreeDir, env, host);
+    }
+    if ("kind" in env.build && env.build.kind === "cmake") {
+      return cmake.build(worktreeDir, env, host);
+    }
+    if ("kind" in env.build && env.build.kind === "ninja") {
+      return ninja.build(worktreeDir, env, host);
+    }
+    return buildLegacyShell(worktreeDir, env);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      binaryAbs: join(worktreeDir, ""),
+      log: `build planning failed: ${detail}\n`,
+    };
   }
-  if ("kind" in env.build && env.build.kind === "cmake") {
-    return cmake.build(worktreeDir, env, host);
-  }
-  return buildLegacyShell(worktreeDir, env);
 }
 
 function buildLegacyShell(worktreeDir: string, env: EnvironmentSpec): BuildResult {
+  if (env.sanitizers.length > 0) {
+    return {
+      ok: false,
+      binaryAbs: join(worktreeDir, ""),
+      log: "legacy shell adapter cannot prove sanitizer flags; use a structured build adapter\n",
+    };
+  }
   if (!("command" in env.build)) {
     return {
       ok: false,

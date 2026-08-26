@@ -3,8 +3,6 @@ import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type {
   BuildAdapterId,
-  CMakeBuild,
-  DirectCompilerBuild,
   EnvironmentSpec,
   HostPreflight,
 } from "../artifacts/index.js";
@@ -48,6 +46,7 @@ export class DirectCompilerAdapter implements BuildAdapter {
     }
     const args = [
       ...removeInterceptFlags(env.build.flags, env.determinism.intercept_headers),
+      ...sanitizerFlags(env, host),
       ...Object.entries(env.build.defines).map(([key, value]) => `-D${key}=${value}`),
     ];
     for (const header of env.determinism.intercept_headers) {
@@ -84,13 +83,22 @@ export class CMakeAdapter implements BuildAdapter {
     const configureArgs = ["-S", build.source_dir, "-B", build.build_dir];
     if (build.generator !== null) configureArgs.push("-G", build.generator);
     configureArgs.push(...build.configure_flags);
-    const cFlags = env.determinism.intercept_headers
-      .map((header) => `-include "${join(worktreeDir, header).replaceAll("\\", "/")}"`)
-      .join(" ");
+
+    const sanitizer = sanitizerFlags(env, host);
+    const cFlags = [
+      ...sanitizer,
+      ...env.determinism.intercept_headers
+        .map((header) => `-include "${join(worktreeDir, header).replaceAll("\\", "/")}"`),
+    ].join(" ");
     if (cFlags.length > 0) configureArgs.push(`-DCMAKE_C_FLAGS=${cFlags}`);
+    if (sanitizer.length > 0) {
+      const linkerFlags = sanitizer.join(" ");
+      configureArgs.push(`-DCMAKE_EXE_LINKER_FLAGS=${linkerFlags}`);
+      configureArgs.push(`-DCMAKE_SHARED_LINKER_FLAGS=${linkerFlags}`);
+    }
+
     const buildArgs = ["--build", build.build_dir, ...build.build_flags];
     if (build.target !== null) buildArgs.push("--target", build.target);
-
     return {
       adapter: this.id,
       commands: [
@@ -99,6 +107,35 @@ export class CMakeAdapter implements BuildAdapter {
       ],
       output: withExecutableSuffix(build.output, host),
       outputCandidates: cmakeOutputCandidates(build.output, host),
+    };
+  }
+
+  build(worktreeDir: string, env: EnvironmentSpec, host: HostPreflight): BuildResult {
+    return executePlan(worktreeDir, this.plan(worktreeDir, env, host));
+  }
+}
+export class NinjaAdapter implements BuildAdapter {
+  readonly id = "ninja" as const;
+
+  plan(worktreeDir: string, env: EnvironmentSpec, host: HostPreflight): BuildPlan {
+    if (!("kind" in env.build) || env.build.kind !== "ninja") {
+      throw new Error("ninja adapter received a non-ninja build spec");
+    }
+    if (env.sanitizers.length > 0 || env.determinism.intercept_headers.length > 0) {
+      throw new Error(
+        "ninja adapter cannot inject sanitizer or determinism flags into an existing build graph",
+      );
+    }
+    const ninja = host.tools.ninja;
+    if (!ninja?.available || ninja.path === null) {
+      throw new Error("ninja is not available in HostPreflight");
+    }
+    const args = ["-C", env.build.build_dir, ...env.build.build_flags];
+    if (env.build.target !== null) args.push(env.build.target);
+    return {
+      adapter: this.id,
+      commands: [{ program: ninja.path, args }],
+      output: withExecutableSuffix(env.build.output, host),
     };
   }
 
@@ -121,9 +158,7 @@ function executePlan(worktreeDir: string, plan: BuildPlan): BuildResult {
     });
     const rendered = [command.program, ...command.args].map(shellQuote).join(" ");
     log += `$ ${rendered}\n${result.stdout ?? ""}${result.stderr ?? ""}${result.error ? String(result.error) : ""}`;
-    if (result.status !== 0) {
-      return { ok: false, log, binaryAbs: firstOutput };
-    }
+    if (result.status !== 0) return { ok: false, log, binaryAbs: firstOutput };
   }
 
   const actual = candidates
@@ -136,11 +171,32 @@ function executePlan(worktreeDir: string, plan: BuildPlan): BuildResult {
   };
 }
 
+function sanitizerFlags(env: EnvironmentSpec, host: HostPreflight): string[] {
+  const flags: string[] = [];
+  for (const kind of env.sanitizers) {
+    const capability = host.sanitizers[kind];
+    if (!capability?.available) {
+      throw new Error(
+        `sanitizer '${kind}' unavailable: ${capability?.reason ?? "no measured capability"}`,
+      );
+    }
+    flags.push(...capability.flags);
+  }
+  return [...new Set(flags)];
+}
+
 export function resolveBinaryPath(worktreeDir: string, env: EnvironmentSpec): string {
   const output = "output" in env.build ? env.build.output : env.build.binary;
   const candidates = "kind" in env.build && env.build.kind === "cmake"
-    ? cmakeOutputCandidates(output, { executable_suffix: process.platform === "win32" ? ".exe" : "" } as HostPreflight)
-    : [output, process.platform === "win32" && !output.toLowerCase().endsWith(".exe") ? `${output}.exe` : output];
+    ? cmakeOutputCandidates(output, {
+        executable_suffix: process.platform === "win32" ? ".exe" : "",
+      } as HostPreflight)
+    : [
+        output,
+        process.platform === "win32" && !output.toLowerCase().endsWith(".exe")
+          ? `${output}.exe`
+          : output,
+      ];
   return candidates
     .map((candidate) => join(worktreeDir, candidate))
     .find((candidate) => existsSync(candidate)) ?? join(worktreeDir, candidates[0]!);
@@ -156,7 +212,7 @@ function cmakeOutputCandidates(output: string, host: HostPreflight): string[] {
 
 function withExecutableSuffix(output: string, host: HostPreflight): string {
   return host.executable_suffix.length > 0 &&
-    !output.toLowerCase().endsWith(host.executable_suffix)
+      !output.toLowerCase().endsWith(host.executable_suffix)
     ? `${output}${host.executable_suffix}`
     : output;
 }

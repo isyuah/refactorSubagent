@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RelPath } from "./common.js";
+import { SanitizerKind } from "./sanitizer.js";
 
 const DirectCompilerBuild = z.object({
   kind: z.literal("direct-compiler"),
@@ -25,6 +26,16 @@ const CMakeBuild = z.object({
   /** Expected repo-relative executable path after the build. */
   output: RelPath,
 });
+const NinjaBuild = z.object({
+  kind: z.literal("ninja"),
+  /** Directory containing build.ninja, relative to the worktree root. */
+  build_dir: RelPath.default("."),
+  /** Optional Ninja target; null builds the graph's default target. */
+  target: z.string().min(1).nullable().default(null),
+  build_flags: z.array(z.string()).default([]),
+  /** Expected repo-relative executable path after the build. */
+  output: RelPath,
+});
 
 const ShellCommandBuild = z.object({
   kind: z.literal("shell-command"),
@@ -44,6 +55,7 @@ const LegacyBuild = z.object({
 export const BuildSpec = z.union([
   DirectCompilerBuild,
   CMakeBuild,
+  NinjaBuild,
   ShellCommandBuild,
   LegacyBuild,
 ]);
@@ -52,6 +64,8 @@ export const EnvironmentSpec = z.object({
   kind: z.literal("environment-spec"),
   version: z.literal(1),
   build: BuildSpec,
+  /** Requested instrumentation; HostPreflight must prove each one available. */
+  sanitizers: z.array(SanitizerKind).default([]),
   determinism: z.object({
     frozen_time_epoch_ms: z.number().int().nullable(),
     random_seed: z.number().int().nullable(),
@@ -65,4 +79,5 @@ export const EnvironmentSpec = z.object({
 export type BuildSpec = z.infer<typeof BuildSpec>;
 export type DirectCompilerBuild = z.infer<typeof DirectCompilerBuild>;
 export type CMakeBuild = z.infer<typeof CMakeBuild>;
+export type NinjaBuild = z.infer<typeof NinjaBuild>;
 export type EnvironmentSpec = z.infer<typeof EnvironmentSpec>;

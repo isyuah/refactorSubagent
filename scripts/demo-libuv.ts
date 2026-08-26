@@ -5,7 +5,8 @@ import { join, resolve } from "node:path";
 import { probeHost } from "../src/runtime/host-preflight.js";
 import { detectCProject } from "../src/runtime/project-detector.js";
 import { buildWorktree } from "../src/runtime/builder.js";
-import type { EnvironmentSpec } from "../src/artifacts/index.js";
+import { runCTest } from "../src/runtime/ctest-runner.js";
+import type { CTestSuiteSpec, EnvironmentSpec } from "../src/artifacts/index.js";
 
 const LIBUV_VERSION = "v1.52.1";
 const LIBUV_REPO = "https://github.com/libuv/libuv.git";
@@ -67,7 +68,7 @@ const env: EnvironmentSpec = {
     source_dir: ".",
     build_dir: "build",
     generator: null,
-    target: "uv_run_tests",
+    target: null,
     configure_flags: [
       "-DBUILD_TESTING=ON",
       "-DLIBUV_BUILD_TESTS=ON",
@@ -76,6 +77,7 @@ const env: EnvironmentSpec = {
     build_flags: ["--config", "Debug"],
     output: "build/uv_run_tests",
   },
+  sanitizers: [],
   determinism: {
     frozen_time_epoch_ms: null,
     random_seed: null,
@@ -93,4 +95,28 @@ console.log(JSON.stringify({
   exists: existsSync(result.binaryAbs),
 }, null, 2));
 
-if (!result.ok) process.exitCode = 1;
+if (!result.ok) {
+  process.exitCode = 1;
+} else {
+  const suite: CTestSuiteSpec = {
+    kind: "ctest-suite-spec",
+    version: 1,
+    build_dir: "build",
+    configuration: "Debug",
+    timeout_ms: 1_200_000,
+    parallelism: 1,
+    extra_args: [],
+    environment: {},
+  };
+  console.log("running libuv CTest suite...");
+  const testResult = await runCTest({ repoDir: repo, spec: suite, host });
+  console.log(JSON.stringify({
+    status: testResult.status,
+    exit_code: testResult.exit_code,
+    duration_ms: testResult.duration_ms,
+    summary: testResult.summary,
+    failed_tests: testResult.failed_tests,
+    failure: testResult.failure,
+  }, null, 2));
+  if (testResult.status !== "pass") process.exitCode = 1;
+}

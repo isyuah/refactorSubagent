@@ -106,6 +106,7 @@ const request = (
       sources: ["src/main.c", "src/util.c"],
       output: "app",
     },
+    sanitizers: [],
     determinism: {
       frozen_time_epoch_ms: 1700000000000,
       random_seed: 42,

@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
   ProjectDetection,
@@ -18,6 +18,8 @@ const SKIP_DIRS = new Set([
   "cmake-build-release",
 ]);
 
+const KNOWN_BUILD_DIRS = ["build", "out", "cmake-build-debug", "cmake-build-release"];
+
 const MARKER_SYSTEM: Record<string, BuildSystem> = {
   "CMakeLists.txt": "cmake",
   "build.ninja": "ninja",
@@ -25,7 +27,6 @@ const MARKER_SYSTEM: Record<string, BuildSystem> = {
   makefile: "make",
   GNUmakefile: "make",
 };
-
 
 /** Detect the project build system before an agent proposes a build plan. */
 export function detectCProject(
@@ -35,16 +36,14 @@ export function detectCProject(
   const markers: string[] = [];
   const sourceFiles: string[] = [];
   walk(repoRoot, repoRoot, markers, sourceFiles);
+  collectKnownBuildMarkers(repoRoot, markers);
 
   const systems: BuildSystem[] = [];
   for (const marker of markers) {
-    const system = MARKER_SYSTEM[marker] ?? msvcSystem(marker);
+    const system = systemForMarker(marker);
     if (system !== null && !systems.includes(system)) systems.push(system);
   }
 
-  if (markers.some((marker) => marker.endsWith(".sln") || marker.endsWith(".vcxproj"))) {
-    if (!systems.includes("msvc")) systems.push("msvc");
-  }
   if (systems.length === 0 && sourceFiles.length > 0) systems.push("direct-c");
 
   const primary = choosePrimary(systems);
@@ -102,6 +101,18 @@ function walk(
   }
 }
 
+function collectKnownBuildMarkers(root: string, markers: string[]): void {
+  for (const directory of KNOWN_BUILD_DIRS) {
+    const marker = `${directory}/build.ninja`;
+    if (existsSync(join(root, marker)) && !markers.includes(marker)) markers.push(marker);
+  }
+}
+
+function systemForMarker(marker: string): BuildSystem | null {
+  const filename = marker.slice(marker.lastIndexOf("/") + 1);
+  return MARKER_SYSTEM[filename] ?? msvcSystem(filename);
+}
+
 function msvcSystem(name: string): BuildSystem | null {
   return name.toLowerCase().endsWith(".sln") || name.toLowerCase().endsWith(".vcxproj")
     ? "msvc"
@@ -128,5 +139,6 @@ function adapterAvailable(
 ): boolean {
   if (!host) return false;
   if (adapter === "cmake") return host.tools.cmake?.available === true;
+  if (adapter === "ninja") return host.tools.ninja?.available === true;
   return false;
 }

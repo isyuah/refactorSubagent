@@ -1,5 +1,5 @@
 import { z } from "zod";
-
+import { SanitizerCapability } from "./sanitizer.js";
 export const ToolProbe = z.object({
   available: z.boolean(),
   path: z.string().nullable(),
@@ -20,6 +20,7 @@ export const HostPreflight = z.object({
   executable_suffix: z.string(),
   working_directory: z.string().min(1),
   tools: z.record(ToolProbe),
+  sanitizers: z.record(SanitizerCapability).default({}),
 });
 
 export type HostPreflight = z.infer<typeof HostPreflight>;

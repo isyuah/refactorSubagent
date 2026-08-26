@@ -65,6 +65,7 @@ export const env = (): EnvironmentSpec => ({
     command: "gcc -O2 -Wall src/main.c src/util.c -o bin/app",
     binary: "bin/app",
   },
+  sanitizers: [],
   determinism: {
     frozen_time_epoch_ms: 1700000000000,
     random_seed: 42,

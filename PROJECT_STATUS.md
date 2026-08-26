@@ -421,13 +421,13 @@ bun test
 最新结果：
 
 ```text
-19 pass
+27 pass
 0 fail
-38 expect() calls
-Ran 19 tests across 4 files.
+51 expect() calls
+Ran 27 tests across 6 files.
 ```
 
-覆盖内容包括原有状态机、Agent、环境边界测试，以及本次新增的项目构建系统识别、DirectCompilerAdapter 真实 gcc 构建和 CMake 不静默降级测试。
+覆盖内容包括原有状态机、Agent、环境边界测试、C 项目构建系统识别、CTest 解析，以及 sanitizer 能力门禁和独立证据层。
 - 状态机合法路径到 ACCEPTED；
 - R1 越级/乱序拒绝；
 - R2 非法 Artifact 拒绝；
@@ -439,8 +439,10 @@ Ran 19 tests across 4 files.
 - R7 终态不可变；
 - session reopen 后从持久化状态继续；
 - Agent JSON 解析和失败处理；
-- HostPreflight 工具映射；
-- argv NUL 边界拒绝。
+- HostPreflight 工具映射、懒加载 sanitizer 探针和 argv NUL 边界；
+- DirectCompilerAdapter / CMakeAdapter 构建计划及 sanitizer flags 门禁；
+- sanitizer unsupported、诊断分类和 baseline/candidate 结果隔离；
+- CTest Not Run、TAP 内层失败及 shared/static target 归属解析。
 
 ### 7.3 不依赖 Claude 的真实 C 差分验证
 
@@ -493,8 +495,6 @@ INIT → CONTRACT_READY → SCOPE_READY → DEPENDENCY_READY
 → VERIFICATION_RUNNING → ACCEPTED
 ```
 
-Claude 实际生成过的 BuildPlan 是 `direct-compiler`，compiler 为 `gcc`，sources 为 `src/main.c` 和 `src/util.c`，output 为 `build/app`。
-
 ## 8.1 本次构建基础设施增量
 
 已新增：
@@ -503,9 +503,12 @@ Claude 实际生成过的 BuildPlan 是 `direct-compiler`，compiler 为 `gcc`�
 - `detectCProject()`：识别 CMake、Ninja、Make、MSVC solution/project，以及无构建标记的直接 C 源项目；
 - `BuildAdapter`：统一 `plan()` 和 `build()` 接口；
 - `DirectCompilerAdapter`：基于 HostPreflight 生成无 shell 的程序和 argv；
-- `CMakeAdapter`：生成 configure + build 两步无 shell 计划，兼容 Visual Studio 多配置输出目录；
+- `CMakeAdapter`：生成 configure + build 两步无 shell 计划，兼容 Visual Studio 多配置输出；
+- `NinjaAdapter`：执行结构化 `ninja -C <build_dir> [target]` 计划，并对无法证明可注入的 sanitizer/determinism flags fail-closed；
 - `SessionStore.projectDetection()`：保存项目探测结果供恢复和审计；
-- AgentPipeline：在 Analyze Agent 之前完成 HostPreflight + ProjectDetection，并将两者注入上下文。
+- AgentPipeline：在 Analyze Agent 之前完成 HostPreflight + ProjectDetection，并将两者注入上下文；
+- `CTestSuiteSpec` / `CTestSuiteResult` 与 CTest Runner：保存套件级输出、超时、Not Run、TAP 内层失败和目标归属；
+- `SanitizerResult`：保存 sanitizer 能力、逐用例诊断、unsupported/build/runtime/timeout 分类，以及 baseline/candidate 独立结果。
 
 当前 Adapter 状态：
 
@@ -525,9 +528,10 @@ Claude 实际生成过的 BuildPlan 是 `direct-compiler`，compiler 为 `gcc`�
 
 当前稳定路径包括显式源文件 + `direct-compiler` 和 CMake + `CMakeAdapter`。Ninja、Make、MSVC solution 以及自定义构建脚本仍主要依靠探测结果阻断或 legacy fallback，尚未实现对应的结构化执行 Adapter。
 
-### 8.2 HostPreflight 优先保证低延迟
 
-当前直接扫描 PATH，版本字段可能为 `null`。这足够支持编译器选择，但还不能证明精确版本、ABI、sysroot、头文件搜索路径和链接器状态。
+### 8.2 HostPreflight 与确定性探针
+
+HostPreflight 默认只直接扫描 PATH，保证普通分析和构建路径低延迟；版本字段可能为 `null`。当 EnvironmentSpec 请求 sanitizer 时，验证阶段显式执行一次编译/链接探针，记录 ASan/UBSan 能力，不能仅凭 flag 名称推断支持。
 
 ### 8.3 确定性 shim 仍是显式配置
 
@@ -716,10 +720,14 @@ DependencyController
    - 执行 `ctest -C Debug --output-on-failure`；
    - 解析测试结果、失败日志和环境失败；
    - 增加测试套件级 timeout 与子进程清理。
+   - **已完成实现与实测**：CTest Runner 已支持 shared/static 顶层 target、TAP 内层失败用例归属、Not Run 识别、超时和 Windows 进程树清理。
+   - libuv `v1.52.1` Debug shared/static 构建成功；CTest 两个顶层测试均执行，但当前 Windows 主机存在环境敏感失败：`fs_event_watch_dir_short_path`、`getaddrinfo_fail`、`getaddrinfo_fail_sync`、`tcp_connect_timeout`（static 目标另有同类短路径/DNS/连接超时结果）。因此阶段二结果为 **FAIL（可解释环境失败）**，不是 baseline 全通过。
 3. **阶段三：Sanitizer 基线**
    - 按 HostPreflight 能力选择 ASan / UBSan；
    - 记录 sanitizer 构建和运行结果；
    - 将未定义行为单独分类为验证失败。
+   - **已完成实现**：`sanitizer-result` 独立 Artifact、能力实测、direct-compiler/CMake flags 注入、逐用例诊断归类、unsupported/build/runtime/timeout 分级、baseline/candidate 独立持久化。
+   - 当前主机显式探测结果：GCC 可用，但 `-fsanitize=address` 链接缺少 `-lasan`，`-fsanitize=undefined` 链接缺少 `-lubsan`；因此 sanitizer 阶段在本机为 **UNSUPPORTED**，流程 fail-closed，不会伪造 sanitizer pass。
 4. **阶段四：受控小范围重构**
    - 先选择 `src/strscpy.c`、`src/strtok.c`、`src/version.c` 等低风险单文件；
    - 保持 ABI/API、官方测试、sanitizer 结果不变；
@@ -744,24 +752,36 @@ bun run demo:libuv
 
 源码默认放在临时目录，不提交第三方源码到本仓库；也可以通过 `--source <path>` 使用已有 checkout。
 
-当前建议先完成阶段一，再决定是否把 CTest 结果协议并入主 Orchestrator。
+阶段一已经完成；CTest 结果协议和 sanitizer 结果协议已接入运行层，但大型第三方套件的环境失败不会被自动忽略。
 
-### 12.4 阶段一实测结果
+### 12.4 阶段一至三实测结果
 
-已执行：
-
-```bash
-bun run demo:libuv
-```
-
-结果：
+阶段一：
 
 - 固定版本 `v1.52.1` clone 成功；
 - `ProjectDetection.primary_build_system = cmake`；
 - `ProjectDetection.status = ready`；
-- 当前 Windows 主机 CMake 使用 Visual Studio 多配置生成器；
-- `uv_run_tests` Debug target 构建成功；
-- 实际产物：`build/Debug/uv_run_tests.exe`；
-- 构建日志中没有报告编译失败。
+- Windows CMake 使用 Visual Studio 多配置生成器；
+- shared/static 测试目标构建成功，实际产物包括 `build/Debug/uv_run_tests.exe` 和 `build/Debug/uv_run_tests_a.exe`。
 
-本次只完成阶段一 baseline，尚未执行 libuv 官方 CTest 套件。
+阶段二：
+
+- `ctest -C Debug --output-on-failure` 已实际执行两个顶层测试目标；
+- CTest Runner 已解析 TAP 内层失败、Not Run 和目标归属；
+- 当前主机结果为 **FAIL（可解释环境失败）**，失败涉及短路径文件监听、DNS 负向解析和 TCP 超时行为；不能作为“全套 baseline 通过”证据。
+
+阶段三：
+
+- sanitizer 能力探针、编译 flags 注入、逐用例运行和独立 Artifact 已实现；
+- 当前 GCC 可用，但 `-fsanitize=address` 缺少 `-lasan`，`-fsanitize=undefined` 缺少 `-lubsan`；
+- 本机 sanitizer 结果为 **UNSUPPORTED**，流程 fail-closed，未伪造 pass；获得可用 sanitizer 工具链后再执行 libuv sanitizer baseline。
+
+大型 libuv CTest 通常需要数分钟；普通 TypeScript 类型检查和本地测试不依赖该长流程。源码仍只保存在临时目录。
+### 12.5 Ninja Adapter 实测结果
+
+- `build.ninja` 位于常见 `build/` 目录时，项目探测仍能识别 Ninja，不会因跳过生成目录而错误回退到 direct C；
+- `ProjectDetection.primary_build_system = ninja`；
+- `ProjectDetection.status = ready`（当前主机 Ninja 可用）；
+- 真实 Ninja C 项目构建成功，`build/app.exe` 存在；
+- 验证命令：`bunx tsc --noEmit`、`bun test tests/build-infrastructure.test.ts`（5 pass）、`bun test tests/environment.test.ts`（3 pass）、`git diff --check`；
+- Ninja 适配器尚未支持对已有 Ninja graph 自动注入 sanitizer 或 determinism shim，相关请求会明确失败，不会静默忽略。
