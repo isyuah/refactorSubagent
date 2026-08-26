@@ -421,13 +421,13 @@ bun test
 最新结果：
 
 ```text
-27 pass
+32 pass
 0 fail
-51 expect() calls
-Ran 27 tests across 6 files.
+64 expect() calls
+Ran 32 tests across 7 files.
 ```
 
-覆盖内容包括原有状态机、Agent、环境边界测试、C 项目构建系统识别、CTest 解析，以及 sanitizer 能力门禁和独立证据层。
+覆盖内容包括原有状态机、Agent、环境边界测试、C 项目构建系统识别、CTest 解析、sanitizer 能力门禁、Ninja 适配器，以及本次新增的 CLI 和 Workflow Foundation。
 - 状态机合法路径到 ACCEPTED；
 - R1 越级/乱序拒绝；
 - R2 非法 Artifact 拒绝；
@@ -440,9 +440,20 @@ Ran 27 tests across 6 files.
 - session reopen 后从持久化状态继续；
 - Agent JSON 解析和失败处理；
 - HostPreflight 工具映射、懒加载 sanitizer 探针和 argv NUL 边界；
-- DirectCompilerAdapter / CMakeAdapter 构建计划及 sanitizer flags 门禁；
+- DirectCompilerAdapter / CMakeAdapter / NinjaAdapter 构建计划及门禁；
 - sanitizer unsupported、诊断分类和 baseline/candidate 结果隔离；
-- CTest Not Run、TAP 内层失败及 shared/static target 归属解析。
+- CTest Not Run、TAP 内层失败及 shared/static target 归属解析；
+- CLI 参数、JSON 输入、错误码、Workflow timeout 和源策略拒绝。
+### 7.5 CLI 与 Workflow Foundation
+
+已实现：
+
+- `refactor-subagent preflight [repo] [--format human|json]`；
+- `refactor-subagent workflow run <entry.ts>`，支持 JSON 输入、工作目录、timeout 和 JSON 输出；
+- Workflow 在独立 Bun 子进程执行，stdout 使用机器可读 envelope；
+- 源策略拒绝直接访问 `node:` / `bun:`、`process.*`、`Bun.*` 等主机 API；
+- 当前版本只提供纯计算 Workflow Context，不提供文件、进程或网络能力；
+- 这是一层执行协议和策略检查，不宣称是最终 OS 级安全沙箱。
 
 ### 7.3 不依赖 Claude 的真实 C 差分验证
 
@@ -690,13 +701,15 @@ DependencyController
   → 程序裁决 ACCEPTED / REJECTED
 ```
 
-下一步最值得投入的不是更复杂的 prompt，而是：
+下一步按以下顺序推进：
 
-1. 完成主要 C 构建系统 Adapter；
-2. 增加 ASan / UBSan 和未定义行为分类；
-3. 扩展副作用观测、CTest 和进程树管理；
-4. 提供可恢复 CLI；
-5. 稳定后再扩展多语言。
+1. 完成可运行的 BuildWorkflow 规划、manifest 和 BuildArtifact；
+2. 接入 Capability Context，替换 Workflow 的有限纯计算上下文；
+3. 用通用 BuildWorkflow 表达 libuv 构建流程；
+4. 为 Workflow Agent 编写指导 skill；
+5. 分析 libuv 并生成测试任务；
+6. 选择一个任务运行完整真实流程，根据证据优化系统；
+7. 暂不继续增加 Make/MSVC 等 Adapter，Adapter 只作为 Capability 层便捷方式。
 
 ## 12. 当前临时目标：libuv 大型 CMake 基准
 
