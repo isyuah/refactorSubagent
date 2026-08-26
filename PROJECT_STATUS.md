@@ -421,10 +421,10 @@ bun test
 最新结果：
 
 ```text
-44 pass
+48 pass
 0 fail
-101 expect() calls
-Ran 44 tests across 10 files.
+116 expect() calls
+Ran 48 tests across 12 files.
 ```
 
 覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation、BuildWorkflow 注册表与 executor，以及 Capability Context 文件/进程/工具能力。
