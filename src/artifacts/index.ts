@@ -8,6 +8,8 @@ import { ObservationTrace } from "./observation-trace.js";
 import { PatchRecord } from "./patch-record.js";
 import { ComparisonResult } from "./comparison-result.js";
 import { SanitizerResult } from "./sanitizer.js";
+import { BuildWorkflowManifest, BuildWorkflowOutput } from "./build-workflow.js";
+import { RefactorTestTask } from "./refactor-task.js";
 
 export * from "./common.js";
 export * from "./behavior-contract.js";
@@ -20,9 +22,10 @@ export * from "./patch-record.js";
 export * from "./comparison-result.js";
 export * from "./host-preflight.js";
 export * from "./project-detection.js";
+export * from "./build-workflow.js";
 export * from "./ctest-suite.js";
 export * from "./sanitizer.js";
-export * from "./build-workflow.js";
+export * from "./refactor-task.js";
 
 /** Union of every artifact kind the orchestrator accepts (some carry cross-field
  * refinements, so plain union instead of discriminatedUnion). */
@@ -36,6 +39,7 @@ export const Artifact = z.union([
   PatchRecord,
   ComparisonResult,
   SanitizerResult,
+  RefactorTestTask,
 ]);
 
 export type AnyArtifact = z.infer<typeof Artifact>;

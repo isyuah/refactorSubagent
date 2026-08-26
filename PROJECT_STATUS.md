@@ -474,6 +474,18 @@ Ran 42 tests across 9 files.
 - guidance 明确禁止 shell command、绝对路径、未测工具、平台后缀和猜测式 fallback；
 - Agent Guidance 测试覆盖 fail-closed 规则和事实上下文绑定。
 
+### 7.9 libuv RefactorTestTask
+
+已实现：
+
+- `RefactorTestTask` Artifact：固定项目/版本、BuildWorkflow identity、CTest suite、baseline 摘要、失败分类、候选文件和差分测试计划；
+- `createLibuvRefactorTask()`：从真实 checkout 证据生成任务，不扫描不到的测试或猜测覆盖；
+- 首批候选：`src/strscpy.c`、`src/strtok.c`、`src/version.c`；
+- `strscpy`/`strtok` 由 `test/test-strscpy.c`、`test/test-strtok.c` 官方测试覆盖；
+- `version.c` 在 v1.52.1 checkout 中没有专门 `test-version.c`，标记为 `dedicated-harness-required`；
+- 6 个首批 case：strscpy 零长度/精确填充/截断，strtok 空分隔符/多分隔符，version 公共值；
+- 失败 baseline 必须有显式分类，环境失败仍保留为阻断证据，不会自动忽略。
+
 ### 7.3 不依赖 Claude 的真实 C 差分验证
 
 命令：
@@ -726,7 +738,7 @@ DependencyController
 2. **已完成：** Capability Context、Broker 权限策略、受控文件/进程能力和 C 构建便捷 Adapter；
 3. **已完成：** 通用 BuildWorkflow executor，以及固定 libuv v1.52.1 CMake Debug workflow；
 4. **已完成：** BuildWorkflow Agent 指导、只读提案入口和结构化输出校验；
-5. 分析 libuv 并生成测试任务；
+5. **已完成：** libuv CTest 基线分析、失败分类、RefactorTestTask 和首批差分测试计划；
 6. 选择一个任务运行完整真实流程，根据证据优化系统；
 7. 暂不继续增加 Make/MSVC 等 Adapter，Adapter 只作为 Capability 层便捷方式。
 
