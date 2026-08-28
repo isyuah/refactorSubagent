@@ -9,9 +9,30 @@ import {
   type HostPreflight,
   type ProjectDetection,
 } from "../artifacts/index.js";
-import { runAgent, extractJson } from "./driver.js";
+import {
+  DEFAULT_AGENT_FORBIDDEN_GLOBS,
+  DEFAULT_AGENT_READABLE_GLOBS,
+  runAgent,
+  extractJson,
+} from "./driver.js";
 import { ANALYZE_SYSTEM, analyzePrompt } from "./prompts.js";
 
+const ANALYZE_READABLE_GLOBS = [
+  ...DEFAULT_AGENT_READABLE_GLOBS,
+  "CMakeLists.txt",
+  "cmake/**",
+  "config/**",
+] as const;
+
+function analysisReadableGlobs(project?: ProjectDetection): string[] {
+  const globs = new Set<string>(ANALYZE_READABLE_GLOBS);
+  for (const file of project?.source_files ?? []) {
+    const parts = file.split("/");
+    if (parts.some((part) => ["test", "tests", "baseline", ".refactor", "node_modules"].includes(part))) continue;
+    if (parts.length > 1) globs.add(`${parts.slice(0, -1).join("/")}/**`);
+  }
+  return [...globs];
+}
 const ANALYZE_OUTPUT_FORMAT = {
   type: "json_schema" as const,
   schema: {
@@ -68,6 +89,8 @@ export async function analyzeRepo(
       prompt,
       systemPrompt: ANALYZE_SYSTEM,
       allowedTools: ["Read", "Glob", "Grep"],
+      readableGlobs: analysisReadableGlobs(project),
+      forbiddenGlobs: [...DEFAULT_AGENT_FORBIDDEN_GLOBS],
       outputFormat: ANALYZE_OUTPUT_FORMAT,
       maxTurns: 24,
     });

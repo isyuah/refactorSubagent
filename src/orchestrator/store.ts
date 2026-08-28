@@ -22,6 +22,8 @@ export const SessionState = z.enum([
   "SCOPE_READY",
   "DEPENDENCY_READY",
   "TESTS_READY",
+  "BUILD_WORKFLOW_READY",
+  "TEST_WORKFLOW_READY",
   "ENV_READY",
   "BASELINE_READY",
   "PATCH_CREATED",
@@ -100,23 +102,46 @@ export class SessionStore {
     return this.file.history;
   }
 
-  /** Storage file stem: build-scoped artifacts keep baseline/candidate separate. */
+  /** Storage file stem: build/test resolutions and build-scoped artifacts stay distinct. */
   private static storageStem(a: AnyArtifact): string {
     if (a.kind === "observation-trace" || a.kind === "sanitizer-result") {
       return `${a.kind}.${a.build}`;
     }
+    if (a.kind === "workflow-resolution") {
+      return `${a.kind}.${a.workflow_kind}`;
+    }
     return a.kind;
   }
 
-  /** Load a previously stored, already-validated artifact; null if absent. */
+  /** Load one uniquely named artifact; build/test resolutions use workflowResolution(). */
   artifact<K extends AnyArtifact["kind"]>(
     kind: K,
   ): Extract<AnyArtifact, { kind: K }> | null {
-    const path = join(this.sessionDir, "artifacts", `${kind}.json`);
+    if (kind === "workflow-resolution") return null;
+    const stem = kind === "observation-trace" || kind === "sanitizer-result"
+      ? `${kind}.baseline`
+      : kind;
+    const path = join(this.sessionDir, "artifacts", `${stem}.json`);
     if (!existsSync(path)) return null;
     return Artifact.parse(JSON.parse(readFileSync(path, "utf8"))) as Extract<
       AnyArtifact,
       { kind: K }
+    >;
+  }
+
+  /** Load a persisted Workflow resolution by its explicit workflow kind. */
+  workflowResolution(
+    workflowKind: "build" | "test",
+  ): Extract<AnyArtifact, { kind: "workflow-resolution" }> | null {
+    const path = join(
+      this.sessionDir,
+      "artifacts",
+      `workflow-resolution.${workflowKind}.json`,
+    );
+    if (!existsSync(path)) return null;
+    return Artifact.parse(JSON.parse(readFileSync(path, "utf8"))) as Extract<
+      AnyArtifact,
+      { kind: "workflow-resolution" }
     >;
   }
 

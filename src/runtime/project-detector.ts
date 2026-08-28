@@ -138,7 +138,11 @@ function adapterAvailable(
   host?: HostPreflight,
 ): boolean {
   if (!host) return false;
-  if (adapter === "cmake") return host.tools.cmake?.available === true;
+  if (adapter === "cmake") {
+    return host.tools.cmake?.available === true &&
+      host.cmake.configure_probe === "pass" &&
+      host.cmake.build_probe === "pass";
+  }
   if (adapter === "ninja") return host.tools.ninja?.available === true;
   return false;
 }

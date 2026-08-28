@@ -26,6 +26,11 @@ export const ScopeManifest = z
     (m) =>
       m.editable_files.every((t) => matchGlob(t.file, m.readable_globs)),
     { message: "every editable file must also be covered by readable_globs" },
+  )
+  .refine(
+    (m) => m.readable_globs.every((readable) => !m.forbidden_globs.some((forbidden) =>
+      globScopesMayOverlap(readable, forbidden))),
+    { message: "readable_globs and forbidden_globs must not overlap" },
   );
 
 /** Minimal glob matcher supporting **, * and ? — sufficient for manifest checks. */
@@ -52,6 +57,19 @@ function globToRegExp(glob: string): RegExp {
     }
   }
   return new RegExp(`^${re}$`);
+}
+function globScopesMayOverlap(left: string, right: string): boolean {
+  const leftPrefix = literalGlobPrefix(left);
+  const rightPrefix = literalGlobPrefix(right);
+  return leftPrefix.length === 0 || rightPrefix.length === 0 ||
+    leftPrefix === rightPrefix ||
+    leftPrefix.startsWith(`${rightPrefix}/`) ||
+    rightPrefix.startsWith(`${leftPrefix}/`);
+}
+
+function literalGlobPrefix(glob: string): string {
+  const wildcard = glob.search(/[?*]/);
+  return (wildcard < 0 ? glob : glob.slice(0, wildcard)).replace(/[\\/]+$/, "");
 }
 
 export type ScopeManifest = z.infer<typeof ScopeManifest>;

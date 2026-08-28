@@ -82,7 +82,7 @@ export async function runAgentVerification(
     const editable = analysis.scope.editable_files.map((t) => t.file);
 
     // 3. Refactor inside the candidate worktree (hook-enforced scope).
-    const refactor = await runRefactor(wt.candidateDir, req.task, editable);
+    const refactor = await runRefactor(wt.candidateDir, req.task, analysis.scope);
 
     // 4. Program-owned commit of whatever the agent actually changed.
     const status = gitIn(wt.candidateDir, ["status", "--porcelain"]);

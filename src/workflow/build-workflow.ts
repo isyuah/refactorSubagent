@@ -13,36 +13,45 @@ import { runWorkflow } from "./runner.js";
 import type { WorkflowFacts } from "./types.js";
 
 export interface ResolveBuildWorkflowOptions {
-  entry: string;
-  workflowId: string;
-  revision: number;
-  cwd: string;
-  host?: HostPreflight;
-  project?: ProjectDetection;
-  timeoutMs?: number;
+  /** Workflow module path, relative to entryRoot when not absolute. */
+  readonly entry: string;
+  /** Optional expected identity; generated/provided workflows may establish it themselves. */
+  readonly workflowId?: string;
+  readonly revision?: number;
+  /** Backward-compatible root for the workflow and target project. */
+  readonly cwd: string;
+  /** Root that contains the workflow source. Defaults to cwd. */
+  readonly entryRoot?: string;
+  /** Target project exposed through workflow capabilities. Defaults to cwd. */
+  readonly workspaceRoot?: string;
+  readonly host?: HostPreflight;
+  readonly project?: ProjectDetection;
+  readonly timeoutMs?: number;
 }
 
 export interface BuildWorkflowResolution {
   /** Absolute source entry used to produce this resolution. */
-  entry: string;
-  manifest: BuildWorkflowManifestValue;
-  output: BuildWorkflowOutputValue;
-  sourceHash: string;
+  readonly entry: string;
+  readonly manifest: BuildWorkflowManifestValue;
+  readonly output: BuildWorkflowOutputValue;
+  readonly sourceHash: string;
 }
 
 /** Run a BuildWorkflow and validate its compatibility-bridge output. */
 export async function resolveBuildWorkflow(
   options: ResolveBuildWorkflowOptions,
 ): Promise<BuildWorkflowResolution> {
-  const entry = absoluteWithin(options.entry, options.cwd);
+  const entryRoot = resolve(options.entryRoot ?? options.cwd);
+  const entry = absoluteWithin(options.entry, entryRoot, "workflow entry");
   const checked = checkWorkflowSource(entry);
   if (!checked.ok) throw new Error(checked.reason ?? "build workflow source rejected");
 
   const sourceHash = sha256(checked.source);
+  const workspaceRoot = resolve(options.workspaceRoot ?? options.cwd);
   const facts: WorkflowFacts = { host: options.host, project: options.project };
   const result = await runWorkflow({
     entry,
-    cwd: options.cwd,
+    cwd: workspaceRoot,
     input: { kind: "build-workflow-input", version: 1 },
     facts,
     timeoutMs: options.timeoutMs ?? 60_000,
@@ -50,16 +59,15 @@ export async function resolveBuildWorkflow(
   if (result.status !== "pass") {
     throw new Error(`build workflow failed: ${result.failure ?? result.status}`);
   }
-
   const output = BuildWorkflowOutput.parse(result.result);
-  if (output.workflow_id !== options.workflowId) {
+  if (options.workflowId !== undefined && output.workflow_id !== options.workflowId) {
     throw new Error(
       `build workflow id mismatch: expected '${options.workflowId}', got '${output.workflow_id}'`,
     );
   }
-  if (output.workflow_revision !== options.revision) {
+  if (options.revision !== undefined && output.workflow_revision !== options.revision) {
     throw new Error(
-      `build workflow revision mismatch: expected ${String(options.revision)}, got ${String(output.workflow_revision)}`,
+      `build workflow revision mismatch: expected ${String(options.revision)}, got '${output.workflow_revision}'`,
     );
   }
   if (
@@ -73,9 +81,9 @@ export async function resolveBuildWorkflow(
   const manifest = BuildWorkflowManifest.parse({
     kind: "build-workflow-manifest",
     version: 1,
-    id: options.workflowId,
-    revision: options.revision,
-    entry: relative(options.cwd, entry).split(sep).join("/"),
+    id: output.workflow_id,
+    revision: output.workflow_revision,
+    entry: relative(entryRoot, entry).split(sep).join("/"),
     source_hash: sourceHash,
     workflow_api_version: 1,
     applies_to: {
@@ -99,12 +107,12 @@ function requiredTools(output: BuildWorkflowOutputValue): string[] {
   return [];
 }
 
-function absoluteWithin(entry: string, cwd: string): string {
-  const root = resolve(cwd);
-  const absolute = isAbsolute(entry) ? normalize(entry) : resolve(root, entry);
-  const rel = relative(root, absolute);
+function absoluteWithin(entry: string, root: string, label: string): string {
+  const base = resolve(root);
+  const absolute = isAbsolute(entry) ? normalize(entry) : resolve(base, entry);
+  const rel = relative(base, absolute);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error(`workflow entry escapes working directory: ${entry}`);
+    throw new Error(`${label} escapes root: ${entry}`);
   }
   return absolute;
 }

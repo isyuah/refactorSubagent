@@ -7,6 +7,13 @@
     "cli": "bun run scripts/cli.ts",
     "demo": "bun run scripts/demo.ts",
     "demo:libuv": "bun run scripts/demo-libuv.ts",
+    "demo:libuv:agent": "bun run scripts/demo-libuv-agent.ts",
+    "e2e:cmake": "bun run scripts/e2e-cmake.ts",
+    "e2e:differential:safe": "bun run scripts/e2e-differential.ts --variant safe",
+    "e2e:differential:broken": "bun run scripts/e2e-differential.ts --variant broken",
+    "e2e:agent": "bun run scripts/e2e-agent.ts",
+    "e2e:generated-workflow": "bun run scripts/e2e-generated-workflow.ts",
+    "e2e:libuv": "bun run scripts/demo-libuv.ts",
     "test": "bun test"
   },
   "dependencies": {

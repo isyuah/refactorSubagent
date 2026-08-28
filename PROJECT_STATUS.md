@@ -421,13 +421,13 @@ bun test
 最新结果：
 
 ```text
-48 pass
+52 pass
 0 fail
-116 expect() calls
-Ran 48 tests across 12 files.
+153 expect() calls
+Ran 52 tests across 13 files.
 ```
 
-覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation、BuildWorkflow 注册表与 executor，以及 Capability Context 文件/进程/工具能力。
+覆盖内容包括状态机、Agent、主机环境、C 项目构建/CTest/sanitizer/Ninja、CLI/Workflow Foundation、BuildWorkflow 注册表与 executor、Capability Context 文件/进程/工具能力，以及 E2E 观测 Logger/Dashboard/SSE。
 - 状态机合法路径到 ACCEPTED；
 - R1 越级/乱序拒绝；
 - R2 非法 Artifact 拒绝；
@@ -839,3 +839,101 @@ bun run demo:libuv
 - 真实 Ninja C 项目构建成功，`build/app.exe` 存在；
 - 验证命令：`bunx tsc --noEmit`、`bun test tests/build-infrastructure.test.ts`（5 pass）、`bun test tests/environment.test.ts`（3 pass）、`git diff --check`；
 - Ninja 适配器尚未支持对已有 Ninja graph 自动注入 sanitizer 或 determinism shim，相关请求会明确失败，不会静默忽略。
+## 12.6 真实 Claude 全流程验收记录（2026-08-26）
+
+执行入口：`bun run scripts/demo-libuv-agent.ts --source <libuv-checkout> --session libuv-agent-live-001`。
+
+本次运行实际完成：
+
+- Claude 分析 Artifact 通过 Host Schema 校验：`behavior-contract`、`scope-manifest`、`dependency-manifest`、`test-spec`、`environment-spec` 均已保存；声明的唯一可编辑文件为 `src/strscpy.c`。
+- Refactor Agent 修改范围内运行，`scope_denials=[]`；候选 patch 仅包含 `src/strscpy.c`。
+- baseline 和 candidate 的 CMake configure/build 均成功，两个构建步骤退出码均为 `0`，构建产物检查通过。
+- baseline/candidate 均执行 shared 与 static 两个顶层 CTest 目标；每个版本的 CTest 退出码均为 `8`，套件状态均为 `fail`，完整测试过程均被记录。
+
+失败分类：
+
+- 两侧共同出现：`fs_event_watch_dir_short_path`、`getaddrinfo_fail`、`getaddrinfo_fail_sync`、`tcp_connect_timeout`；baseline 另出现 `tcp_close_while_connecting`，candidate 则在另一个顶层目标中出现该测试。
+- baseline 的 11 条失败记录均被分类为 `environment`，且 `related_to_scope=false`；证据对应 Windows 短路径文件监听、DNS 负向解析和 TCP 超时/连接时序行为，不指向 `src/strscpy.c`。
+- CTest 比较器发现失败集合发生顶层目标漂移：新增 `uv_test_a:tcp_close_while_connecting`，移除 `uv_test:tcp_close_while_connecting`。因此比较结果为 `inconsistent`，不是一致通过。
+
+验收结论：
+
+- 会话最终状态为 `REJECTED`，状态机从 `VERIFICATION_RUNNING` 转入 `REJECTED`；候选 patch 未被接受。
+- 这是符合 fail-closed 规则的验收结果：构建成功和大部分测试一致不足以证明行为保持，环境敏感失败集合发生漂移时必须拒绝自动接受。
+- 本次证明的是“真实 Claude → 结构化 Artifact → 受限修改 → 双 worktree 构建 → 完整 CTest → 程序化拒绝”链路可运行；不证明该 libuv patch 已安全，也不证明大型 CTest baseline 在当前 Windows 主机上全通过。
+- 运行证据保存在 `.refactor/e2e/libuv-agent-live-001/` 下的 `run.jsonl`、`state.json` 和 `artifacts/`；关键 Artifact 包括 `patch-candidate.json`、`baseline-build.json`、`candidate-build.json`、`ctest-baseline.json`、`ctest-candidate.json`、`ctest-comparison-result.json`。
+## 13. 本次收尾验证（2026-08-27）
+
+### 13.1 实时观测与 WebUI
+
+- `bun test tests/e2e-observability.test.ts`：3 pass、0 fail、26 个断言；覆盖 `E2ELogger` 的 `state.json` / `run.jsonl` / Artifact / 日志持久化、Dashboard HTTP 资源接口、root containment / 非法路径拒绝，以及 SSE 首帧和 `after` 游标增量事件。
+- 真实启动 `scripts/e2e-dashboard.ts` 后用浏览器检查桌面和 390px 窄屏页面：运行列表、拒绝状态和失败原因、Artifact 预览、日志预览均可用；追加事件后页面事件数由 4 增至 5，最后事件同步更新，连接状态为 `SSE 已连接`。
+- 窄屏实测：`body.scrollWidth = 390`，详情栏由 sticky 变为 static，运行队列切换为 block 布局，无横向溢出。
+
+### 13.2 四项 targeted E2E
+
+| 命令 | 实测结果 |
+|---|---|
+| `bun run e2e:cmake` | `e2e-cmake-smoke@1`；CMake configure/build 均退出码 `0`，产物存在，`status=pass` |
+| `bun run e2e:differential:safe` | `expected=ACCEPTED`、`actual=ACCEPTED`；状态机走到 `VERIFICATION_RUNNING -> ACCEPTED` |
+| `bun run e2e:differential:broken` | `expected=REJECTED`、`actual=REJECTED`；状态机走到 `VERIFICATION_RUNNING -> REJECTED` |
+| `bun run e2e:agent` | 真实 Claude Analyze → Refactor → 程序验证完成，`state=ACCEPTED`；Hook 记录多次越界 Read/Glob/Grep 拒绝，`scope_denials` 非空，说明拒绝边界实际生效 |
+
+四项 targeted 命令均以退出码 `0` 结束，且接受/拒绝结果与场景预期一致。
+
+### 13.3 完整 libuv CTest
+
+命令：
+
+```bash
+bun run e2e:libuv -- --source C:/Users/Yu/AppData/Local/Temp/refactor-libuv-in4Ow9/libuv
+```
+
+实测结果：
+
+- 固定 checkout 的 CMake configure/build 成功；shared/static 测试程序均生成。
+- CTest 实际运行约 `363.72 sec`；`uv_test` 与 `uv_test_a` 两个顶层目标均执行完成。
+- `strscpy`、`strtok` 目标用例均为 `ok`。
+- 套件最终为 `0% tests passed, 2 tests failed out of 2`，退出码非零；失败集中在 Windows 环境敏感的 `fs_event_watch_dir_short_path`、`getaddrinfo_fail`、`getaddrinfo_fail_sync`、`tcp_close_while_connecting` 和 `tcp_connect_timeout`。
+- 该结果符合 fail-closed 预期：完整套件失败被如实保留，未被降级为通过。首次使用 Windows 反斜杠参数的调用在进入 CTest 前因命令参数转义失败；改用正斜杠绝对路径后完成了上述真实 CTest，前者不计入套件结果。
+
+### 13.4 最终工程检查
+
+```text
+bunx tsc --noEmit       → pass
+bun test                → 52 pass / 0 fail（13 files，153 expect()）
+git diff --check         → pass
+```
+
+当前结论：实时观测闭环、四项 targeted E2E 和完整 libuv CTest 均已获得真实运行证据；小型 CMake/差分/Claude 场景符合预期，完整 libuv 官方套件受当前 Windows 网络/文件监听环境影响保持非绿色，系统继续按 fail-closed 规则拒绝将其视为安全接受。
+
+### 13.5 生成 TypeScript Workflow 最终闭环（r11）
+
+- 为 Windows + CMake 场景修正了生成 BuildWorkflow 的目标策略：`target: null` 构建默认目标，确保 `trim_app` 与 CTest 所需的 `trim_test` 同时生成；主 Artifact 仍校验 `build/trim_app`。
+- 为 Claude Agent SDK 的 PreToolUse Hook 增加了相对工具路径规范化：通过 Scope 校验的 `Read`、`Glob`、`Grep`、`Write` 和 `Edit` 输入统一解析到 Agent `cwd`；越界路径仍 fail-closed 拒绝。Refactor prompt 同时提供候选 worktree 的绝对可编辑路径。
+- 修正 CTest 输出解析，兼容 Windows CTest 的标准 `Passed` 行；修复前的 r10 证据显示 CTest 实际通过但未被解析器观测，修复后必需测试集合正确记录为 `trim_behavior`。
+- Dashboard 增加运行期间 Artifact/日志列表刷新，并保持 SSE 状态与资源读取的竞态保护。真实浏览器验收显示 r11 的 `ACCEPTED` 状态、73 条事件、16 个 Artifact、4 个日志文件；`ctest-comparison-result.json` 预览为 `overall=consistent`，`candidate-ctest.log` 预览为 `100% tests passed`。
+
+真实运行命令：
+
+```text
+bun run scripts/e2e-generated-workflow.ts --root C:/Users/Yu/AppData/Local/Temp/refactor-generated-workflow-final --session generated-workflow-final-r11
+```
+
+实测结果：
+
+- `generated_workflows=true`；BuildWorkflow 与 TestWorkflow 均为 generated、revision `1`，TestWorkflow runner 为 `ctest`。
+- 状态机完整走过 `INIT -> CONTRACT_READY -> SCOPE_READY -> DEPENDENCY_READY -> TESTS_READY -> BUILD_WORKFLOW_READY -> TEST_WORKFLOW_READY -> ENV_READY -> BASELINE_READY -> PATCH_CREATED -> VERIFICATION_RUNNING -> ACCEPTED`。
+- baseline/candidate CMake configure 和 build 均退出码 `0`，Artifact 均存在；baseline/candidate CTest 均退出码 `0`，测试总数 `1`、通过 `1`、失败 `0`、未运行 `0`，顶层测试均为 `trim_behavior`。
+- CTest comparison 为 `consistent`，新增失败和消失失败均为空；候选 patch 仅修改 `src/trim.c`，scope denials 非空，说明模型越界访问仍被程序 Hook 拒绝。
+- r9 已证明 CMake 默认目标修复有效但暴露了 CTest 解析边界；r10 因 Claude API `502 upstream request failed` 在 Workflow Resolution 中止；r11 在相同真实场景完成接受，r10 不计入代码失败。
+
+本轮工程检查：
+
+```text
+bun test                  -> 57 pass / 0 fail（13 files，174 expect()）
+bunx tsc --noEmit         -> pass
+git diff --check           -> pass
+```
+
+当前结论：生成 BuildWorkflow/TestWorkflow、Claude 受限重构、worktree 隔离、baseline/candidate 双版本构建、CTest 差分比较、状态机接受和 Dashboard 实时观测均已在 Windows CMake fixture 上获得真实 r11 证据。该结果证明当前原型闭环可运行，不代表已达到适配任意 C 工程的生产级完成度。

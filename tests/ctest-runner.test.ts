@@ -16,6 +16,16 @@ describe("CTest output parsing", () => {
 
     expect(result.summary).toEqual({ total: 2, passed: 0, failed: 2, not_run: 1 });
   });
+  test("recognizes standard passed output without failure stars", () => {
+    const result = parseCTestOutput([
+      "    Start 1: trim_behavior",
+      "1/1 Test #1: trim_behavior ....................   Passed    0.54 sec",
+      "100% tests passed, 0 tests failed out of 1",
+    ].join("\n"));
+
+    expect(result.topLevelTests).toEqual(["trim_behavior"]);
+    expect(result.summary).toEqual({ total: 1, passed: 1, failed: 0, not_run: 0 });
+  });
 
   test("retains TAP failures with target output evidence", () => {
     const result = parseCTestOutput([

@@ -11,12 +11,18 @@ export interface CTestRunOptions {
   repoDir: string;
   spec: CTestSuiteSpec;
   host: HostPreflight;
+  /** Called as process output arrives; the runner still retains full output. */
+  onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
+  /** Optional fail-closed assertion for declared top-level tests. */
+  requiredTopLevelTests?: readonly string[];
 }
 
 export interface ParsedCTestOutput {
   summary: { total: number; passed: number; failed: number; not_run: number };
   failedTests: CTestFailure[];
+  topLevelTests: string[];
 }
+
 
 /** Run the CTest suite as one bounded process-tree operation. */
 export async function runCTest(
@@ -47,8 +53,14 @@ export async function runCTest(
   });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout.push(chunk);
+    options.onOutput?.("stdout", chunk.toString("utf8"));
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr.push(chunk);
+    options.onOutput?.("stderr", chunk.toString("utf8"));
+  });
 
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -71,10 +83,24 @@ export async function runCTest(
     version: 1 as const,
     duration_ms: duration,
     summary: parsed.summary,
+    top_level_tests: parsed.topLevelTests,
     failed_tests: parsed.failedTests,
     stdout_b64: Buffer.from(out).toString("base64"),
     stderr_b64: Buffer.from(err).toString("base64"),
   };
+  const missingRequired = (options.requiredTopLevelTests ?? [])
+    .filter((name) => !parsed.topLevelTests.includes(name));
+  if (missingRequired.length > 0) {
+    return {
+      ...common,
+      status: "error",
+      exit_code: exit.error === null ? exit.code : null,
+      failure: {
+        category: "environment",
+        explanation: `required CTest test(s) were not observed: ${missingRequired.join(", ")}`,
+      },
+    };
+  }
 
   if (timedOut) {
     return {
@@ -121,12 +147,13 @@ export function parseCTestOutput(output: string): ParsedCTestOutput {
   return {
     summary: parseSummary(output, topLevel),
     failedTests: parseFailures(output),
+    topLevelTests: topLevel.map((test) => test.name),
   };
 }
 
 function parseTopLevelTests(output: string): Array<{ name: string; status: string }> {
   const tests: Array<{ name: string; status: string }> = [];
-  const pattern = /^\s*\d+\/\d+\s+Test\s+#\d+:\s+(.+?)\s+\.*\*\*\*\s*([A-Za-z ]+?)\s+\d+(?:\.\d+)?\s*sec\s*$/gm;
+  const pattern = /^\s*\d+\/\d+\s+Test\s+#\d+:\s+(.+?)\s+\.*\s*\*{0,3}\s*([A-Za-z ]+?)\s+\d+(?:\.\d+)?\s*sec\s*$/gm;
   for (const match of output.matchAll(pattern)) {
     const name = match[1]?.trim();
     const status = match[2]?.trim().toLowerCase().replace(/\s+/g, "_");
@@ -201,6 +228,7 @@ function resultError(explanation: string, category: "environment" | "unknown"): 
     exit_code: null,
     duration_ms: 0,
     summary: { total: 0, passed: 0, failed: 0, not_run: 0 },
+    top_level_tests: [],
     failed_tests: [],
     stdout_b64: "",
     stderr_b64: Buffer.from(explanation).toString("base64"),

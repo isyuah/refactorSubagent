@@ -34,7 +34,7 @@ describe("C project detection and build infrastructure", () => {
     expect(detection.primary_build_system).toBe("cmake");
     expect(detection.adapter).toBe("cmake");
     expect(detection.status).toBe(host.tools.cmake?.available ? "ready" : "needs-adapter");
-  });
+  }, 30_000);
   test("detects and builds a real Ninja C project", () => {
     const root = tempProject();
     mkdirSync(join(root, "build"));
