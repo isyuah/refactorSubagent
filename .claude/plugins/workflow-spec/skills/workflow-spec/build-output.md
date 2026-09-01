@@ -118,24 +118,27 @@ export default async (ctx) => {
   if (!ctx.facts.host.tools.cmake?.available) {
     throw new Error("cmake is not available");
   }
-  // 2. 声明步骤（可选但推荐）
-  const [root] = await ctx.plan.declare([
-    { title: "Build", children: [{ title: "Configure" }, { title: "Compile" }] },
+  // 2. 声明步骤（可选但推荐）——id 自己取，全局唯一
+  await ctx.plan.declare([
+    { id: "build", title: "Build", children: [
+      { id: "build.configure", title: "Configure" },
+      { id: "build.compile", title: "Compile" },
+    ]},
   ]);
-  await ctx.plan.begin(root);
+  await ctx.plan.begin("build");
   try {
     // 3. configure
-    await ctx.plan.begin(root + ".1");
+    await ctx.plan.begin("build.configure");
     const cfg = await ctx.process.run({
       program: "cmake",
       args: ["-S", ".", "-B", "build", "-DBUILD_TESTING=ON"],
       timeoutMs: 120000,
     });
     if (cfg.status !== "exited" || cfg.exitCode !== 0) throw new Error("configure failed");
-    await ctx.plan.complete(root + ".1");
+    await ctx.plan.complete("build.configure");
 
     // 4. 每个 target 单独 build（CMake --target 只能一个！）
-    await ctx.plan.begin(root + ".2");
+    await ctx.plan.begin("build.compile");
     for (const target of ["uv_run_tests", "uv_run_tests_a"]) {
       const b = await ctx.process.run({
         program: "cmake",
@@ -144,10 +147,10 @@ export default async (ctx) => {
       });
       if (b.status !== "exited" || b.exitCode !== 0) throw new Error(`build ${target} failed`);
     }
-    await ctx.plan.complete(root + ".2");
-    await ctx.plan.complete(root);
+    await ctx.plan.complete("build.compile");
+    await ctx.plan.complete("build");
   } catch (err) {
-    await ctx.plan.fail(root, err instanceof Error ? err.message : String(err));  // 传字符串！
+    await ctx.plan.fail("build", err instanceof Error ? err.message : String(err));  // 传字符串！
     throw err;
   }
 

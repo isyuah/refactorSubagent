@@ -140,10 +140,11 @@ adapters.compiler.compile({ compiler?, args, cwd?, timeoutMs? });
 
 ```ts
 declare(steps: Array<{
+  id?: string;                // 可选！全局唯一的文字 id（推荐给，如 "configure"）；不给则宿主自动分配
   title: string;              // 必填
   description?: string;
-  children?: Array<{ title: string; description?: string; children?: ... }>;  // 可嵌套
-}>): Promise<string[]>;       // 返回根 id 列表，如 ["p1", "p2"]；子节点 id 是 "父id.序号"
+  children?: Array<{ id?: string; title: string; description?: string; children?: ... }>;  // 可嵌套
+}>): Promise<string[]>;       // 返回 id（根 id 按树顺序）；给了 id 就返回它，没给返回宿主的自动 id
 
 begin(id: string): Promise<void>;    // 标记开始（必须 pending 状态）
 complete(id: string): Promise<void>; // 标记完成（必须 running）
@@ -151,10 +152,27 @@ fail(id: string, error: string): Promise<void>;  // 标记失败（error 必须�
 ```
 
 **规则**：
-- id 由宿主分配，`declare` 返回；**不要自己编 id**
+- **id 推荐由你（workflow 作者）提供**，必须是**全局唯一**的文字 id（跨整个树、含子步骤）；不提供时宿主自动分配（`p1`/`父id.序号`）
+- `declare` 返回实际生效的 id——直接用它标记，不要拼接、不要猜
 - `fail` 的 error **必须是字符串**——传 Error 对象会被拒绝（宿主会 String() 化，但不要依赖）
 - 步骤数保持少量（几十个以内）
-- 子步骤 id 用 `父id.序号`（如 `"p1.1"`），从 `declare` 返回的根 id 拼接
+
+示例：
+```ts
+const [build, test] = await plan.declare([
+  { id: "build", title: "Build", children: [
+    { id: "build.configure", title: "Configure" },
+    { id: "build.compile", title: "Compile" },
+  ]},
+  { id: "test", title: "Test" },
+]);
+await plan.begin("build");
+await plan.begin("build.configure");
+await plan.complete("build.configure");
+await plan.complete("build");
+await plan.begin("test");
+await plan.complete("test");
+```
 
 ## 反例（这些写法会被拒绝）
 

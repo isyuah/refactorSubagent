@@ -71,7 +71,7 @@ const workflows = await resolveWorkflows({
   host,
   project,
   taskContext: "libuv v1.52.1: build the Debug test suite via CMake; produce uv_run_tests and uv_run_tests_a executables.",
-  workflowTimeoutMs: 600_000,
+  workflowTimeoutMs: 1_200_000,
 });
 
 console.log(`build mode: ${workflows.buildResolution.mode}`);

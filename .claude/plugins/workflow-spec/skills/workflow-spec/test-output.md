@@ -69,8 +69,8 @@ TestWorkflow 默认导出的函数**必须返回**下面形状之一。字段完
 ```ts
 export default async (ctx) => {
   const input = ctx.input as { build_workflow_id: string; build_workflow_revision: number };
-  const [root] = await ctx.plan.declare([{ title: "Generate CTest workflow" }]);
-  await ctx.plan.begin(root);
+  await ctx.plan.declare([{ id: "generate", title: "Generate CTest workflow" }]);
+  await ctx.plan.begin("generate");
   try {
     return {
       kind: "test-workflow",
@@ -87,7 +87,7 @@ export default async (ctx) => {
       environment: {},
     };
   } finally {
-    await ctx.plan.complete(root);
+    await ctx.plan.complete("generate");
   }
 };
 ```

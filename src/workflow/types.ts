@@ -200,8 +200,13 @@ export interface WorkflowPlan {
   readonly steps: readonly WorkflowPlanStep[];
 }
 
-/** Declaration shape accepted by declare(); ids are host-assigned. */
+/**
+ * Declaration shape accepted by declare(). The caller MAY supply a globally
+ * unique id (free-form text); when omitted the host assigns one. Supplied ids
+ * are validated for uniqueness across the whole tree.
+ */
 export interface PlanStepDeclaration {
+  readonly id?: string;
   readonly title: string;
   readonly description?: string;
   readonly children?: readonly PlanStepDeclaration[];
@@ -209,7 +214,7 @@ export interface PlanStepDeclaration {
 
 /** Worker-side plan declaration/marking object injected as context.plan. */
 export interface WorkflowPlanApi {
-  /** Declare a step tree. Returns the assigned root ids in tree order. */
+  /** Declare a step tree; returns the supplied ids (root ids in tree order). */
   declare(steps: readonly PlanStepDeclaration[]): Promise<readonly string[]>;
   begin(id: string): Promise<void>;
   complete(id: string): Promise<void>;

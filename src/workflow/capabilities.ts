@@ -183,6 +183,8 @@ export class LocalCapabilityBroker implements CapabilityBroker {
     }
   }
 
+  private planNextAutoId = 1;
+
   private planDeclare(declarations: readonly PlanStepDeclaration[]): string[] {
     const roots: string[] = [];
     const assign = (items: readonly PlanStepDeclaration[], parentId: string | null): string[] => {
@@ -191,9 +193,16 @@ export class LocalCapabilityBroker implements CapabilityBroker {
         if (typeof item.title !== "string" || item.title.length === 0) {
           throw new Error("plan step title must be a non-empty string");
         }
-        const id = parentId === null
-          ? `p${String(this.planRoots.length + 1)}`
-          : `${parentId}.${String(local.length + 1)}`;
+        // Caller-supplied ids are used verbatim; missing ids get a host
+        // fallback (pN / parentId.N) so a workflow that skips ids still runs.
+        const id = typeof item.id === "string" && item.id.length > 0
+          ? item.id
+          : parentId === null
+            ? `p${String(this.planNextAutoId++)}`
+            : `${parentId}.${String(local.length + 1)}`;
+        if (this.planSteps.has(id)) {
+          throw new Error(`plan step id '${id}' is not unique; ids must be globally unique`);
+        }
         const children = item.children === undefined ? [] : assign(item.children, id);
         this.planSteps.set(id, {
           title: item.title,
@@ -212,7 +221,9 @@ export class LocalCapabilityBroker implements CapabilityBroker {
 
   private planMark(method: "begin" | "complete" | "fail", id: string, error?: string): void {
     const step = this.planSteps.get(id);
-    if (step === undefined) throw new Error(`plan step ${id} was not declared`);
+    if (step === undefined) {
+      throw new Error(`plan step '${id}' was not declared; use the exact ids passed to plan.declare`);
+    }
     if (method === "begin") {
       if (step.status !== "pending") throw new Error(`plan step ${id} is already ${step.status}`);
       step.status = "running";
@@ -858,6 +869,9 @@ function planDeclarationsArg(args: unknown[], index: number): PlanStepDeclaratio
       throw new Error("plan step must be an object");
     }
     const record = item as Record<string, unknown>;
+    if (record.id !== undefined && (typeof record.id !== "string" || record.id.length === 0)) {
+      throw new Error("plan step id must be a non-empty string when provided");
+    }
     if (typeof record.title !== "string" || record.title.length === 0) {
       throw new Error("plan step title must be a non-empty string");
     }
@@ -868,6 +882,7 @@ function planDeclarationsArg(args: unknown[], index: number): PlanStepDeclaratio
       throw new Error("plan step children must be an array");
     }
     return {
+      ...(record.id === undefined ? {} : { id: record.id }),
       title: record.title,
       ...(record.description === undefined ? {} : { description: record.description }),
       ...(record.children === undefined ? {} : { children: validate(record.children as unknown[]) }),
