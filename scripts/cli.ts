@@ -1,10 +1,12 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import {
   CLI_HELP,
   CliUsageError,
   parseCliArgs,
   type CliCommand,
+  type ConfigCommand,
   type PreflightCommand,
   type WorkflowBuildCommand,
   type WorkflowListCommand,
@@ -42,6 +44,7 @@ async function execute(command: CliCommand): Promise<number> {
   if (command.kind === "preflight") return executePreflight(command);
   if (command.kind === "workflow-build") return executeWorkflowBuild(command);
   if (command.kind === "workflow-list") return executeWorkflowList(command);
+  if (command.kind === "config") return executeConfig(command);
 
   const input = command.inputFile === null
     ? command.inputJson === null
@@ -126,6 +129,29 @@ async function executeWorkflowBuild(command: WorkflowBuildCommand): Promise<numb
     if (command.manifestOut !== null) console.log(`manifest: ${resolve(cwd, command.manifestOut)}`);
     if (saved !== null) console.log(`saved: ${saved.manifestPath}`);
   }
+  return 0;
+}
+
+/** Install the tool's workflow-spec skill into project or user skills dir. */
+function executeConfig(command: ConfigCommand): number {
+  const toolSkill = resolve(import.meta.dir, "..", ".claude", "plugins", "workflow-spec", "skills", "workflow-spec");
+  if (!existsSync(join(toolSkill, "SKILL.md"))) {
+    console.error(`tool skill not found: ${toolSkill}`);
+    return 1;
+  }
+  const target = command.scope === "user"
+    ? join(homedir(), ".claude", "skills", "workflow-spec")
+    : join(process.cwd(), ".claude", "skills", "workflow-spec");
+  // Replace any existing copy atomically-ish: remove then copy.
+  rmSync(target, { recursive: true, force: true });
+  mkdirSync(dirname(target), { recursive: true });
+  cpSync(toolSkill, target, { recursive: true });
+  const files = readdirSync(target).filter((f) => f !== "SKILL.md");
+  console.log(`installed workflow-spec skill → ${target}`);
+  console.log(`  SKILL.md (frontmatter: user-invocable=false, disable-model-invocation=true)`);
+  for (const file of files) console.log(`  ${file}`);
+  console.log("The skill is force-injected by the host during workflow generation;");
+  console.log("neither you nor the model can trigger it manually.");
   return 0;
 }
 

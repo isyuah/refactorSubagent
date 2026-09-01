@@ -1,12 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
-
-/** Directory of the tool-owned workflow spec documents. */
-const SPEC_DIR = join(import.meta.dir, "workflow-specs");
-
-function specFile(name: string): string {
-  return readFileSync(join(SPEC_DIR, name), "utf8");
-}
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { dirname, relative } from "node:path";
 import { BUILD_WORKFLOW_SYSTEM, TEST_WORKFLOW_SYSTEM } from "./prompts.js";
 import { DEFAULT_AGENT_FORBIDDEN_GLOBS, DEFAULT_AGENT_READABLE_GLOBS, runAgent } from "./driver.js";
 export interface GenerateWorkflowSourceOptions {
@@ -50,23 +43,11 @@ export async function generateWorkflowSource(
   mkdirSync(dirname(outputPath), { recursive: true });
   if (existsSync(outputPath)) unlinkSync(outputPath);
   const editable = relative(options.cwd, outputPath).split("\\").join("/");
-  // Tool-owned spec documents are injected verbatim so the model cannot miss
-  // them (no dependence on readableGlobs or the project tree).
-  const specDocs = [
-    "=== WORKFLOW SPEC (host-injected, mandatory) ===",
-    specFile("README.md"),
-    "--- workflow-api.md ---",
-    specFile("workflow-api.md"),
-    options.workflowKind === "build"
-      ? "--- build-output.md ---\n" + specFile("build-output.md")
-      : "--- test-output.md ---\n" + specFile("test-output.md"),
-    options.workflowKind === "build"
-      ? "--- cmake.md (read when project is CMake) ---\n" + specFile("cmake.md")
-      : "--- ctest.md (read when project uses CTest) ---\n" + specFile("ctest.md"),
-    "=== END WORKFLOW SPEC ===",
-  ];
+  // The workflow-spec skill is force-dispatched: its full content loads into
+  // context, giving the model the exact API/schema without constant
+  // prompt bloat and without dependence on project tree read access.
   const prompt = [
-    specDocs.join("\n"),
+    "The workflow-spec skill is loaded in this session. Follow it exactly; the host rejects any deviation.",
     `Write the complete TypeScript source module to exactly this absolute path: ${outputPath}.`,
         `Hard-code these exact identity literals in the returned object; do not read them from WorkflowContext: workflow_id = "${options.workflowId}", workflow_revision = ${String(options.revision)}.`,
     `The module must default-export a function receiving WorkflowContext. Its runtime context is exactly context.apiVersion, context.workspaceRoot, context.input, context.facts.host, context.facts.project, and injected capabilities; there are no top-level workflow_id or host_preflight fields.`,
@@ -94,6 +75,7 @@ ${options.taskContext}` : "",
   const run = await runAgent({
     cwd: options.cwd,
     prompt,
+    skills: ["workflow-spec:workflow-spec"],
     systemPrompt: options.workflowKind === "build" ? BUILD_WORKFLOW_SYSTEM : TEST_WORKFLOW_SYSTEM,
         allowedTools: ["Read", "Glob", "Grep", "Write", "Edit"],
     readableGlobs: scope.readableGlobs,

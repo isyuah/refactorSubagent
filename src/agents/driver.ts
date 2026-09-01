@@ -2,6 +2,9 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
+
+/** Tool-owned plugin dir (workflow-spec skill). Relative to this source. */
+const TOOL_PLUGIN_DIR = resolve(import.meta.dir, "..", "..", ".claude", "plugins", "workflow-spec");
 import { matchGlob } from "../artifacts/scope-manifest.js";
 
 const moduleRequire = createRequire(import.meta.url);
@@ -67,6 +70,10 @@ export interface DriverOptions {
   /** Override Claude Code executable; defaults to the bundled SDK binary on Windows. */
   executable?: string;
   outputFormat?: Options["outputFormat"];
+  /** Skills to enable for this session (plugin:skill names). When omitted,
+   *  no skills are visible to the model — skills only load when listed here,
+   *  giving the host exact control over when a skill's full content loads. */
+  skills?: string[];
 }
 
 export interface ScopeCheck {
@@ -133,8 +140,10 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       allowedTools: o.allowedTools,
       permissionMode: "acceptEdits",
       settingSources: ["user"],
+      plugins: [{ type: "local", path: TOOL_PLUGIN_DIR }],
       settings: { disableAllHooks: true },
       persistSession: false,
+      ...(o.skills !== undefined ? { skills: o.skills } : {}),
       systemPrompt: o.systemPrompt,
       maxTurns: o.maxTurns ?? 32,
       abortController,

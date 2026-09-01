@@ -34,12 +34,19 @@ export interface WorkflowListCommand {
   format: CliFormat;
 }
 
+export interface ConfigCommand {
+  kind: "config";
+  /** Where to install the tool skill: project .claude/skills or user ~/.claude/skills. */
+  scope: "project" | "user";
+}
+
 export type CliCommand =
   | { kind: "help" }
   | PreflightCommand
   | WorkflowRunCommand
   | WorkflowBuildCommand
-  | WorkflowListCommand;
+  | WorkflowListCommand
+  | ConfigCommand;
 
 export class CliUsageError extends Error {
   constructor(message: string) {
@@ -56,7 +63,26 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
   }
   if (command === "preflight") return parsePreflight(args);
   if (command === "workflow") return parseWorkflow(args);
+  if (command === "config") return parseConfig(args);
   throw new CliUsageError(`unknown command '${command}'`);
+}
+
+function parseConfig(args: string[]): ConfigCommand {
+  let scope: ConfigCommand["scope"] = "project";
+  for (const arg of args) {
+    if (arg === "--user") {
+      if (scope !== "project") throw new CliUsageError("config accepts only one of --project/--user");
+      scope = "user";
+      continue;
+    }
+    if (arg === "--project") {
+      if (scope !== "project") throw new CliUsageError("config accepts only one of --project/--user");
+      continue;
+    }
+    if (arg.startsWith("--")) throw new CliUsageError(`unknown config option '${arg}'`);
+    throw new CliUsageError(`config accepts no positional arguments, got '${arg}'`);
+  }
+  return { kind: "config", scope };
 }
 
 function parsePreflight(args: string[]): PreflightCommand {
@@ -215,6 +241,15 @@ export const CLI_HELP = `Usage:
   refactor-subagent workflow run <entry.ts> [options]
   refactor-subagent workflow build <entry.ts> --id <id> --revision <n> [options]
   refactor-subagent workflow list [--cwd <dir>] [--format human|json]
+  refactor-subagent config [--project | --user]
+
+Config options:
+  --project                   Install workflow-spec skill into ./claude/skills (default)
+  --user                      Install workflow-spec skill into ~/.claude/skills
+
+The config command installs the tool's workflow-spec skill (exact API/schema
+for workflow generation). The skill is force-injected by the host; it cannot
+be triggered manually or by the model.
 
 Workflow run options:
   --cwd <dir>                 Working directory for the workflow process
