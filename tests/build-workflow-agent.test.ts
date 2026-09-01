@@ -21,8 +21,17 @@ describe("Workflow Agent guidance", () => {
     expect(BUILD_WORKFLOW_SYSTEM).toContain("workflow_revision");
     expect(BUILD_WORKFLOW_SYSTEM).toContain('The literal top-level kind must be "build-workflow-output"');
     expect(TEST_WORKFLOW_SYSTEM).toContain('kind: "test-workflow"');
-    expect(TEST_WORKFLOW_SYSTEM).toContain("build_workflow_id");
+        expect(TEST_WORKFLOW_SYSTEM).toContain("build_workflow_id");
     expect(TEST_WORKFLOW_SYSTEM).toContain('The literal top-level kind must be "test-workflow", never "test"');
+  });
+
+  test("documents workflow-driven builds and plan declarations in guidance", () => {
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("workflow-driven");
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("context.plan.declare");
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("parentId.index");
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("idempotent");
+    expect(TEST_WORKFLOW_SYSTEM).toContain("context.plan");
+    expect(TEST_WORKFLOW_SYSTEM).toContain("plan.declare");
   });
 
   test("binds identity and measured context into source-writing prompts", () => {

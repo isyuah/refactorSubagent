@@ -100,8 +100,8 @@ async function executeWorkflowBuild(command: WorkflowBuildCommand): Promise<numb
 
   const value = {
     manifest: resolution.manifest,
-    artifact: resolution.output.artifact,
-    environment: resolution.output.environment,
+    artifact: resolution.output?.artifact ?? null,
+    environment: resolution.output?.environment ?? null,
     source_hash: resolution.sourceHash,
     saved: saved === null
       ? null
@@ -115,9 +115,13 @@ async function executeWorkflowBuild(command: WorkflowBuildCommand): Promise<numb
   else {
     console.log(`workflow: ${resolution.manifest.id}@${String(resolution.manifest.revision)}`);
     console.log(`source hash: ${resolution.sourceHash}`);
-    console.log(`artifact kind: ${resolution.output.artifact.kind}`);
-    for (const [name, path] of Object.entries(resolution.output.artifact.paths)) {
-      console.log(`artifact ${name}: ${path}`);
+    if (resolution.output === null) {
+      console.log("build kind: workflow-driven (no static plan; output produced at execute)");
+    } else {
+      console.log(`artifact kind: ${resolution.output.artifact.kind}`);
+      for (const [name, path] of Object.entries(resolution.output.artifact.paths)) {
+        console.log(`artifact ${name}: ${path}`);
+      }
     }
     if (command.manifestOut !== null) console.log(`manifest: ${resolve(cwd, command.manifestOut)}`);
     if (saved !== null) console.log(`saved: ${saved.manifestPath}`);

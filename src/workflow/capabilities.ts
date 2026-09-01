@@ -20,6 +20,7 @@ import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import { diffSnapshots, type Snapshot } from "../runtime/fs-snapshot.js";
 import type { CapabilityRequest, CapabilityResponse } from "./capability-protocol.js";
 import type {
+  PlanStepDeclaration,
   ProcessHandle,
   ProcessResult,
   ProcessRunSpec,
@@ -29,6 +30,8 @@ import type {
   WorkflowFilesystem,
   WorkflowFsEffect,
   WorkflowFsSnapshot,
+  WorkflowPlan,
+  WorkflowPlanStep,
   WorkflowProcess,
   WorkflowReadyProbe,
   WorkflowTool,
@@ -152,7 +155,94 @@ export class LocalCapabilityBroker implements CapabilityBroker {
   private async dispatch(request: CapabilityRequest): Promise<unknown> {
     if (request.capability === "fs") return this.dispatchFs(request.method, request.args);
     if (request.capability === "process") return this.dispatchProcess(request.method, request.args);
+    if (request.capability === "plan") return this.dispatchPlan(request.method, request.args);
     return this.dispatchTools(request.method, request.args);
+  }
+
+  private readonly planSteps = new Map<string, {
+    readonly title: string;
+    readonly description: string | undefined;
+    status: "pending" | "running" | "completed" | "failed";
+    readonly parent: string | null;
+    readonly children: string[];
+  }>();
+  private readonly planRoots: string[] = [];
+
+  private async dispatchPlan(method: string, args: unknown[]): Promise<unknown> {
+    switch (method) {
+      case "declare":
+        return this.planDeclare(planDeclarationsArg(args, 0));
+      case "begin":
+        return this.planMark("begin", stringArg(args, 0, "id"));
+      case "complete":
+        return this.planMark("complete", stringArg(args, 0, "id"));
+      case "fail":
+        return this.planMark("fail", stringArg(args, 0, "id"), optionalErrorArg(args, 1));
+      default:
+        throw new Error(`unsupported plan capability method: ${method}`);
+    }
+  }
+
+  private planDeclare(declarations: readonly PlanStepDeclaration[]): string[] {
+    const roots: string[] = [];
+    const assign = (items: readonly PlanStepDeclaration[], parentId: string | null): string[] => {
+      const local: string[] = [];
+      for (const item of items) {
+        if (typeof item.title !== "string" || item.title.length === 0) {
+          throw new Error("plan step title must be a non-empty string");
+        }
+        const id = parentId === null
+          ? `p${String(this.planRoots.length + 1)}`
+          : `${parentId}.${String(local.length + 1)}`;
+        const children = item.children === undefined ? [] : assign(item.children, id);
+        this.planSteps.set(id, {
+          title: item.title,
+          description: item.description,
+          status: "pending",
+          parent: parentId,
+          children,
+        });
+        if (parentId === null) this.planRoots.push(id);
+        local.push(id);
+      }
+      return local;
+    };
+    return assign(declarations, null);
+  }
+
+  private planMark(method: "begin" | "complete" | "fail", id: string, error?: string): void {
+    const step = this.planSteps.get(id);
+    if (step === undefined) throw new Error(`plan step ${id} was not declared`);
+    if (method === "begin") {
+      if (step.status !== "pending") throw new Error(`plan step ${id} is already ${step.status}`);
+      step.status = "running";
+      return;
+    }
+    if (method === "complete") {
+      if (step.status !== "running") throw new Error(`plan step ${id} cannot complete while ${step.status}`);
+      step.status = "completed";
+      return;
+    }
+    // fail
+    if (step.status === "completed") throw new Error(`plan step ${id} is already completed`);
+    if (error !== undefined && error.length === 0) throw new Error("plan fail error must be a non-empty string");
+    step.status = "failed";
+  }
+
+  /** Assemble the declared plan tree with final statuses. */
+  getPlan(): WorkflowPlan {
+    const build = (ids: readonly string[]): WorkflowPlanStep[] => ids.map((id) => {
+      const step = this.planSteps.get(id);
+      if (step === undefined) throw new Error(`plan step ${id} missing during assembly`);
+      return {
+        id,
+        title: step.title,
+        ...(step.description === undefined ? {} : { description: step.description }),
+        status: step.status,
+        ...(step.children.length === 0 ? {} : { children: build(step.children) }),
+      };
+    });
+    return { steps: build(this.planRoots) };
   }
 
   private async dispatchFs(method: string, args: unknown[]): Promise<unknown> {
@@ -171,6 +261,8 @@ export class LocalCapabilityBroker implements CapabilityBroker {
         return null;
       case "exists":
         return this.exists(stringArg(args, 0, "path"));
+      case "readdir":
+        return this.readdir(stringArg(args, 0, "path"));
       case "snapshot":
         return this.snapshot(optionalStringArg(args, 0));
       case "diff":
@@ -234,6 +326,14 @@ export class LocalCapabilityBroker implements CapabilityBroker {
 
   private exists(path: string): boolean {
     return existsSync(this.resolveReadable(path));
+  }
+
+  private readdir(path: string): string[] {
+    const absolute = this.resolveReadable(path);
+    if (!existsSync(absolute) || !statSync(absolute).isDirectory()) {
+      throw new Error(`capability path is not a directory: ${path}`);
+    }
+    return readdirSync(absolute);
   }
 
   private snapshot(path: string | undefined): WorkflowFsSnapshot {
@@ -736,10 +836,44 @@ function stringArg(args: unknown[], index: number, label: string): string {
   return value;
 }
 
-function optionalStringArg(args: unknown[], index: number): string | undefined {
+/** Accept any fail payload; errors are stringified for the plan record. */
+function optionalErrorArg(args: unknown[], index: number): string | undefined {
   const value = args[index];
   if (value === undefined) return undefined;
-  return stringArg(args, index, "path");
+  if (typeof value === "string") return value;
+  return String(value);
+}
+
+ function optionalStringArg(args: unknown[], index: number): string | undefined {
+   const value = args[index];
+   if (value === undefined) return undefined;
+   return stringArg(args, index, "path");
+ }
+
+function planDeclarationsArg(args: unknown[], index: number): PlanStepDeclaration[] {
+  const value = args[index];
+  if (!Array.isArray(value)) throw new Error("plan declarations must be an array");
+  const validate = (items: unknown[]): PlanStepDeclaration[] => items.map((item) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new Error("plan step must be an object");
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.title !== "string" || record.title.length === 0) {
+      throw new Error("plan step title must be a non-empty string");
+    }
+    if (record.description !== undefined && typeof record.description !== "string") {
+      throw new Error("plan step description must be a string");
+    }
+    if (record.children !== undefined && !Array.isArray(record.children)) {
+      throw new Error("plan step children must be an array");
+    }
+    return {
+      title: record.title,
+      ...(record.description === undefined ? {} : { description: record.description }),
+      ...(record.children === undefined ? {} : { children: validate(record.children as unknown[]) }),
+    };
+  });
+  return validate(value);
 }
 
 function encodingArg(args: unknown[], index: number): "utf8" | "base64" {

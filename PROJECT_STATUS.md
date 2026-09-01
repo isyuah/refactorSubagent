@@ -99,14 +99,50 @@ src/
 │  ├─ runner.ts                  测试执行与行为采集
 │  ├─ fs-snapshot.ts             文件系统快照和副作用 diff
 │  ├─ comparator.ts              行为通道比较
-│  ├─ pipeline.ts                普通验证流水线
-│  └─ agent-pipeline.ts          Claude 分析、重构与验证串联
-│
-└─ agents/
-   ├─ prompts.ts                 分析 / 重构提示词
-   ├─ driver.ts                  Claude SDK 封装与 PreToolUse hook
-   ├─ analyze.ts                 分析 Agent
-   └─ refactor.ts                受限 Refactor Agent
+ │  ├─ pipeline.ts                普通验证流水线
+ │  └─ agent-pipeline.ts          Claude 分析、重构与验证串联
+ │
+ ├─ workflow/
+ │  ├─ resolve-workflows.ts        三源决策编排（提供/复用/生成）
+ │  ├─ chooser.ts                  WorkflowChooser 决策注入接口
+ │  │                             （Claude / Deterministic / AlwaysGenerate）
+ │  ├─ generate-strategy.ts        WorkflowGenerationStrategy 生成策略接口
+ │  │                             （CMakeFacts 内置策略）
+ │  ├─ build-workflow.ts           BuildWorkflow 解析、校验、manifest
+ │  ├─ test-workflow.ts            TestWorkflow 解析、校验、manifest
+ │  ├─ registry.ts                 BuildWorkflow 注册表（save/load/discover）
+ │  ├─ test-registry.ts            TestWorkflow 注册表
+ │  ├─ runner.ts                   通用 workflow 运行器（worker spawn）
+ │  ├─ capabilities.ts             LocalCapabilityBroker 能力代理
+ │  ├─ client.ts                   worker 侧能力代理
+ │  ├─ capability-protocol.ts      JSONL 能力协议
+ │  ├─ build-executor.ts           CMake/Ninja/direct-compiler 构建执行
+ │  ├─ source-policy.ts            workflow 源码沙箱检查
+ │  └─ worker.ts                   workflow 子进程入口
+ │
+ └─ agents/
+    ├─ prompts.ts                 分析 / 重构提示词
+    ├─ driver.ts                  Claude SDK 封装与 PreToolUse hook
+    ├─ analyze.ts                 分析 Agent
+    └─ refactor.ts                受限 Refactor Agent
+
+Workflow 层遵循 core/app 分离：
+
+- core：`chooser.ts`（决策接口）、`generate-strategy.ts`（生成策略接口）、
+  registry / build-workflow / test-workflow / runner / capabilities 全部是无
+  AI、可独立单测的纯函数模块；
+- app：`resolve-workflows.ts` 只做编排——收集候选 → 注入 chooser 决策 →
+  按决策复用（registry 快速路径）或生成（strategy 模板 + Claude 写源）。
+
+决策可换：`WorkflowChooser` 有 Claude / Deterministic（第一个可用候选）/
+AlwaysGenerate 三种实现，CI 或无模型环境用 Deterministic 即可跑通核心链路。
+生成策略可换：`WorkflowGenerationStrategy` 抽象了"如何产生 workflow 源"，
+内置 CMakeFacts 策略从 CMakeLists.txt 推导，未来可替换为外部生成器。
+
+复用快速路径：selected 分支从注册表读取持久化 output 直接构建 resolution，
+不重新 spawn worker（loadBuildWorkflow/loadTestWorkflow 已校验 source hash 与
+schema）。生成分支现在会自动 saveBuildWorkflow/saveTestWorkflow 入库，修复了
+"AI 生成的 workflow 从不进入注册表、下次无法复用"的缺陷。
 
 tests/
 ├─ state-machine.test.ts         状态机与 fail-closed 规则
@@ -936,4 +972,56 @@ bunx tsc --noEmit         -> pass
 git diff --check           -> pass
 ```
 
-当前结论：生成 BuildWorkflow/TestWorkflow、Claude 受限重构、worktree 隔离、baseline/candidate 双版本构建、CTest 差分比较、状态机接受和 Dashboard 实时观测均已在 Windows CMake fixture 上获得真实 r11 证据。该结果证明当前原型闭环可运行，不代表已达到适配任意 C 工程的生产级完成度。
+ 当前结论：生成 BuildWorkflow/TestWorkflow、Claude 受限重构、worktree 隔离、baseline/candidate 双版本构建、CTest 差分比较、状态机接受和 Dashboard 实时观测均已在 Windows CMake fixture 上获得真实 r11 证据。该结果证明当前原型闭环可运行，不代表已达到适配任意 C 工程的生产级完成度。
+
+## 14. Plan 声明与 workflow-driven 构建（2026-09-01）
+
+### 14.1 Workflow Plan 声明（树状步骤可视化）
+
+workflow 可通过 `context.plan` 声明嵌套步骤树，供可视化与观测：
+
+```ts
+const [build, test] = await plan.declare([
+  { title: "Build", description: "compile", children: [{ title: "Configure" }, { title: "Compile" }] },
+  { title: "Test", children: [{ title: "Unit" }] },
+]);
+await plan.begin(build);       // 返回根 id：p1、p2
+await plan.begin("p1.1");      // 子节点 id：父id.序号
+await plan.complete("p1.1");
+```
+
+- **id 全局唯一**：根为 `p1`/`p2`...，子节点 `父id.序号`；`declare` 返回根 id 列表；
+- **状态机校验**：begin 必须 pending、complete 必须 running、fail 必须非 completed，未声明即标记 → 报错 fail-closed；
+- **协议**：复用 capability-request 通道（capability: `plan`），broker 记录状态，`runWorkflow` 返回 `plan` 树；
+- 测试：`tests/workflow-plan.test.ts` 6 项（树状声明、未声明拒绝、重复 begin、缺 begin complete、fail、空 title）。
+
+### 14.2 workflow-driven 构建（L1 落地）
+
+新增 `environment.build.kind: "workflow-driven"`：
+
+- workflow 函数**在 execute 阶段重跑**，用注入 capabilities 自主驱动构建（任意次 process.run、fs 操作），返回 `{ artifacts: {逻辑名: 路径} }` 作为执行产物；
+- execute 校验声明的 artifacts 存在，缺失 → fail-closed；
+- 生成策略降级：`CMakeFactsGenerationStrategy.template()` 推导不出（复杂 CMake / 非 CMake）时返回 `null`，`resolve-workflows` 生成分支转 AI 自主（无模板）——**消灭了"模板 + AI 誊写"的冗余模型调用**；
+- 策略能推导时，程序直接 `writeFileSync` 写模板（零模型调用）；
+- 测试：`tests/workflow-driven.test.ts` 3 项（schema 解析、execute 真构建 + 产物校验、缺失产物拒绝）。
+
+### 14.3 单次执行与 policy（2026-09-01 完善）
+
+- **resolve 零副作用**：`BuildWorkflowResolution.output` 对 workflow-driven 为 **null**（可空类型）。resolve 阶段**既不执行也不提取**——删除了静态提取正则（`extractLiteralOutput` 等），workflow 函数完全自由（可动态算产物、读文件决定 output）；已用测试证明 resolve 后 `build/` 与源文件均未创建；
+- **execute 单次执行**：函数只在 execute 阶段跑一次（真实构建），返回完整 BuildWorkflowOutput → 校验 identity + 产物存在；
+- **TestWorkflow 绑定轻量化**：`resolveTestWorkflow`/`testCandidates` 等只消费 `{workflow_id, workflow_revision}`（`BuildWorkflowIdentity`），不再依赖完整 output；workflow-driven 时用 manifest id 兜底；
+- **状态机 ENV_READY**：workflow-driven 时 environment 由程序构造固定形状（`{kind:"workflow-driven"}`），不依赖 output 提取；
+- **复用漏洞修复**：`resolveStoredBuild` 对 output=null（workflow-driven）的候选**重新 resolve**（重新验证来源），不再信任持久化；声明式仍走 hash 验证的快速路径；
+- **policy 修复**：`workflow-pipeline.ts` 的 `executeBuild` 现在传 `entry`，且 workflow-driven 模式 `writableGlobs` 放宽到 `["**"]`（函数是可信构建逻辑），声明式模式仍为 `["build/**"]`；
+- **入库**：workflow-driven 的 output 存 null（`registry.saveBuildWorkflow` 已支持），`cli.ts`/`demo-libuv.ts` 输出适配。
+
+### 14.4 审批模式（roadmap）
+
+`docs/roadmap-approval-mode.md` 已记录：workflow 声明需审批的能力 → 无审批通道 fail-closed / 有通道挂起等用户批准。本次未实现，按用户要求仅记录。
+
+### 14.5 工程检查
+
+```text
+bunx tsc --noEmit   → pass
+bun test            → 73 pass / 0 fail（16 files，230 expect()）
+```

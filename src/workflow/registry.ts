@@ -84,8 +84,12 @@ export function saveBuildWorkflow(
     entry: relative(root, entry).split(sep).join("/"),
     source_hash: sha256(source),
   });
-  const output = BuildWorkflowOutput.parse(resolution.output);
   atomicWrite(manifestPath, JSON.stringify(storedManifest, null, 2) + "\n");
+  if (resolution.output === null) {
+    // workflow-driven workflows have no static plan; nothing to persist.
+    return { manifestPath, outputPath: null, entry, manifest: storedManifest, output: null };
+  }
+  const output = BuildWorkflowOutput.parse(resolution.output);
   atomicWrite(outputPath, JSON.stringify(output, null, 2) + "\n");
   return { manifestPath, outputPath, entry, manifest: storedManifest, output };
 }

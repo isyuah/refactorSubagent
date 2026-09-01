@@ -18,7 +18,7 @@ export interface ProposeBuildWorkflowOptions {
  */
 export async function proposeBuildWorkflow(
   options: ProposeBuildWorkflowOptions,
-): Promise<BuildWorkflowOutputValue> {
+): Promise<BuildWorkflowOutputValue | null> {
   const entry = generatedEntry(options.repoDir, "build", options.workflowId, options.revision);
   await generateWorkflowSource({
     cwd: options.repoDir,
@@ -40,6 +40,7 @@ export async function proposeBuildWorkflow(
     host: options.host,
     project: options.project,
   });
+  // workflow-driven workflows have no static output at propose time.
   return resolution.output;
 }
 

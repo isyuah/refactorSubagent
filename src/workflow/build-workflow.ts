@@ -10,7 +10,7 @@ import {
 } from "../artifacts/index.js";
 import { checkWorkflowSource } from "./source-policy.js";
 import { runWorkflow } from "./runner.js";
-import type { WorkflowFacts } from "./types.js";
+import type { WorkflowCapabilityPolicy, WorkflowFacts } from "./types.js";
 
 export interface ResolveBuildWorkflowOptions {
   /** Workflow module path, relative to entryRoot when not absolute. */
@@ -26,6 +26,8 @@ export interface ResolveBuildWorkflowOptions {
   readonly workspaceRoot?: string;
   readonly host?: HostPreflight;
   readonly project?: ProjectDetection;
+  /** Capability policy for the workflow run; defaults to host defaults. */
+  readonly policy?: WorkflowCapabilityPolicy;
   readonly timeoutMs?: number;
 }
 
@@ -33,7 +35,12 @@ export interface BuildWorkflowResolution {
   /** Absolute source entry used to produce this resolution. */
   readonly entry: string;
   readonly manifest: BuildWorkflowManifestValue;
-  readonly output: BuildWorkflowOutputValue;
+  /**
+   * Declarative build plan. Null for workflow-driven workflows: the output
+   * is only known after the function executes (during execute), so
+   * resolution records null and execute validates identity + artifacts.
+   */
+  readonly output: BuildWorkflowOutputValue | null;
   readonly sourceHash: string;
 }
 
@@ -48,41 +55,58 @@ export async function resolveBuildWorkflow(
 
   const sourceHash = sha256(checked.source);
   const workspaceRoot = resolve(options.workspaceRoot ?? options.cwd);
-  const facts: WorkflowFacts = { host: options.host, project: options.project };
-  const result = await runWorkflow({
-    entry,
-    cwd: workspaceRoot,
-    input: { kind: "build-workflow-input", version: 1 },
-    facts,
-    timeoutMs: options.timeoutMs ?? 60_000,
-  });
-  if (result.status !== "pass") {
-    throw new Error(`build workflow failed: ${result.failure ?? result.status}`);
+  // workflow-driven workflows are executed only once, during execute, so
+  // resolution neither runs the function nor extracts a plan: the output is
+  // null until the function produces it. Declarative workflows run here
+  // (pure, no side effects) to obtain the plan the executor replays.
+  const isWorkflowDriven = /["']workflow-driven["']/.test(checked.source);
+  let output: BuildWorkflowOutputValue | null = null;
+  if (!isWorkflowDriven) {
+    const facts: WorkflowFacts = { host: options.host, project: options.project };
+    const result = await runWorkflow({
+      entry,
+      cwd: workspaceRoot,
+      input: { kind: "build-workflow-input", version: 1 },
+      facts,
+      policy: options.policy,
+      timeoutMs: options.timeoutMs ?? 60_000,
+    });
+    if (result.status !== "pass") {
+      throw new Error(`build workflow failed: ${result.failure ?? result.status}`);
+    }
+    output = BuildWorkflowOutput.parse(result.result);
   }
-  const output = BuildWorkflowOutput.parse(result.result);
-  if (options.workflowId !== undefined && output.workflow_id !== options.workflowId) {
-    throw new Error(
-      `build workflow id mismatch: expected '${options.workflowId}', got '${output.workflow_id}'`,
-    );
+  if (output !== null) {
+    if (options.workflowId !== undefined && output.workflow_id !== options.workflowId) {
+      throw new Error(
+        `build workflow id mismatch: expected '${options.workflowId}', got '${output.workflow_id}'`,
+      );
+    }
+    if (options.revision !== undefined && output.workflow_revision !== options.revision) {
+      throw new Error(
+        `build workflow revision mismatch: expected ${String(options.revision)}, got '${output.workflow_revision}'`,
+      );
+    }
+    if (
+      output.artifact.workflow_id !== output.workflow_id ||
+      output.artifact.workflow_revision !== output.workflow_revision
+    ) {
+      throw new Error("build artifact identity does not match workflow output identity");
+    }
+    for (const path of Object.values(output.artifact.paths)) assertWorkspaceRelative(path);
   }
-  if (options.revision !== undefined && output.workflow_revision !== options.revision) {
-    throw new Error(
-      `build workflow revision mismatch: expected ${String(options.revision)}, got '${output.workflow_revision}'`,
-    );
-  }
-  if (
-    output.artifact.workflow_id !== output.workflow_id ||
-    output.artifact.workflow_revision !== output.workflow_revision
-  ) {
-    throw new Error("build artifact identity does not match workflow output identity");
-  }
-  for (const path of Object.values(output.artifact.paths)) assertWorkspaceRelative(path);
 
+  const manifestId = output === null
+    ? (options.workflowId ?? "workflow-driven")
+    : output.workflow_id;
+  const manifestRevision = output === null
+    ? (options.revision ?? 1)
+    : output.workflow_revision;
   const manifest = BuildWorkflowManifest.parse({
     kind: "build-workflow-manifest",
     version: 1,
-    id: output.workflow_id,
-    revision: output.workflow_revision,
+    id: manifestId,
+    revision: manifestRevision,
     entry: relative(entryRoot, entry).split(sep).join("/"),
     source_hash: sourceHash,
     workflow_api_version: 1,
@@ -91,7 +115,7 @@ export async function resolveBuildWorkflow(
       markers: options.project?.markers ?? [],
       platforms: options.host ? [options.host.platform] : [],
       architectures: options.host ? [options.host.arch] : [],
-      required_tools: requiredTools(output),
+      required_tools: output === null ? [] : requiredTools(output),
     },
     status: "draft",
   });

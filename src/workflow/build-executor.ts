@@ -1,29 +1,34 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type {
-  BuildArtifact,
+import {
   BuildWorkflowOutput as BuildWorkflowOutputValue,
-  HostPreflight,
+  type BuildArtifact,
+  type HostPreflight,
+  type ProjectDetection,
 } from "../artifacts/index.js";
 import type {
   CapabilityRequest,
   CapabilityResponse,
 } from "./capability-protocol.js";
 import { LocalCapabilityBroker } from "./capabilities.js";
+import { runWorkflow } from "./runner.js";
 import type {
   ProcessResult,
   WorkflowCapabilityPolicy,
   WorkflowEvent,
 } from "./types.js";
-
 export interface ExecuteBuildWorkflowOptions {
   readonly cwd: string;
-  readonly output: BuildWorkflowOutputValue;
+  /** Workflow source entry; required for workflow-driven builds. */
+  readonly entry?: string;
+  /** Declarative plan. May be null for workflow-driven builds (the function
+   *  produces the output during execution). */
+  readonly output: BuildWorkflowOutputValue | null;
   readonly host?: HostPreflight;
+  readonly project?: ProjectDetection;
   readonly policy?: WorkflowCapabilityPolicy;
   readonly timeoutMs?: number;
 }
-
 export interface BuildWorkflowStepResult {
   readonly name: "configure" | "build";
   readonly status: ProcessResult["status"] | "error";
@@ -55,82 +60,117 @@ export async function executeBuildWorkflow(
   const steps: BuildWorkflowStepResult[] = [];
   const events: WorkflowEvent[] = [];
   try {
-    const build = options.output.environment.build;
-    if ("kind" in build && build.kind === "cmake") {
-      const configureArgs = ["-S", build.source_dir, "-B", build.build_dir];
-      if (build.generator !== null) configureArgs.push("-G", build.generator);
-      configureArgs.push(...build.configure_flags);
-      const configure = await runProcess(broker, "configure", {
-        program: "cmake",
-        args: configureArgs,
-        cwd: ".",
-        timeoutMs: options.timeoutMs,
-      }, events);
-      steps.push(configure.step);
-      if (configure.result === null || !successful(configure.result)) {
-        return failed(options.output.artifact, steps, [], events, configure.step.error ?? "CMake configure failed");
-      }
+    // workflow-driven: the function produces the output during execution.
+    let artifact: BuildArtifact | null = null;
+    let buildKind = "custom";
+    if (options.output !== null) {
+      artifact = options.output.artifact;
+      const build = options.output.environment.build;
+      buildKind = "kind" in build ? build.kind : "custom";
+      if ("kind" in build && build.kind === "cmake") {
+        const configureArgs = ["-S", build.source_dir, "-B", build.build_dir];
+        if (build.generator !== null) configureArgs.push("-G", build.generator);
+        configureArgs.push(...build.configure_flags);
+        const configure = await runProcess(broker, "configure", {
+          program: "cmake",
+          args: configureArgs,
+          cwd: ".",
+          timeoutMs: options.timeoutMs,
+        }, events);
+        steps.push(configure.step);
+        if (configure.result === null || !successful(configure.result)) {
+          return failed(options.output.artifact, steps, [], events, configure.step.error ?? "CMake configure failed");
+        }
 
-      const buildArgs = ["--build", build.build_dir, ...build.build_flags];
-      if (build.target !== null) buildArgs.push("--target", build.target);
-      const built = await runProcess(broker, "build", {
-        program: "cmake",
-        args: buildArgs,
-        cwd: ".",
-        timeoutMs: options.timeoutMs,
-      }, events);
-      steps.push(built.step);
-      if (built.result === null || !successful(built.result)) {
-        return failed(options.output.artifact, steps, [], events, built.step.error ?? "CMake build failed");
-      }
-    } else if ("kind" in build && build.kind === "ninja") {
-      const args = ["-C", build.build_dir, ...build.build_flags];
-      if (build.target !== null) args.push(build.target);
-      const built = await runProcess(broker, "build", {
-        program: "ninja",
-        args,
-        cwd: ".",
-        timeoutMs: options.timeoutMs,
-      }, events);
-      steps.push(built.step);
-      if (built.result === null || !successful(built.result)) {
-        return failed(options.output.artifact, steps, [], events, built.step.error ?? "Ninja build failed");
-      }
-    } else if ("kind" in build && build.kind === "direct-compiler") {
-      const output = process.platform === "win32" && !build.output.toLowerCase().endsWith(".exe")
-        ? `${build.output}.exe`
-        : build.output;
-      const args = [
-        ...build.flags,
-        ...Object.entries(build.defines).map(([key, value]) => `-D${key}=${value}`),
-        ...build.sources,
-        "-o",
-        output,
-      ];
-      const built = await runProcess(broker, "build", {
-        program: build.compiler,
-        args,
-        cwd: ".",
-        timeoutMs: options.timeoutMs,
-      }, events);
-      steps.push(built.step);
-      if (built.result === null || !successful(built.result)) {
-        return failed(options.output.artifact, steps, [], events, built.step.error ?? "compiler build failed");
+        const buildArgs = ["--build", build.build_dir, ...build.build_flags];
+        if (build.target !== null) buildArgs.push("--target", build.target);
+        const built = await runProcess(broker, "build", {
+          program: "cmake",
+          args: buildArgs,
+          cwd: ".",
+          timeoutMs: options.timeoutMs,
+        }, events);
+        steps.push(built.step);
+        if (built.result === null || !successful(built.result)) {
+          return failed(options.output.artifact, steps, [], events, built.step.error ?? "CMake build failed");
+        }
+      } else if ("kind" in build && build.kind === "ninja") {
+        const args = ["-C", build.build_dir, ...build.build_flags];
+        if (build.target !== null) args.push(build.target);
+        const built = await runProcess(broker, "build", {
+          program: "ninja",
+          args,
+          cwd: ".",
+          timeoutMs: options.timeoutMs,
+        }, events);
+        steps.push(built.step);
+        if (built.result === null || !successful(built.result)) {
+          return failed(options.output.artifact, steps, [], events, built.step.error ?? "Ninja build failed");
+        }
+      } else if ("kind" in build && build.kind === "direct-compiler") {
+        const output = process.platform === "win32" && !build.output.toLowerCase().endsWith(".exe")
+          ? `${build.output}.exe`
+          : build.output;
+        const args = [
+          ...build.flags,
+          ...Object.entries(build.defines).map(([key, value]) => `-D${key}=${value}`),
+          ...build.sources,
+          "-o",
+          output,
+        ];
+        const built = await runProcess(broker, "build", {
+          program: build.compiler,
+          args,
+          cwd: ".",
+          timeoutMs: options.timeoutMs,
+        }, events);
+        steps.push(built.step);
+        if (built.result === null || !successful(built.result)) {
+          return failed(options.output.artifact, steps, [], events, built.step.error ?? "compiler build failed");
+        }
+      } else if ("kind" in build && build.kind === "workflow-driven") {
+        const driven = await runDrivenWorkflow(options, broker, steps, events);
+        if ("error" in driven) {
+          return failed(
+            { kind: "custom", version: 1, workflow_id: "", workflow_revision: 0, paths: {}, metadata: {} },
+            steps,
+            [],
+            events,
+            driven.error,
+          );
+        }
+        artifact = driven.artifact;
+        buildKind = "workflow-driven";
+      } else {
+        return failed(options.output.artifact, steps, [], events, "legacy shell-command BuildWorkflow execution is not supported");
       }
     } else {
-      return failed(options.output.artifact, steps, [], events, "legacy shell-command BuildWorkflow execution is not supported");
+      // options.output === null: workflow-driven with no declarative plan.
+      const driven = await runDrivenWorkflow(options, broker, steps, events);
+      if ("error" in driven) {
+        return failed(
+          { kind: "custom", version: 1, workflow_id: "", workflow_revision: 0, paths: {}, metadata: {} },
+          steps,
+          [],
+          events,
+          driven.error,
+        );
+      }
+      artifact = driven.artifact;
+      buildKind = "workflow-driven";
     }
 
+    const output = artifact;
     const missingArtifacts: string[] = [];
-    for (const [name, path] of Object.entries(options.output.artifact.paths)) {
-      const candidates = artifactCandidates(path, build.kind);
+    for (const [name, path] of Object.entries(output.paths)) {
+      const candidates = artifactCandidates(path, buildKind);
       if (!candidates.some((candidate) => existsSync(join(options.cwd, candidate)))) {
         missingArtifacts.push(`${name}: ${path}`);
       }
     }
     if (missingArtifacts.length > 0) {
       return failed(
-        options.output.artifact,
+        output,
         steps,
         missingArtifacts,
         events,
@@ -139,7 +179,7 @@ export async function executeBuildWorkflow(
     }
     return {
       status: "pass",
-      artifact: options.output.artifact,
+      artifact: output,
       steps,
       missingArtifacts,
       events,
@@ -148,6 +188,47 @@ export async function executeBuildWorkflow(
   } finally {
     await broker.close();
   }
+}
+
+/**
+ * Re-run a workflow-driven workflow function: it drives the build through
+ * injected capabilities and returns a complete BuildWorkflowOutput. The
+ * returned artifact is validated (identity + existence) by the caller.
+ */
+async function runDrivenWorkflow(
+  options: ExecuteBuildWorkflowOptions,
+  broker: LocalCapabilityBroker,
+  steps: BuildWorkflowStepResult[],
+  events: WorkflowEvent[],
+): Promise<{ readonly artifact: BuildArtifact } | { readonly error: string }> {
+  if (options.entry === undefined) return { error: "workflow-driven build requires the workflow entry" };
+  const driven = await runWorkflow({
+    entry: options.entry,
+    cwd: options.cwd,
+    facts: { host: options.host, project: options.project },
+    policy: options.policy,
+    timeoutMs: options.timeoutMs ?? 60_000,
+  });
+  events.push(...driven.events);
+  if (driven.status !== "pass") {
+    return { error: driven.failure ?? "workflow-driven build failed" };
+  }
+  let output: BuildWorkflowOutputValue;
+  try {
+    output = BuildWorkflowOutputValue.parse(driven.result);
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : String(cause) };
+  }
+  steps.push({
+    name: "build",
+    status: "exited",
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    durationMs: 0,
+    error: null,
+  });
+  return { artifact: output.artifact };
 }
 
 async function runProcess(

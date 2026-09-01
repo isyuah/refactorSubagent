@@ -186,6 +186,9 @@ function sanitizerFlags(env: EnvironmentSpec, host: HostPreflight): string[] {
 }
 
 export function resolveBinaryPath(worktreeDir: string, env: EnvironmentSpec): string {
+  if ("kind" in env.build && env.build.kind === "workflow-driven") {
+    throw new Error("workflow-driven builds declare artifacts at runtime; binary path is not statically known");
+  }
   const output = "output" in env.build ? env.build.output : env.build.binary;
   const candidates = "kind" in env.build && env.build.kind === "cmake"
     ? cmakeOutputCandidates(output, {

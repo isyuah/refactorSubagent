@@ -7,6 +7,7 @@ import type {
   CompilerAdapter,
   CTestAdapter,
   NinjaAdapter,
+  PlanStepDeclaration,
   ProcessHandle,
   ProcessResult,
   WorkflowAdapters,
@@ -16,6 +17,7 @@ import type {
   WorkflowFilesystem,
   WorkflowFsEffect,
   WorkflowFsSnapshot,
+  WorkflowPlanApi,
   WorkflowProcess,
   WorkflowEvent,
   WorkflowTool,
@@ -63,6 +65,7 @@ export class WorkflowCapabilityClient {
       writeFile: async (path, content, encoding = "utf8") => { await this.call("fs", "writeFile", [path, content, encoding]); },
       mkdir: async (path) => { await this.call("fs", "mkdir", [path]); },
       exists: async (path) => await this.call("fs", "exists", [path]) as boolean,
+      readdir: async (path) => await this.call("fs", "readdir", [path]) as string[],
       snapshot: async (path) => await this.call("fs", "snapshot", [path]) as WorkflowFsSnapshot,
       diff: async (path, before) => await this.call("fs", "diff", [path, before]) as WorkflowFsEffect[],
     };
@@ -80,10 +83,17 @@ export class WorkflowCapabilityClient {
       available: async (name) => await this.call("tools", "available", [name]) as boolean,
       list: async () => await this.call("tools", "list", []) as WorkflowTool[],
     };
+    const plan: WorkflowPlanApi = {
+      declare: async (steps: readonly PlanStepDeclaration[]) => await this.call("plan", "declare", [steps]) as string[],
+      begin: async (id: string) => { await this.call("plan", "begin", [id]); },
+      complete: async (id: string) => { await this.call("plan", "complete", [id]); },
+      fail: async (id: string, error: string) => { await this.call("plan", "fail", [id, error]); },
+    };
     return {
       fs,
       process: processCapability,
       tools,
+      plan,
       adapters: createAdapters(processCapability),
     };
   }
@@ -123,6 +133,7 @@ export function createWorkflowContext(options: {
       process: capabilities.process,
       tools: capabilities.tools,
       adapters: capabilities.adapters,
+      plan: capabilities.plan,
     },
   };
 }

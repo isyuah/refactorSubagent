@@ -16,12 +16,12 @@ export interface WorkflowFsEffect {
   readonly op: "create" | "modify" | "delete";
   readonly sha256: string | null;
 }
-
 export interface WorkflowFilesystem {
   readFile(path: string, encoding?: WorkflowFileEncoding): Promise<string>;
   writeFile(path: string, content: string, encoding?: WorkflowFileEncoding): Promise<void>;
   mkdir(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
+  readdir(path: string): Promise<string[]>;
   snapshot(path?: string): Promise<WorkflowFsSnapshot>;
   diff(path: string, before: WorkflowFsSnapshot): Promise<WorkflowFsEffect[]>;
 }
@@ -156,6 +156,7 @@ export interface WorkflowCapabilities {
   readonly process: WorkflowProcess;
   readonly tools: WorkflowTools;
   readonly adapters: WorkflowAdapters;
+  readonly plan: WorkflowPlanApi;
 }
 
 export interface WorkflowContext {
@@ -169,21 +170,59 @@ export interface WorkflowContext {
   readonly process: WorkflowProcess;
   readonly tools: WorkflowTools;
   readonly adapters: WorkflowAdapters;
+  readonly plan: WorkflowPlanApi;
 }
 
 export type WorkflowFunction = (
   context: WorkflowContext,
 ) => unknown | Promise<unknown>;
 
-export interface WorkflowEvent {
+ export interface WorkflowEvent {
+   readonly id: string;
+     readonly capability: "fs" | "process" | "tools" | "plan";
+   readonly method: string;
+   readonly ok: boolean;
+   readonly durationMs: number;
+   readonly error: string | null;
+ }
+
+/** A step declared by a workflow for observability. IDs are host-assigned. */
+export interface WorkflowPlanStep {
   readonly id: string;
-  readonly capability: "fs" | "process" | "tools";
-  readonly method: string;
-  readonly ok: boolean;
-  readonly durationMs: number;
-  readonly error: string | null;
+  readonly title: string;
+  readonly description?: string;
+  readonly status: "pending" | "running" | "completed" | "failed";
+  readonly children?: readonly WorkflowPlanStep[];
 }
 
+/** Tree of declared steps, assembled by the broker. */
+export interface WorkflowPlan {
+  readonly steps: readonly WorkflowPlanStep[];
+}
+
+/** Declaration shape accepted by declare(); ids are host-assigned. */
+export interface PlanStepDeclaration {
+  readonly title: string;
+  readonly description?: string;
+  readonly children?: readonly PlanStepDeclaration[];
+}
+
+/** Worker-side plan declaration/marking object injected as context.plan. */
+export interface WorkflowPlanApi {
+  /** Declare a step tree. Returns the assigned root ids in tree order. */
+  declare(steps: readonly PlanStepDeclaration[]): Promise<readonly string[]>;
+  begin(id: string): Promise<void>;
+  complete(id: string): Promise<void>;
+  fail(id: string, error: string): Promise<void>;
+}
+
+export interface WorkflowPlanEvent {
+  readonly type: "plan-declare" | "plan-begin" | "plan-complete" | "plan-fail";
+  readonly id: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly error?: string;
+}
 export interface WorkflowRunResult {
   status: "pass" | "failed" | "timeout" | "rejected";
   exitCode: number | null;
@@ -192,4 +231,5 @@ export interface WorkflowRunResult {
   stderr: string;
   failure: string | null;
   events: WorkflowEvent[];
+  plan: WorkflowPlan | null;
 }

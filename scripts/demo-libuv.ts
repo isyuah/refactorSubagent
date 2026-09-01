@@ -70,6 +70,9 @@ const workflow = await resolveBuildWorkflow({
   host,
   project: detection,
 });
+if (workflow.output === null) {
+  throw new Error("libuv workflow unexpectedly produced no static output");
+}
 console.log(JSON.stringify({
   workflow: workflow.manifest,
   artifact: workflow.output.artifact,

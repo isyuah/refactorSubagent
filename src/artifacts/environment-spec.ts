@@ -37,6 +37,15 @@ const NinjaBuild = z.object({
   output: RelPath,
 });
 
+/**
+ * Commanded by the workflow function itself: the host re-runs the workflow
+ * and the function drives the build through injected capabilities. The
+ * workflow returns artifact paths in its result; no declarative plan exists.
+ */
+const WorkflowDrivenBuild = z.object({
+  kind: z.literal("workflow-driven"),
+});
+
 const ShellCommandBuild = z.object({
   kind: z.literal("shell-command"),
   command: z.string().min(1),
@@ -51,14 +60,14 @@ const LegacyBuild = z.object({
   command: z.string().min(1),
   binary: RelPath,
 });
-
-export const BuildSpec = z.union([
-  DirectCompilerBuild,
-  CMakeBuild,
-  NinjaBuild,
-  ShellCommandBuild,
-  LegacyBuild,
-]);
+ export const BuildSpec = z.union([
+   DirectCompilerBuild,
+   CMakeBuild,
+   NinjaBuild,
+  WorkflowDrivenBuild,
+   ShellCommandBuild,
+   LegacyBuild,
+ ]);
 
 export const EnvironmentSpec = z.object({
   kind: z.literal("environment-spec"),
@@ -78,6 +87,6 @@ export const EnvironmentSpec = z.object({
 
 export type BuildSpec = z.infer<typeof BuildSpec>;
 export type DirectCompilerBuild = z.infer<typeof DirectCompilerBuild>;
-export type CMakeBuild = z.infer<typeof CMakeBuild>;
 export type NinjaBuild = z.infer<typeof NinjaBuild>;
+export type WorkflowDrivenBuildSpec = z.infer<typeof WorkflowDrivenBuild>;
 export type EnvironmentSpec = z.infer<typeof EnvironmentSpec>;

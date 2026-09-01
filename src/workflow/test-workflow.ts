@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import { CTestSuiteSpec } from "../artifacts/ctest-suite.js";
 import type {
-  BuildWorkflowOutput,
   HostPreflight,
   ProjectDetection,
 } from "../artifacts/index.js";
@@ -26,7 +25,8 @@ export interface ResolveTestWorkflowOptions {
   readonly workspaceRoot?: string;
   readonly workflowId: string;
   readonly revision: number;
-  readonly buildWorkflow: BuildWorkflowOutput;
+  /** Selected BuildWorkflow identity; only id/revision are consumed. */
+  readonly buildWorkflow: { readonly workflow_id: string; readonly workflow_revision: number };
   readonly host?: HostPreflight;
   readonly project?: ProjectDetection;
   readonly timeoutMs?: number;

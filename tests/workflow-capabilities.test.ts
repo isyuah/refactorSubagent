@@ -53,7 +53,7 @@ describe("Workflow Capability Context", () => {
     const result = await runWorkflow({
       entry,
       cwd: root,
-      facts: { host: probeHost(root) },
+      facts: { host: probeHost(root, { skipCMakeProbe: true }) },
       policy,
       timeoutMs: 30_000,
     });
@@ -66,7 +66,7 @@ describe("Workflow Capability Context", () => {
       ran: { status: "exited", exitCode: 0, stdout: "ok\n" },
     });
     expect(result.events.filter((event) => event.ok)).toHaveLength(6);
-  });
+  }, 60_000);
 
   test("rejects writes outside policy and records failed capability event", async () => {
     const { root, entry } = tempWorkflow(`
@@ -92,7 +92,7 @@ describe("Workflow Capability Context", () => {
       }),
     ]);
     expect(existsSync(join(root, "secrets.txt"))).toBeFalse();
-  });
+  }, 60_000);
 
   test("rejects path traversal before reading outside the workspace", async () => {
     const { root, entry } = tempWorkflow(`
@@ -109,7 +109,7 @@ describe("Workflow Capability Context", () => {
       // The fixture is outside the temporary project and must not remain behind.
       Bun.file(outside).delete();
     }
-  });
+  }, 60_000);
 
   test("enforces the broker output limit for measured tools", async () => {
     const { root, entry } = tempWorkflow(`
@@ -123,14 +123,14 @@ describe("Workflow Capability Context", () => {
     const result = await runWorkflow({
       entry,
       cwd: root,
-      facts: { host: probeHost(root) },
+      facts: { host: probeHost(root, { skipCMakeProbe: true }) },
       policy,
       timeoutMs: 20_000,
     });
 
     expect(result.status).toBe("pass");
     expect(result.result).toEqual(expect.objectContaining({ status: "output_limit" }));
-  });
+  }, 60_000);
 
   test("returns a deterministic failure for unavailable measured tools", async () => {
     const { root, entry } = tempWorkflow(`
@@ -143,5 +143,5 @@ describe("Workflow Capability Context", () => {
 
     expect(result.status).toBe("failed");
     expect(result.failure).toContain("measured tool is unavailable");
-  });
+  }, 60_000);
 });

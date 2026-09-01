@@ -93,6 +93,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
     child.once("error", (error) => resolveExit({ code: null, signal: null, error }));
     child.once("close", (code, signal) => resolveExit({ code, signal, error: null }));
   });
+  clearTimeout(timer);
   const completedEnvelope = finalEnvelope as WorkerEnvelope | null;
   const out = Buffer.concat(protocolNoise).toString("utf8");
   const err = Buffer.concat(stderr).toString("utf8");
@@ -106,6 +107,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
       stderr: err,
       failure: `workflow exceeded timeout ${options.timeoutMs}ms`,
       events,
+      plan: broker.getPlan(),
     };
   }
   if (exit.error !== null) {
@@ -117,6 +119,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
       stderr: err,
       failure: exit.error.message,
       events,
+      plan: broker.getPlan(),
     };
   }
   if (exit.code !== 0 || completedEnvelope === null || !completedEnvelope.ok) {
@@ -130,6 +133,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
         ? completedEnvelope.error
         : `workflow exited with code ${String(exit.code)}${exit.signal === null ? "" : ` (${exit.signal})`}`,
       events,
+      plan: broker.getPlan(),
     };
   }
 
@@ -141,6 +145,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
     stderr: err,
     failure: null,
     events,
+    plan: broker.getPlan(),
   };
 }
 
@@ -157,6 +162,7 @@ function rejected(reason: string): WorkflowRunResult {
     stderr: "",
     failure: reason,
     events: [],
+    plan: null,
   };
 }
 

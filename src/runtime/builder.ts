@@ -98,6 +98,9 @@ function buildLegacyShell(worktreeDir: string, env: EnvironmentSpec): BuildResul
 }
 
 function buildOutput(build: BuildSpec): string {
+  if ("kind" in build && build.kind === "workflow-driven") {
+    throw new Error("workflow-driven builds declare artifacts at runtime");
+  }
   return "output" in build ? build.output : build.binary;
 }
 

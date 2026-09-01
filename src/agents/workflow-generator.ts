@@ -1,5 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
-import { dirname, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
+
+/** Directory of the tool-owned workflow spec documents. */
+const SPEC_DIR = join(import.meta.dir, "workflow-specs");
+
+function specFile(name: string): string {
+  return readFileSync(join(SPEC_DIR, name), "utf8");
+}
 import { BUILD_WORKFLOW_SYSTEM, TEST_WORKFLOW_SYSTEM } from "./prompts.js";
 import { DEFAULT_AGENT_FORBIDDEN_GLOBS, DEFAULT_AGENT_READABLE_GLOBS, runAgent } from "./driver.js";
 export interface GenerateWorkflowSourceOptions {
@@ -13,8 +20,6 @@ export interface GenerateWorkflowSourceOptions {
   readonly measuredHost?: string;
   readonly measuredProject?: string;
   readonly selectedBuildWorkflow?: string;
-  /** Host-authoritative complete source. When supplied, Claude must reproduce it exactly. */
-  readonly sourceTemplate?: string;
   /** Host deadline for the Claude source-writing query. */
   readonly timeoutMs?: number;
 }
@@ -45,19 +50,33 @@ export async function generateWorkflowSource(
   mkdirSync(dirname(outputPath), { recursive: true });
   if (existsSync(outputPath)) unlinkSync(outputPath);
   const editable = relative(options.cwd, outputPath).split("\\").join("/");
+  // Tool-owned spec documents are injected verbatim so the model cannot miss
+  // them (no dependence on readableGlobs or the project tree).
+  const specDocs = [
+    "=== WORKFLOW SPEC (host-injected, mandatory) ===",
+    specFile("README.md"),
+    "--- workflow-api.md ---",
+    specFile("workflow-api.md"),
+    options.workflowKind === "build"
+      ? "--- build-output.md ---\n" + specFile("build-output.md")
+      : "--- test-output.md ---\n" + specFile("test-output.md"),
+    options.workflowKind === "build"
+      ? "--- cmake.md (read when project is CMake) ---\n" + specFile("cmake.md")
+      : "--- ctest.md (read when project uses CTest) ---\n" + specFile("ctest.md"),
+    "=== END WORKFLOW SPEC ===",
+  ];
   const prompt = [
+    specDocs.join("\n"),
     `Write the complete TypeScript source module to exactly this absolute path: ${outputPath}.`,
-    options.sourceTemplate
-      ? "The host supplied a complete authoritative source template below. Write it byte-for-byte exactly; do not add imports, types, comments, validation, logic, or formatting. Do not inspect or infer anything."
-      : `Hard-code these exact identity literals in the returned object; do not read them from WorkflowContext: workflow_id = "${options.workflowId}", workflow_revision = ${String(options.revision)}.`,
-    options.sourceTemplate ? `BEGIN HOST SOURCE TEMPLATE\n${options.sourceTemplate}END HOST SOURCE TEMPLATE` : "",
+        `Hard-code these exact identity literals in the returned object; do not read them from WorkflowContext: workflow_id = "${options.workflowId}", workflow_revision = ${String(options.revision)}.`,
     `The module must default-export a function receiving WorkflowContext. Its runtime context is exactly context.apiVersion, context.workspaceRoot, context.input, context.facts.host, context.facts.project, and injected capabilities; there are no top-level workflow_id or host_preflight fields.`,
     "This is a source-writing task: write the .ts file; do not reply with JSON instead of the file.",
     "Do not import node:, bun:, fs, child_process, process, or network modules.",
     "Do not run git and do not modify any other file.",
     options.workflowKind === "build"
-      ? `Return a complete BuildWorkflowOutput with top-level kind "build-workflow-output", version 1, the exact identity literals above, environment kind "environment-spec" version 1, and artifact kind "executable" version 1 whose identity exactly matches. The nested environment.build must use the exact schema fields for direct-compiler, cmake, or ninja; artifact.paths must be an object of logical names to relative paths. Never use top-level kind "build".`
-      : `Return a complete TestWorkflow with top-level kind "test-workflow", version 1, the exact test identity literals above, and build_workflow_id/build_workflow_revision copied exactly from the selected BuildWorkflow. Never use top-level kind "test".`,
+            ? `Return a complete BuildWorkflowOutput with top-level kind "build-workflow-output", version 1, the exact identity literals above, environment kind "environment-spec" version 1, and artifact kind "executable" version 1 whose identity exactly matches. The nested environment.build must use the exact schema fields for direct-compiler, cmake, ninja, or workflow-driven; artifact.paths must be an object of logical names to relative paths. Prefer declarative kinds (direct-compiler/cmake/ninja) when the project's build fits them; use workflow-driven when the build needs custom steps (makefiles, multi-target suites) — then drive the build inside the function with context.process / context.fs / context.adapters. Never use top-level kind "build".`
+            : `Return a complete TestWorkflow with top-level kind "test-workflow", version 1, the exact test identity literals above, and build_workflow_id/build_workflow_revision copied exactly from the selected BuildWorkflow. Never use top-level kind "test".`,
+    "You may declare observable steps with context.plan: const [id] = await plan.declare([{ title, children? }]); then await plan.begin(id)/plan.complete(id)/plan.fail(id, error). Root ids are returned; children use parentId.index.",
     options.selectedBuildWorkflow ? `Selected BuildWorkflow:
 ${options.selectedBuildWorkflow}` : "",
     options.measuredHost ? `Measured HostPreflight:
@@ -76,11 +95,11 @@ ${options.taskContext}` : "",
     cwd: options.cwd,
     prompt,
     systemPrompt: options.workflowKind === "build" ? BUILD_WORKFLOW_SYSTEM : TEST_WORKFLOW_SYSTEM,
-    allowedTools: options.sourceTemplate ? ["Write"] : ["Read", "Glob", "Grep", "Write", "Edit"],
+        allowedTools: ["Read", "Glob", "Grep", "Write", "Edit"],
     readableGlobs: scope.readableGlobs,
     forbiddenGlobs: scope.forbiddenGlobs,
     editableFiles: [editable],
-    maxTurns: options.sourceTemplate ? 4 : 24,
+        maxTurns: 24,
     timeoutMs: options.timeoutMs,
   });
   if (run.timedOut) {
@@ -97,9 +116,6 @@ ${options.taskContext}` : "",
     throw new Error(
       `workflow author did not create ${editable}${run.result.length > 0 ? `: ${run.result}` : ""}`,
     );
-  }
-  if (options.sourceTemplate !== undefined && readFileSync(outputPath, "utf8") !== options.sourceTemplate) {
-    throw new Error(`workflow author changed the host-authoritative source template for ${editable}`);
   }
   return { summary: run.result, outputPath };
 }

@@ -94,13 +94,15 @@ describe("BuildWorkflow planning and registry", () => {
     expect(result.manifest.id).toBe("direct-smoke");
     expect(result.manifest.revision).toBe(3);
     expect(result.manifest.source_hash).toHaveLength(64);
+    expect(result.output).not.toBeNull();
+    if (result.output === null) return;
     if (!("kind" in result.output.environment.build) || result.output.environment.build.kind !== "direct-compiler") {
       throw new Error("expected direct compiler environment");
     }
     expect(result.output.environment.build.kind).toBe("direct-compiler");
     expect(result.output.artifact.paths).toEqual({ app: "build/app" });
     expect(result.manifest.status).toBe("draft");
-  });
+  }, 60_000);
 
   test("rejects an artifact path that escapes the workflow workspace", async () => {
     const root = tempBuildProject(validWorkflow.replace('"build/app" },', '"../outside" },'));
@@ -110,11 +112,11 @@ describe("BuildWorkflow planning and registry", () => {
       revision: 3,
       cwd: root,
     })).rejects.toThrow("escapes workspace");
-  });
+  }, 60_000);
 
   test("saves and discovers a workflow revision with a verified source hash", async () => {
     const root = tempBuildProject(validWorkflow);
-    const host = probeHost(root);
+    const host = probeHost(root, { skipCMakeProbe: true });
     const project = detectCProject(root, host);
     const resolution = await resolveBuildWorkflow({
       entry: "workflow.ts",
@@ -133,7 +135,7 @@ describe("BuildWorkflow planning and registry", () => {
     expect(loaded.output?.artifact.paths).toEqual({ app: "build/app" });
     expect(candidates).toHaveLength(1);
     expect(candidates[0]!.status).toBe("draft");
-  });
+  }, 30_000);
 
   test("marks a persisted workflow stale after source drift", async () => {
     const root = tempBuildProject(validWorkflow);

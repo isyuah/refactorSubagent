@@ -94,7 +94,18 @@ export async function runWorkflowVerification(
     return emptyOutcome(request.store.state, results);
   }
 
-  const environment = EnvironmentSpec.parse(request.build.output.environment);
+  // workflow-driven builds have no static plan at resolution time; the host
+  // supplies the fixed environment shape and execution fills in the output.
+  const environment = request.build.output === null
+    ? EnvironmentSpec.parse({
+        kind: "environment-spec",
+        version: 1,
+        build: { kind: "workflow-driven" },
+        sanitizers: [],
+        determinism: { frozen_time_epoch_ms: null, random_seed: null, intercept_headers: [] },
+        sandbox: { run_cwd_strategy: "fresh_temp_dir" },
+      })
+    : EnvironmentSpec.parse(request.build.output.environment);
   if (!submit(environment)) return emptyOutcome(request.store.state, results);
 
   const suite = materializeTestWorkflow(request.test, {
@@ -184,18 +195,26 @@ async function executeBuild(
 ): Promise<BuildWorkflowExecution> {
   request.logger?.phase(`${build.toUpperCase()}_BUILD`);
   request.logger?.info(`executing ${build} BuildWorkflow`, {
-    workflow_id: request.build.output.workflow_id,
-    workflow_revision: request.build.output.workflow_revision,
+    workflow_id: request.build.manifest.id,
+    workflow_revision: request.build.manifest.revision,
     cwd,
   });
   const result = await executeBuildWorkflow({
     cwd,
     output: request.build.output,
     host: request.host,
+    project: request.project,
+    entry: request.build.entry,
     policy: {
       readableGlobs: ["**"],
-      writableGlobs: ["build/**"],
-      allowedTools: requiredBuildTools(request.build.output),
+      writableGlobs: request.build.output !== null && isWorkflowDriven(request.build.output)
+        ? ["**"]
+        : request.build.output === null
+          ? ["**"]
+          : ["build/**"],
+      allowedTools: request.build.output === null
+        ? []
+        : requiredBuildTools(request.build.output),
       maxProcesses: 4,
       maxOutputBytes: 16 * 1024 * 1024,
       maxFileBytes: 64 * 1024 * 1024,
@@ -211,6 +230,11 @@ async function executeBuild(
     });
   }
   return result;
+}
+
+function isWorkflowDriven(output: BuildWorkflowOutput): boolean {
+  const build = output.environment.build;
+  return "kind" in build && build.kind === "workflow-driven";
 }
 
 async function runSuite(

@@ -14,7 +14,8 @@
     "e2e:agent": "bun run scripts/e2e-agent.ts",
     "e2e:generated-workflow": "bun run scripts/e2e-generated-workflow.ts",
     "e2e:libuv": "bun run scripts/demo-libuv.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "e2e:libuv:generate": "bun run scripts/e2e-libuv-generate.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.245",

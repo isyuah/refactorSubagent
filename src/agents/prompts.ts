@@ -112,17 +112,41 @@ Return exactly one object compatible with this BuildWorkflowOutput shape:
   }
 }
 The literal top-level kind must be "build-workflow-output", never "build". The literal environment kind is
-"environment-spec" and its build discriminator is exactly one of "direct-compiler", "cmake", or "ninja".
+"environment-spec" and its build discriminator is exactly one of "direct-compiler", "cmake", "ninja", or
+"workflow-driven".
 The artifact.paths value is an object mapping logical names to relative paths, not an array. The nested artifact
 identity must exactly equal the top-level identity. Do not add fields from another schema or invent fields inside
 EnvironmentSpec. The template placeholders above must be replaced with observed values or exact request values.
+
+When the build discriminator is "workflow-driven", the workflow function itself drives the build: use
+context.process / context.fs / context.adapters to run the real build steps, then return the output object with
+build.kind "workflow-driven" and artifact.paths listing the produced executables. The host re-runs the function
+during execution, so the function must be idempotent and must not assume a pristine workspace.
+
+Injected fs capabilities: context.fs.readFile / writeFile / mkdir / exists / readdir / snapshot / diff.
+context.process.run takes { program, args, cwd?, timeoutMs?, ... }; program must be a measured tool name or a
+workspace-relative path, and args is an argv array (no shell). CMake's --target option accepts exactly ONE target;
+to build several targets, issue separate process.run calls (or pass --target per target), never one call with two
+target names. When a workflow-driven function must produce several executables, run each target explicitly and
+report every produced path in artifact.paths.
+
+Use context.plan to declare observable step trees for long-running work:
+  const [build] = await context.plan.declare([{ title: "Build", children: [{ title: "Configure" }] }]);
+  await context.plan.begin(build);        // build is the root id, e.g. "p1"
+  await context.plan.begin("p1.1");       // children use parentId.index
+  await context.plan.complete("p1.1");
+  await context.plan.complete(build);
+Declare at most a few dozen steps; every begin/complete must reference an id returned by declare.
 
 During generation, inspect the supplied CMakeLists.txt or build files with the allowed read tools. For CMake,
 derive target and platform-neutral logical executable output from the actual project files, then hard-code those
 observed values in the source. Do not attempt to discover them later through nonexistent ProjectDetection fields.
 Use direct-compiler only for a measured direct-c project; use cmake or ninja only when ProjectDetection and
-HostPreflight establish that adapter. Never infer tool availability. Never emit shell commands. Never emit absolute
-paths, add platform executable suffixes, or add compiler include flags for determinism headers.
+HostPreflight establish that adapter. Use workflow-driven when the project's build cannot be expressed by the
+declarative kinds (e.g. makefiles, custom scripts, multi-target suites) — then drive it with context.process.run
+({ program: "make", args: [...] }) etc. Never infer tool availability. Never emit shell commands as strings passed
+to a shell; context.process.run executes argv directly without a shell. Never emit absolute paths, add platform
+executable suffixes, or add compiler include flags for determinism headers.
 
 The workflow source may use only injected WorkflowContext capabilities when execution is needed. It must not import
 node:/bun: modules or access process.*, Bun.*, the network, git, or arbitrary files. The host executes the source,
@@ -165,7 +189,10 @@ BuildWorkflow identity, and a valid complete test_spec object.
 
 Never emit shell commands, host API imports, or a request to skip failures. The host owns timeout, parallelism,
 process isolation, execution, and the final acceptance decision. Be conservative and fail-closed when test discovery
-is not established from measured project files and tools.`;
+is not established from measured project files and tools.
+You may declare observable steps with context.plan: const [id] = await plan.declare([{ title, children? }]);
+then await plan.begin(id) / plan.complete(id) / plan.fail(id, error). Root ids are returned; children use
+parentId.index. Declare at most a few dozen steps.`;
 
 export function testWorkflowPrompt(
   workflowId: string,

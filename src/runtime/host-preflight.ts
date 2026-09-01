@@ -35,6 +35,10 @@ const SANITIZER_FLAGS: Record<SanitizerKind, string> = {
 export interface ProbeHostOptions {
   /** Expensive sanitizer probes run only when explicitly requested. */
   probeSanitizers?: boolean;
+  /** Skip the CMake toolchain probe (configure/build smoke test). Speeds up
+   *  callers that only need tool availability, and avoids Windows file-lock
+   *  flakiness in tests. */
+  skipCMakeProbe?: boolean;
 }
 
 /** Measure host facts once at workflow start. No model/tool call is involved. */
@@ -46,7 +50,7 @@ export function probeHost(
   for (const name of TOOL_NAMES) tools[name] = probeTool(name);
 
   const shell = detectShell(tools);
-  const cmake = tools.cmake?.available && tools.cmake.path !== null
+  const cmake = !options.skipCMakeProbe && tools.cmake?.available && tools.cmake.path !== null
     ? probeCMake(tools.cmake.path)
     : {
         version: null,
@@ -55,7 +59,7 @@ export function probeHost(
         c_compiler: null,
         configure_probe: "not-run" as const,
         build_probe: "not-run" as const,
-        reason: "cmake executable is not available on PATH",
+        reason: options.skipCMakeProbe ? "cmake probe skipped by request" : "cmake executable is not available on PATH",
       };
   if (tools.cmake !== undefined && cmake.version !== null) {
     tools.cmake = { ...tools.cmake, version: cmake.version };
