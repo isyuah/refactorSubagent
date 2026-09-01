@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
-import { dirname, relative } from "node:path";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { BUILD_WORKFLOW_SYSTEM, TEST_WORKFLOW_SYSTEM } from "./prompts.js";
+import { WORKFLOW_TYPES } from "./workflow-types.js";
 import { DEFAULT_AGENT_FORBIDDEN_GLOBS, DEFAULT_AGENT_READABLE_GLOBS, runAgent } from "./driver.js";
 export interface GenerateWorkflowSourceOptions {
   readonly cwd: string;
@@ -42,6 +43,10 @@ export async function generateWorkflowSource(
   const outputPath = options.outputPath;
   mkdirSync(dirname(outputPath), { recursive: true });
   if (existsSync(outputPath)) unlinkSync(outputPath);
+  // Host-provided types: the model imports these instead of declaring its own
+  // interfaces (type-only import; erased at runtime).
+  const typesPath = join(dirname(outputPath), "types.d.ts");
+  writeFileSync(typesPath, WORKFLOW_TYPES, "utf8");
   const editable = relative(options.cwd, outputPath).split("\\").join("/");
   // The workflow-spec skill is force-dispatched: its full content loads into
   // context, giving the model the exact API/schema without constant
@@ -51,11 +56,12 @@ export async function generateWorkflowSource(
     `Write the complete TypeScript source module to exactly this absolute path: ${outputPath}.`,
         `Hard-code these exact identity literals in the returned object; do not read them from WorkflowContext: workflow_id = "${options.workflowId}", workflow_revision = ${String(options.revision)}.`,
     `The module must default-export a function receiving WorkflowContext. Its runtime context is exactly context.apiVersion, context.workspaceRoot, context.input, context.facts.host, context.facts.project, and injected capabilities; there are no top-level workflow_id or host_preflight fields.`,
+    `Import the host-provided types from the sibling file: import type { WorkflowContext, ProcessResult } from "./types"; Do NOT declare your own interfaces/types for the context, capabilities, process results, or plans. The types.d.ts file sits next to your output path and is already written. Type-only imports are erased at runtime, so they are safe.`,
     "This is a source-writing task: write the .ts file; do not reply with JSON instead of the file.",
     "Do not import node:, bun:, fs, child_process, process, or network modules.",
     "Do not run git and do not modify any other file.",
     options.workflowKind === "build"
-            ? `Return a complete BuildWorkflowOutput with top-level kind "build-workflow-output", version 1, the exact identity literals above, environment kind "environment-spec" version 1, and artifact kind "executable" version 1 whose identity exactly matches. The nested environment.build must use the exact schema fields for direct-compiler, cmake, ninja, or workflow-driven; artifact.paths must be an object of logical names to relative paths. Prefer declarative kinds (direct-compiler/cmake/ninja) when the project's build fits them; use workflow-driven when the build needs custom steps (makefiles, multi-target suites) — then drive the build inside the function with context.process / context.fs / context.adapters. Never use top-level kind "build".`
+            ? `The workflow function DRIVES the build itself (workflow-driven): declare export const workflowKind = "workflow-driven" at the top and make the default-exported function return nothing (void). Do NOT return a BuildWorkflowOutput object and do NOT declare an artifact paths constant — the host no longer consumes either. Drive the build with context.process.run / context.fs / context.adapters, then assert every produced executable with context.validator.assertFile(path, description) (throws when missing → fail-closed). CMake's --target accepts exactly ONE target; run separate process.run calls per target.`
             : `Return a complete TestWorkflow with top-level kind "test-workflow", version 1, the exact test identity literals above, and build_workflow_id/build_workflow_revision copied exactly from the selected BuildWorkflow. Never use top-level kind "test".`,
     "You may declare observable steps with context.plan: const [id] = await plan.declare([{ title, children? }]); then await plan.begin(id)/plan.complete(id)/plan.fail(id, error). Root ids are returned; children use parentId.index.",
     options.selectedBuildWorkflow ? `Selected BuildWorkflow:

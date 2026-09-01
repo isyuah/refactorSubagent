@@ -134,6 +134,44 @@ export interface WorkflowAdapters {
   readonly ctest: CTestAdapter;
   readonly compiler: CompilerAdapter;
 }
+/**
+ * Result-validation capability. Workflows assert that expected side effects
+ * (e.g. produced executables) exist before completing; a failed assertion
+ * throws and fails the workflow. This replaces the old pattern of returning
+ * an artifact manifest for the host to check after the fact.
+ */
+export interface WorkflowValidator {
+  /** Assert a file exists (relative to the workspace root). Throws otherwise. */
+  assertFile(path: string, description?: string): Promise<void>;
+  /** Assert a directory exists. Throws otherwise. */
+  assertDir(path: string, description?: string): Promise<void>;
+  /** Assert a path does NOT exist. Throws otherwise. */
+  assertAbsent(path: string, description?: string): Promise<void>;
+}
+
+export interface WorkflowCapabilities {
+  readonly fs: WorkflowFilesystem;
+  readonly process: WorkflowProcess;
+  readonly tools: WorkflowTools;
+  readonly adapters: WorkflowAdapters;
+  readonly validator: WorkflowValidator;
+  readonly plan: WorkflowPlanApi;
+}
+
+export interface WorkflowContext {
+  readonly apiVersion: 1;
+  readonly workspaceRoot: string;
+  readonly input: unknown;
+  readonly facts: WorkflowFacts;
+  readonly capabilities: WorkflowCapabilities;
+  /** Convenience aliases; both forms refer to the same injected objects. */
+  readonly fs: WorkflowFilesystem;
+  readonly process: WorkflowProcess;
+  readonly tools: WorkflowTools;
+  readonly adapters: WorkflowAdapters;
+  readonly validator: WorkflowValidator;
+  readonly plan: WorkflowPlanApi;
+}
 
 export interface WorkflowCapabilityPolicy {
   /** Workspace-relative globs readable by the Workflow. */
@@ -151,35 +189,13 @@ export interface WorkflowCapabilityPolicy {
   readonly maxFileBytes?: number;
 }
 
-export interface WorkflowCapabilities {
-  readonly fs: WorkflowFilesystem;
-  readonly process: WorkflowProcess;
-  readonly tools: WorkflowTools;
-  readonly adapters: WorkflowAdapters;
-  readonly plan: WorkflowPlanApi;
-}
-
-export interface WorkflowContext {
-  readonly apiVersion: 1;
-  readonly workspaceRoot: string;
-  readonly input: unknown;
-  readonly facts: WorkflowFacts;
-  readonly capabilities: WorkflowCapabilities;
-  /** Convenience aliases; both forms refer to the same injected objects. */
-  readonly fs: WorkflowFilesystem;
-  readonly process: WorkflowProcess;
-  readonly tools: WorkflowTools;
-  readonly adapters: WorkflowAdapters;
-  readonly plan: WorkflowPlanApi;
-}
-
 export type WorkflowFunction = (
   context: WorkflowContext,
 ) => unknown | Promise<unknown>;
 
  export interface WorkflowEvent {
    readonly id: string;
-     readonly capability: "fs" | "process" | "tools" | "plan";
+     readonly capability: "fs" | "process" | "tools" | "plan" | "validator";
    readonly method: string;
    readonly ok: boolean;
    readonly durationMs: number;

@@ -1,5 +1,18 @@
 # Workflow API 精确规范（必读）
 
+## 类型来源（重要）
+
+**不要自己声明 interface**。宿主在 workflow 文件同目录写入 `types.d.ts`，包含所有精确类型。
+使用 type-only import 引用：
+
+```ts
+import type { WorkflowContext, ProcessResult } from "./types";
+```
+
+- type-only import 在运行时被擦除，worker 注入真实对象——安全
+- 需要类型的地方（函数参数、变量注解）都用 `./types` 里的
+- **禁止** `import type` 之外的任何 import（不能 import 值）
+
 默认导出的函数接收一个 `WorkflowContext`。以下是它的**完整接口**——每个字段的类型、必填性、作用。
 
 ## WorkflowContext
@@ -18,6 +31,7 @@ interface WorkflowContext {
   process: WorkflowProcess;
   tools: WorkflowTools;
   adapters: WorkflowAdapters;
+  validator: WorkflowValidator;
   plan: WorkflowPlanApi;
 }
 ```
@@ -135,6 +149,25 @@ adapters.compiler.compile({ compiler?, args, cwd?, timeoutMs? });
 ```
 
 这些只是 `process.run` 的封装。需要精细控制（多目标等）时直接用 `process.run`。
+
+### validator（WorkflowValidator，产物断言）
+
+```ts
+assertFile(path: string, description?: string): Promise<void>;   // 断言文件存在，否则 throw
+assertDir(path: string, description?: string): Promise<void>;    // 断言目录存在
+assertAbsent(path: string, description?: string): Promise<void>; // 断言路径不存在
+```
+
+**规则**：
+- **构建类 workflow 必须用它断言每个产物存在**（如 `assertFile("build/Debug/app.exe", "test runner")`）
+- 断言失败 → throw → workflow 失败（fail-closed）
+- 这是**替代旧返回值 artifact 声明**的方式：**不需要返回产物清单**，函数正常返回即视为成功（断言已保证）
+
+示例：
+```ts
+await validator.assertFile("build/Debug/uv_run_tests.exe", "shared test runner");
+await validator.assertFile("build/Debug/uv_run_tests_a.exe", "static test runner");
+```
 
 ### plan（WorkflowPlanApi，可观测步骤）
 

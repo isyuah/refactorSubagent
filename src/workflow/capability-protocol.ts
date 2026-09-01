@@ -9,7 +9,7 @@ export interface WorkerPayload {
 export interface CapabilityRequest {
   readonly type: "capability-request";
   readonly id: string;
-  readonly capability: "fs" | "process" | "tools" | "plan";
+  readonly capability: "fs" | "process" | "tools" | "plan" | "validator";
   readonly method: string;
   readonly args: unknown[];
 }
@@ -42,7 +42,7 @@ export function isCapabilityRequest(value: unknown): value is CapabilityRequest 
   const record = value as Record<string, unknown>;
   return record.type === "capability-request" &&
     typeof record.id === "string" &&
-    (record.capability === "fs" || record.capability === "process" || record.capability === "tools" || record.capability === "plan") &&
+    (record.capability === "fs" || record.capability === "process" || record.capability === "tools" || record.capability === "plan" || record.capability === "validator") &&
     typeof record.method === "string" &&
     Array.isArray(record.args);
 }
@@ -74,7 +74,7 @@ function isWorkflowEvent(value: unknown): value is WorkflowEvent {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
   return typeof record.id === "string" &&
-    (record.capability === "fs" || record.capability === "process" || record.capability === "tools" || record.capability === "plan") &&
+    (record.capability === "fs" || record.capability === "process" || record.capability === "tools" || record.capability === "plan" || record.capability === "validator") &&
     typeof record.method === "string" &&
     typeof record.ok === "boolean" &&
     typeof record.durationMs === "number" &&

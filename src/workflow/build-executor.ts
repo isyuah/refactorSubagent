@@ -192,8 +192,9 @@ export async function executeBuildWorkflow(
 
 /**
  * Re-run a workflow-driven workflow function: it drives the build through
- * injected capabilities and returns a complete BuildWorkflowOutput. The
- * returned artifact is validated (identity + existence) by the caller.
+ * injected capabilities (process/fs/validator) and returns void. Artifact
+ * existence is asserted by the workflow itself via ctx.validator; no static
+ * artifact manifest is needed (the old BuildWorkflowOutput return is gone).
  */
 async function runDrivenWorkflow(
   options: ExecuteBuildWorkflowOptions,
@@ -213,12 +214,9 @@ async function runDrivenWorkflow(
   if (driven.status !== "pass") {
     return { error: driven.failure ?? "workflow-driven build failed" };
   }
-  let output: BuildWorkflowOutputValue;
-  try {
-    output = BuildWorkflowOutputValue.parse(driven.result);
-  } catch (cause) {
-    return { error: cause instanceof Error ? cause.message : String(cause) };
-  }
+  // workflow-driven: no BuildWorkflowOutput return is required anymore.
+  // Artifact existence was asserted in-band by ctx.validator; a successful
+  // run means the workflow's assertions (if any) passed.
   steps.push({
     name: "build",
     status: "exited",
@@ -228,7 +226,7 @@ async function runDrivenWorkflow(
     durationMs: 0,
     error: null,
   });
-  return { artifact: output.artifact };
+  return { artifact: { kind: "custom", version: 1, workflow_id: "", workflow_revision: 0, paths: {}, metadata: {} } };
 }
 
 async function runProcess(

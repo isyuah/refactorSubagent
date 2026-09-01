@@ -13,13 +13,14 @@ describe("Workflow Agent guidance", () => {
   test("requires TypeScript source modules and keeps fail-closed rules explicit", () => {
     expect(BUILD_WORKFLOW_SYSTEM).toContain("source must default-export a function");
     expect(TEST_WORKFLOW_SYSTEM).toContain("source must default-export a function");
-    expect(BUILD_WORKFLOW_SYSTEM).toContain("Never emit shell commands");
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("Never\nemit shell commands");
     expect(BUILD_WORKFLOW_SYSTEM).toContain("Be fail-closed");
   });
   test("pins host artifact discriminators and identity fields", () => {
-    expect(BUILD_WORKFLOW_SYSTEM).toContain('kind: "build-workflow-output"');
-    expect(BUILD_WORKFLOW_SYSTEM).toContain("workflow_revision");
-    expect(BUILD_WORKFLOW_SYSTEM).toContain('The literal top-level kind must be "build-workflow-output"');
+    expect(BUILD_WORKFLOW_SYSTEM).toContain('export const workflowKind = "workflow-driven"');
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("context.validator.assertFile");
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("return nothing (void)");
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("Do NOT return a BuildWorkflowOutput object");
     expect(TEST_WORKFLOW_SYSTEM).toContain('kind: "test-workflow"');
         expect(TEST_WORKFLOW_SYSTEM).toContain("build_workflow_id");
     expect(TEST_WORKFLOW_SYSTEM).toContain('The literal top-level kind must be "test-workflow", never "test"');
@@ -28,7 +29,7 @@ describe("Workflow Agent guidance", () => {
   test("documents workflow-driven builds and plan declarations in guidance", () => {
     expect(BUILD_WORKFLOW_SYSTEM).toContain("workflow-driven");
     expect(BUILD_WORKFLOW_SYSTEM).toContain("context.plan.declare");
-    expect(BUILD_WORKFLOW_SYSTEM).toContain("parentId.index");
+    expect(BUILD_WORKFLOW_SYSTEM).toContain("stage-level only");
     expect(BUILD_WORKFLOW_SYSTEM).toContain("idempotent");
     expect(TEST_WORKFLOW_SYSTEM).toContain("context.plan");
     expect(TEST_WORKFLOW_SYSTEM).toContain("plan.declare");

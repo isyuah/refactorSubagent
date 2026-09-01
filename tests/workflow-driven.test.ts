@@ -21,7 +21,9 @@ function tempProject(): string {
 }
 
 const DRIVEN_WORKFLOW = `
-export default async ({ process, fs }) => {
+export const workflowKind = "workflow-driven";
+
+export default async ({ process, fs, validator }) => {
   // The function drives the build itself through injected capabilities.
   await fs.mkdir("build");
    await fs.writeFile("main.c", "#include <stdio.h>\\nint main(void){puts(\\"driven\\");return 0;}\\n");
@@ -34,55 +36,11 @@ export default async ({ process, fs }) => {
   if (result.status !== "exited" || result.exitCode !== 0) {
     throw new Error("gcc failed: " + (result.error ?? String(result.exitCode)));
   }
-  return {
-    kind: "build-workflow-output",
-    version: 1,
-    workflow_id: "driven-smoke",
-    workflow_revision: 1,
-    environment: {
-      kind: "environment-spec",
-      version: 1,
-      build: { kind: "workflow-driven" },
-      sanitizers: [],
-      determinism: { frozen_time_epoch_ms: null, random_seed: null, intercept_headers: [] },
-      sandbox: { run_cwd_strategy: "fresh_temp_dir" },
-    },
-    artifact: {
-      kind: "executable",
-      version: 1,
-      workflow_id: "driven-smoke",
-      workflow_revision: 1,
-      paths: { app: "build/app.exe" },
-      metadata: {},
-    },
-  };
+  // Assert the produced executable exists before completing.
+  await validator.assertFile("build/app.exe", "driven test executable");
 };
 `;
 
-function drivenOutput(): BuildWorkflowOutput {
-  return {
-    kind: "build-workflow-output",
-    version: 1,
-    workflow_id: "driven-smoke",
-    workflow_revision: 1,
-    environment: {
-      kind: "environment-spec",
-      version: 1,
-      build: { kind: "workflow-driven" },
-      sanitizers: [],
-      determinism: { frozen_time_epoch_ms: null, random_seed: null, intercept_headers: [] },
-      sandbox: { run_cwd_strategy: "fresh_temp_dir" },
-    },
-    artifact: {
-      kind: "executable",
-      version: 1,
-      workflow_id: "driven-smoke",
-      workflow_revision: 1,
-      paths: { app: "build/app.exe" },
-      metadata: {},
-    },
-  };
-}
 
 describe("workflow-driven builds", () => {
   test("resolves a workflow-driven workflow (schema accepts the build kind)", async () => {
@@ -140,12 +98,12 @@ describe("workflow-driven builds", () => {
     expect(existsSync(join(root, "build", "app.exe"))).toBe(true);
   }, 90_000);
 
-  test("execute fails when the workflow-driven function declares a missing artifact", async () => {
+  test("execute fails when the workflow-driven function asserts a missing artifact", async () => {
     const root = tempProject();
-    // The function builds app.exe but declares a different (missing) artifact.
+    // The function builds app.exe but asserts a different (missing) path.
     writeFileSync(join(root, "workflow.ts"), DRIVEN_WORKFLOW.replace(
-      'paths: { app: "build/app.exe" }',
-      'paths: { app: "build/never-exists.exe" }',
+      'assertFile("build/app.exe", "driven test executable")',
+      'assertFile("build/never-exists.exe", "phantom artifact")',
     ));
     const host = probeHost(root);
     const execution = await executeBuildWorkflow({

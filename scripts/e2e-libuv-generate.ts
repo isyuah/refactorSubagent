@@ -121,17 +121,28 @@ if (execution.status !== "pass") {
   throw new Error(`libuv build failed: ${execution.failure ?? "unknown"}`);
 }
 
-console.log("=== 4. artifact verification ===");
-const declaredPaths = Object.values(execution.artifact.paths);
-console.log(`declared artifacts: ${JSON.stringify(execution.artifact.paths)}`);
-const missing = declaredPaths.filter((path) => !existsSync(join(repo, path)));
-if (missing.length > 0) {
-  throw new Error(`declared artifacts missing on disk: ${missing.join(", ")}`);
+// workflow-driven: 产物存在性由 workflow 内部 validator 断言（build 已 pass）。
+// 这里额外独立探测 libuv 的两个测试可执行（含 MSVC Debug 的 d 后缀 fallback），
+// 并验证是真实 PE 可执行文件。
+const EXE_CANDIDATES: ReadonlyArray<readonly [string, string]> = [
+  ["uv_run_tests", "build/Debug/uv_run_tests.exe"],
+  ["uv_run_tests", "build/Debug/uv_run_testsd.exe"],
+  ["uv_run_tests_a", "build/Debug/uv_run_tests_a.exe"],
+  ["uv_run_tests_a", "build/Debug/uv_run_tests_ad.exe"],
+];
+const found = new Map<string, string>();
+for (const [name, path] of EXE_CANDIDATES) {
+  if (!found.has(name) && existsSync(join(repo, path))) found.set(name, path);
 }
-console.log("all declared artifacts exist on disk");
+console.log(`produced artifacts: ${JSON.stringify(Object.fromEntries(found))}`);
+const missingNames = [...new Set(EXE_CANDIDATES.map(([name]) => name))].filter((name) => !found.has(name));
+if (missingNames.length > 0) {
+  throw new Error(`expected executables missing on disk: ${missingNames.join(", ")}`);
+}
+console.log("all expected executables exist on disk");
 
-// 目标产物正确性：uv_run_tests.exe 应可执行且是 PE 文件
-for (const [name, path] of Object.entries(execution.artifact.paths)) {
+// 目标产物正确性：应为 Windows PE 可执行（MZ 头）
+for (const [name, path] of found) {
   const absolute = join(repo, path);
   const bytes = Bun.file(absolute).arrayBuffer().then((b) => new Uint8Array(b).slice(0, 2));
   const header = String.fromCharCode(...(await bytes));

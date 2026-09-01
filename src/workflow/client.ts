@@ -22,6 +22,7 @@ import type {
   WorkflowEvent,
   WorkflowTool,
   WorkflowTools,
+  WorkflowValidator,
 } from "./types.js";
 
 export interface CapabilityClientTransport {
@@ -89,11 +90,23 @@ export class WorkflowCapabilityClient {
       complete: async (id: string) => { await this.call("plan", "complete", [id]); },
       fail: async (id: string, error: string) => { await this.call("plan", "fail", [id, error]); },
     };
+    const validator: WorkflowValidator = {
+      assertFile: async (path, description) => {
+        await this.call("validator", "assertFile", description === undefined ? [path] : [path, description]);
+      },
+      assertDir: async (path, description) => {
+        await this.call("validator", "assertDir", description === undefined ? [path] : [path, description]);
+      },
+      assertAbsent: async (path, description) => {
+        await this.call("validator", "assertAbsent", description === undefined ? [path] : [path, description]);
+      },
+    };
     return {
       fs,
       process: processCapability,
       tools,
       plan,
+      validator,
       adapters: createAdapters(processCapability),
     };
   }
@@ -133,6 +146,7 @@ export function createWorkflowContext(options: {
       process: capabilities.process,
       tools: capabilities.tools,
       adapters: capabilities.adapters,
+      validator: capabilities.validator,
       plan: capabilities.plan,
     },
   };

@@ -59,7 +59,10 @@ export async function resolveBuildWorkflow(
   // resolution neither runs the function nor extracts a plan: the output is
   // null until the function produces it. Declarative workflows run here
   // (pure, no side effects) to obtain the plan the executor replays.
-  const isWorkflowDriven = /["']workflow-driven["']/.test(checked.source);
+  // A workflow-driven workflow declares its mode explicitly (export const
+  // workflowKind = "workflow-driven"); the host does not guess from source
+  // text. Declarative workflows export workflowKind = "declarative" or omit it.
+  const isWorkflowDriven = /export\s+const\s+workflowKind\s*=\s*["']workflow-driven["']/.test(checked.source);
   let output: BuildWorkflowOutputValue | null = null;
   if (!isWorkflowDriven) {
     const facts: WorkflowFacts = { host: options.host, project: options.project };

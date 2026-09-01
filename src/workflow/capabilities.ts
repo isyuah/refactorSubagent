@@ -156,6 +156,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
     if (request.capability === "fs") return this.dispatchFs(request.method, request.args);
     if (request.capability === "process") return this.dispatchProcess(request.method, request.args);
     if (request.capability === "plan") return this.dispatchPlan(request.method, request.args);
+    if (request.capability === "validator") return this.dispatchValidator(request.method, request.args);
     return this.dispatchTools(request.method, request.args);
   }
 
@@ -307,6 +308,39 @@ export class LocalCapabilityBroker implements CapabilityBroker {
         return this.toolList();
       default:
         throw new Error(`unsupported tools capability method: ${method}`);
+    }
+  }
+
+  private async dispatchValidator(method: string, args: unknown[]): Promise<unknown> {
+    switch (method) {
+      case "assertFile": {
+        const path = stringArg(args, 0, "path");
+        const description = optionalStringArg(args, 1) ?? path;
+        const absolute = this.resolveReadable(path);
+        if (!existsSync(absolute) || !statSync(absolute).isFile()) {
+          throw new Error(`assertion failed: expected file '${description}' (${path})`);
+        }
+        return null;
+      }
+      case "assertDir": {
+        const path = stringArg(args, 0, "path");
+        const description = optionalStringArg(args, 1) ?? path;
+        const absolute = this.resolveReadable(path);
+        if (!existsSync(absolute) || !statSync(absolute).isDirectory()) {
+          throw new Error(`assertion failed: expected directory '${description}' (${path})`);
+        }
+        return null;
+      }
+      case "assertAbsent": {
+        const path = stringArg(args, 0, "path");
+        const description = optionalStringArg(args, 1) ?? path;
+        if (existsSync(this.resolveReadable(path))) {
+          throw new Error(`assertion failed: expected '${description}' (${path}) to be absent`);
+        }
+        return null;
+      }
+      default:
+        throw new Error(`unsupported validator capability method: ${method}`);
     }
   }
 
