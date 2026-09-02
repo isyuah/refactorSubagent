@@ -3,6 +3,11 @@ import type {
   CapabilityResponse,
 } from "./capability-protocol.js";
 import type {
+  ExpectationDeclaration,
+  ExpectationRelation,
+  WorkflowExpectApi,
+} from "./types.js";
+import type {
   CMakeAdapter,
   CompilerAdapter,
   CTestAdapter,
@@ -38,6 +43,7 @@ interface PendingRequest {
 export class WorkflowCapabilityClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly events: WorkflowEvent[] = [];
+  private readonly expectations: ExpectationDeclaration[] = [];
   private nextId = 1;
 
   constructor(private readonly transport: CapabilityClientTransport) {}
@@ -58,6 +64,15 @@ export class WorkflowCapabilityClient {
 
   getEvents(): WorkflowEvent[] {
     return [...this.events];
+  }
+
+  getExpectations(): ExpectationDeclaration[] {
+    return [...this.expectations];
+  }
+
+  /** Local declaration: no IPC needed, host reads via envelope. */
+  private expectDeclaration(declaration: ExpectationDeclaration): void {
+    this.expectations.push(declaration);
   }
 
   createCapabilities(): WorkflowCapabilities {
@@ -101,12 +116,31 @@ export class WorkflowCapabilityClient {
         await this.call("validator", "assertAbsent", description === undefined ? [path] : [path, description]);
       },
     };
+    const expect: WorkflowExpectApi = (
+      nameOrDeclaration: string | ExpectationDeclaration,
+      maybeRelation?: ExpectationRelation | unknown,
+      maybeValue?: unknown,
+      pattern?: string,
+    ) => {
+      if (typeof nameOrDeclaration === "string") {
+        // (name, value) => equal; (name, relation, value, pattern?) => relation
+        const relation = typeof maybeRelation === "string" &&
+          ["equal", "not-equal", "baseline-greater", "baseline-less", "both-matches"].includes(maybeRelation)
+          ? maybeRelation as ExpectationRelation
+          : "equal";
+        const value = typeof maybeRelation === "string" ? maybeValue : maybeRelation;
+        this.expectDeclaration({ name: nameOrDeclaration, relation, value, ...(pattern === undefined ? {} : { pattern }) });
+      } else {
+        this.expectDeclaration(nameOrDeclaration);
+      }
+    };
     return {
       fs,
       process: processCapability,
       tools,
       plan,
       validator,
+      expect,
       adapters: createAdapters(processCapability),
     };
   }
@@ -148,6 +182,7 @@ export function createWorkflowContext(options: {
       adapters: capabilities.adapters,
       validator: capabilities.validator,
       plan: capabilities.plan,
+      expect: capabilities.expect,
     },
   };
 }

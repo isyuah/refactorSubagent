@@ -33,6 +33,7 @@ interface WorkflowContext {
   adapters: WorkflowAdapters;
   validator: WorkflowValidator;
   plan: WorkflowPlanApi;
+  expect: WorkflowExpectApi;
 }
 ```
 
@@ -168,6 +169,24 @@ assertAbsent(path: string, description?: string): Promise<void>; // 断言路径
 await validator.assertFile("build/Debug/uv_run_tests.exe", "shared test runner");
 await validator.assertFile("build/Debug/uv_run_tests_a.exe", "static test runner");
 ```
+
+### expect（WorkflowExpectApi，双侧声明比较——仅自驱动 TestWorkflow）
+
+宿主在 baseline 和 candidate **各执行一次**同一份 TestWorkflow，按**位置配对**两侧的 expect 声明并比较：
+
+```ts
+ctx.expect("name", value);                      // 两侧值相等（默认 equal）
+ctx.expect("name", "not-equal", value);         // 两侧值不同
+ctx.expect("name", "baseline-greater", value);  // baseline 侧 > candidate 侧
+ctx.expect("name", "baseline-less", value);     // baseline 侧 < candidate 侧
+ctx.expect("name", "both-matches", value, "^regex$");  // 每侧各自匹配正则
+```
+
+**规则**：
+- value 是**当前侧**观测值；你永远不知道另一侧的值
+- 两侧声明**数量一致、顺序确定**（按位置配对）——不要在无序循环里 expect、不要在 expect 前因环境分支提前返回
+- 不一致 → 验证失败（fail-closed）
+- Build workflow 不要用 expect（它是单次执行）
 
 ### plan（WorkflowPlanApi，可观测步骤）
 

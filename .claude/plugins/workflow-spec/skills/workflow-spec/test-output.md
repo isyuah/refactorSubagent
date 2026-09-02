@@ -1,93 +1,101 @@
-# TestWorkflow 精确 Schema（必读）
+# TestWorkflow 自驱动规范（必读）
 
-TestWorkflow 默认导出的函数**必须返回**下面形状之一。字段完全一致，多余字段拒绝。
+TestWorkflow 是一个**自驱动**工作流：默认导出的函数**自己运行测试并声明期望**。
+宿主在 baseline 和 candidate 两个 worktree **各执行一次**同一份源码，然后按顺序配对
+`ctx.expect` 声明并比较两侧观测值。
 
-## 形状 1：CTest runner（推荐，当项目有 CTest）
-
-```ts
-{
-  kind: "test-workflow",            // 字面量，固定
-  version: 1,
-  workflow_id: string,              // 生成 prompt 给的精确 id（硬编码）
-  workflow_revision: number,        // 正整数
-  runner: "ctest",                  // 字面量
-  build_workflow_id: string,        // 从 context.input 复制（见下）或生成 prompt 给的 build id
-  build_workflow_revision: number,  // 同上
-  build_dir: string,                // 构建目录（相对），如 "build"
-  configuration: string,            // 如 "Debug"
-  extra_args: string[],             // 附加 ctest argv（不含超时，宿主管）
-  required_top_level_tests: string[],  // 必须存在的顶层 CTest 测试名（从 CMakeLists add_test 观察）
-  environment: Record<string, string>
-}
-```
-
-**`build_workflow_id`/`build_workflow_revision` 来源**：
-- 生成 TestWorkflow 时，宿主会在 `context.input` 注入 `{ kind: "test-workflow-input", version: 1, build_workflow_id, build_workflow_revision }`
-- **从 `context.input` 复制**，或硬编码生成 prompt 里给的值
-- 不能自创值
-
-**`required_top_level_tests`**：必须是从项目文件**观察到**的 `add_test(NAME ...)` 顶层测试名。用读取工具检查 CMakeLists.txt。
-
-## 形状 2：test-spec runner（无 CTest 时的回退）
+## 源码结构
 
 ```ts
-{
-  kind: "test-workflow",
-  version: 1,
-  workflow_id: string,
-  workflow_revision: number,
-  runner: "test-spec",
-  build_workflow_id: string,
-  build_workflow_revision: number,
-  test_spec: {
-    kind: "test-spec",
-    version: 1,
-    cases: Array<{
-      id: string,
-      kind: "regression" | "differential",
-      argv: string[],           // 禁止 NUL
-      stdin: string,            // base64
-      fixtures: string[],
-      expect_exit_code?: number // regression 必填
-    }>
-  }
-}
-```
+export const workflowKind = "test-workflow-driven";   // 必须！宿主据此识别
 
-仅当项目**没有** CTest 套件时使用。
-
-## 硬性校验
-
-1. `workflow_id`/`workflow_revision` 必须等于生成 prompt 给的值
-2. `build_workflow_id`/`build_workflow_revision` 必须匹配所选 BuildWorkflow
-3. `runner: "ctest"` 时：`required_top_level_tests` 非空、`build_dir` 存在
-4. `extra_args` 禁止 NUL
-5. `runner: "test-spec"` 时：至少一个 differential case、regression 有 expect_exit_code
-
-## 示例
-
-```ts
-export default async (ctx) => {
-  const input = ctx.input as { build_workflow_id: string; build_workflow_revision: number };
-  await ctx.plan.declare([{ id: "generate", title: "Generate CTest workflow" }]);
-  await ctx.plan.begin("generate");
-  try {
-    return {
-      kind: "test-workflow",
-      version: 1,
-      workflow_id: "THE_TEST_ID_FROM_PROMPT",
-      workflow_revision: 1,
-      runner: "ctest",
-      build_workflow_id: input.build_workflow_id,
-      build_workflow_revision: input.build_workflow_revision,
-      build_dir: "build",
-      configuration: "Debug",
-      extra_args: [],
-      required_top_level_tests: ["uv_test", "uv_test_a"],  // 观察自 CMakeLists add_test
-      environment: {},
-    };
-  } finally {
-    await ctx.plan.complete("generate");
-  }
+export default async (ctx: WorkflowContext) => {
+  // 1. 跑测试（process.run / adapters.ctest.run）
+  // 2. ctx.expect(...) 声明期望（观测当前侧的值）
+  // 3. 正常返回即完成（void）
 };
+```
+
+## 执行模型（重要）
+
+- 宿主在 **baseline 目录**执行一次，再在 **candidate 目录**执行一次
+- **两侧跑的是同一份源码**，你**无法知道自己是哪一侧**——不要分支、不要探测侧
+- 每次执行收集你 `ctx.expect` 声明的（name, relation, value）
+- 宿主**按位置配对**两侧声明（第 1 个对第 1 个，依此类推），用 relation 比较
+
+## ctx.expect API
+
+```ts
+ctx.expect("name", value);                      // relation = "equal"（默认）：两侧值必须相等
+ctx.expect("name", "not-equal", value);         // 两侧值必须不同
+ctx.expect("name", "baseline-greater", value);  // baseline 侧值 > candidate 侧值
+ctx.expect("name", "baseline-less", value);     // baseline 侧值 < candidate 侧值
+ctx.expect("name", "both-matches", value, "^regex$"); // 每侧各自匹配正则
+```
+
+**关键规则**：
+- value 是**当前侧观测到的值**（exitCode、计数、解码后的输出等）——你永远不知道另一侧的值
+- **两次数量的声明必须一致、顺序必须确定**（按位置配对！）
+- 不要在**无序数据**循环里 expect；不要在 expect 前因环境不同而提前 return/throw
+- 一次执行失败（throw）→ 该侧失败 → 整体失败（fail-closed）
+
+## 跑测试的能力
+
+| 能力 | 用法 | 说明 |
+|---|---|---|
+| process.run | `{ program, args, cwd?, timeoutMs? }` | program 必须是 host.tools 里 available 的工具名或工作区相对可执行路径 |
+| adapters.ctest.run | `{ buildDir, configuration?, args?, timeoutMs? }` | 跑 CTest（封装 process.run ctest） |
+| validator.assertFile | `(path, description?)` | 断言产物/文件存在（失败 throw） |
+| plan | `declare/begin/complete/fail` | 阶段步骤（可选，少量） |
+
+**process.run 返回值**：
+```ts
+{
+  status: "exited" | "timeout" | "output_limit" | "spawn_error" | "stopped",
+  exitCode: number | null,
+  stdoutBase64: string,   // base64！要解码：Buffer.from(x, "base64").toString("utf8")
+  stderrBase64: string,
+  durationMs: number,
+  error: string | null
+}
+```
+
+## 典型形状（CTest 项目）
+
+```ts
+export const workflowKind = "test-workflow-driven";
+
+export default async (ctx) => {
+  const suite = await ctx.process.run({
+    program: "ctest",
+    args: ["--test-dir", "build", "-C", "Debug", "--output-on-failure"],
+    timeoutMs: 120000,
+  });
+  // 退出码两侧应一致（0 = ctest 全过）
+  ctx.expect("ctest-exit", suite.exitCode);
+  const out = Buffer.from(suite.stdoutBase64, "base64").toString("utf8");
+  // 输出内容两侧应一致
+  ctx.expect("ctest-summary", out.replace(/[0-9]+%/g, "N%"));
+  // 或只声明存在性（UUID/时间等易变内容：先归一化再 expect）
+  ctx.expect("ctest-has-failures", /tests failed|failed out of/.test(out));
+};
+```
+
+## 反例
+
+```ts
+// 错误：返回声明式对象（旧契约）
+return { kind: "test-workflow", runner: "ctest", ... };
+
+// 错误：尝试探测自己是哪一侧
+if (process.env.SIDE === "baseline") { ... }
+
+// 错误：在 expect 前提前 return（两侧声明数不一致）
+if (x) return;   // baseline 多跑一个 expect，candidate 少跑一个
+
+// 错误：expect 值含易变内容且不做归一化（UUID/时间戳导致误报不一致）
+ctx.expect("stdout", rawStdout);   // → 应 expect 归一化后的值
+
+// 错误：传 Error 对象给 plan.fail
+plan.fail(id, new Error("boom"));  // → plan.fail(id, "boom")
 ```

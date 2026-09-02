@@ -1,4 +1,9 @@
-import type { WorkflowCapabilityPolicy, WorkflowEvent, WorkflowFacts } from "./types.js";
+import type {
+  ExpectationDeclaration,
+  WorkflowCapabilityPolicy,
+  WorkflowEvent,
+  WorkflowFacts,
+} from "./types.js";
 
 export interface WorkerPayload {
   readonly input: unknown;
@@ -29,12 +34,14 @@ export type WorkerEnvelope =
       readonly ok: true;
       readonly result: unknown;
       readonly events: WorkflowEvent[];
+      readonly expectations?: ExpectationDeclaration[];
     }
   | {
       readonly type: "workflow-result";
       readonly ok: false;
       readonly error: string;
       readonly events: WorkflowEvent[];
+      readonly expectations?: ExpectationDeclaration[];
     };
 
 export function isCapabilityRequest(value: unknown): value is CapabilityRequest {

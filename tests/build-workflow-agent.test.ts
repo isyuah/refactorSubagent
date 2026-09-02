@@ -21,9 +21,9 @@ describe("Workflow Agent guidance", () => {
     expect(BUILD_WORKFLOW_SYSTEM).toContain("context.validator.assertFile");
     expect(BUILD_WORKFLOW_SYSTEM).toContain("return nothing (void)");
     expect(BUILD_WORKFLOW_SYSTEM).toContain("Do NOT return a BuildWorkflowOutput object");
-    expect(TEST_WORKFLOW_SYSTEM).toContain('kind: "test-workflow"');
-        expect(TEST_WORKFLOW_SYSTEM).toContain("build_workflow_id");
-    expect(TEST_WORKFLOW_SYSTEM).toContain('The literal top-level kind must be "test-workflow", never "test"');
+    expect(TEST_WORKFLOW_SYSTEM).toContain('export const workflowKind = "test-workflow-driven"');
+        expect(TEST_WORKFLOW_SYSTEM).toContain("ctx.expect");
+    expect(TEST_WORKFLOW_SYSTEM).toContain("pairs declarations by ORDER");
   });
 
   test("documents workflow-driven builds and plan declarations in guidance", () => {

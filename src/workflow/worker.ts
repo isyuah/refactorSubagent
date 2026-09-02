@@ -63,6 +63,7 @@ try {
     ok: true,
     result: result ?? null,
     events: client.getEvents(),
+    expectations: client.getExpectations(),
   };
   await writeLine(envelope);
   client.rejectAll(new Error("workflow completed"));
@@ -73,6 +74,7 @@ try {
     ok: false,
     error: cause instanceof Error ? cause.message : String(cause),
     events: client?.getEvents() ?? [],
+    expectations: client?.getExpectations() ?? [],
   };
   await writeLine(envelope);
   process.exit(1);

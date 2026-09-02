@@ -98,6 +98,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
   const out = Buffer.concat(protocolNoise).toString("utf8");
   const err = Buffer.concat(stderr).toString("utf8");
   const events = completedEnvelope?.events ?? [];
+  const expectations = completedEnvelope?.expectations ?? [];
   if (timedOut) {
     return {
       status: "timeout",
@@ -108,6 +109,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
       failure: `workflow exceeded timeout ${options.timeoutMs}ms`,
       events,
       plan: broker.getPlan(),
+      expectations,
     };
   }
   if (exit.error !== null) {
@@ -120,6 +122,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
       failure: exit.error.message,
       events,
       plan: broker.getPlan(),
+      expectations,
     };
   }
   if (exit.code !== 0 || completedEnvelope === null || !completedEnvelope.ok) {
@@ -134,6 +137,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
         : `workflow exited with code ${String(exit.code)}${exit.signal === null ? "" : ` (${exit.signal})`}`,
       events,
       plan: broker.getPlan(),
+      expectations,
     };
   }
 
@@ -146,6 +150,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
     failure: null,
     events,
     plan: broker.getPlan(),
+    expectations,
   };
 }
 
@@ -163,6 +168,7 @@ function rejected(reason: string): WorkflowRunResult {
     failure: reason,
     events: [],
     plan: null,
+    expectations: [],
   };
 }
 

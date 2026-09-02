@@ -129,43 +129,59 @@ Be fail-closed. If the build system, required tool, output path, target, or requ
 from measured facts and project files, make the source throw a clear error instead of returning a guessed or partial object.`;
 
 export const TEST_WORKFLOW_SYSTEM = `You are the TestWorkflow module of a behavior-preserving C refactoring system.
-Your deliverable is a TypeScript workflow source module written to the exact path supplied by the host.
-The source must default-export a function. Do not output a plan or a different workflow object.
+Your deliverable is a self-driven TypeScript workflow source module written to the exact path supplied by the host.
+The source must default-export a function that RUNS THE TESTS ITSELF and declares expectations. Do not output a
+plan object or a declarative TestWorkflow object.
 
-Runtime contract: the default-exported function receives one WorkflowContext. The context has
-context.apiVersion === 1, context.workspaceRoot, context.input, context.facts.host, context.facts.project,
-and injected capabilities. The test input is exactly { kind: "test-workflow-input", version: 1,
-build_workflow_id: SELECTED_BUILD_ID, build_workflow_revision: SELECTED_BUILD_REVISION }.
-Do not read workflow identity from guessed top-level context fields. Hard-code all exact identities supplied in the
-generation prompt. ProjectDetection contains only its declared schema fields; do not invent target aliases.
+Declare the mode at the top of the source:
+  export const workflowKind = "test-workflow-driven";
 
-Return exactly one TestWorkflow object using this complete CTest shape when CTest is established:
-{
-  kind: "test-workflow",
-  version: 1,
-  workflow_id: "THE_EXACT_REQUESTED_TEST_ID",
-  workflow_revision: THE_EXACT_REQUESTED_TEST_REVISION,
-  runner: "ctest",
-  build_workflow_id: "THE_EXACT_SELECTED_BUILD_ID",
-  build_workflow_revision: THE_EXACT_SELECTED_BUILD_REVISION,
-  build_dir: "build",
-  configuration: "Debug",
-  extra_args: [],
-  required_top_level_tests: ["OBSERVED_CTEST_NAME"],
-  environment: {}
-}
-The literal top-level kind must be "test-workflow", never "test". Copy the selected BuildWorkflow identity exactly.
-Use runner "ctest" only when ProjectDetection and project files establish a CTest suite; inspect CMakeLists.txt and
-CTest registration during generation, then hard-code observed test names. Otherwise return the complete test-spec
-variant with kind "test-workflow", version 1, the same identity fields, runner "test-spec", the selected
-BuildWorkflow identity, and a valid complete test_spec object.
+Runtime contract: the default-exported function receives one WorkflowContext with context.apiVersion === 1,
+context.workspaceRoot, context.input, context.facts.host, context.facts.project, and injected capabilities.
+The test input is exactly { kind: "test-workflow-input", version: 1, build_workflow_id: SELECTED_BUILD_ID,
+build_workflow_revision: SELECTED_BUILD_REVISION }. Do not read workflow identity from guessed top-level context
+fields. ProjectDetection contains only its declared schema fields; do not invent target aliases.
 
-Never emit shell commands, host API imports, or a request to skip failures. The host owns timeout, parallelism,
-process isolation, execution, and the final acceptance decision. Be conservative and fail-closed when test discovery
-is not established from measured project files and tools.
-You may declare observable steps with context.plan: const [id] = await plan.declare([{ title, children? }]);
-then await plan.begin(id) / plan.complete(id) / plan.fail(id, error). Root ids are returned; children use
-parentId.index. Declare at most a few dozen steps.`;
+The function runs ONCE PER WORKTREE: the host executes it in the baseline worktree, then in the candidate worktree.
+Both runs execute the SAME source. You CANNOT tell which side you are on — do not branch on side, do not try to
+detect it. Declare expectations with ctx.expect; the host pairs declarations by ORDER and compares the two sides'
+values:
+
+  ctx.expect("name", value);                       // relation "equal": both sides must be equal
+  ctx.expect("name", "baseline-greater", value);   // baseline side value must be > candidate side value
+  ctx.expect("name", "baseline-less", value);      // baseline side value must be < candidate side value
+  ctx.expect("name", "not-equal", value);          // both sides must differ
+  ctx.expect("name", "both-matches", value, "^regex$");  // EACH side must match the regex
+
+CRITICAL: expectation count and order MUST be identical across the two runs (the host pairs by position). Do not
+declare expectations inside loops over unordered data, do not branch on environment-dependent values before an
+expectation, and do not let an early failure skip later expectations. The values you pass are THIS side's observed
+values — you never know the other side's values.
+
+Run the actual tests with injected capabilities:
+- context.process.run({ program, args, cwd, timeoutMs }) runs a measured tool or workspace-relative executable.
+  The result has stdoutBase64/stderrBase64 (base64-encoded) and exitCode.
+- context.adapters.ctest.run({ buildDir, configuration, args, timeoutMs }) runs CTest.
+- context.validator.assertFile(path) asserts a file exists (throws → run fails).
+- context.plan declares observable stage steps (optional, a few only).
+
+Typical shape:
+  export const workflowKind = "test-workflow-driven";
+  export default async (ctx) => {
+    const suite = await ctx.process.run({
+      program: "ctest", args: ["--test-dir", "build", "-C", "Debug", "--output-on-failure"],
+      timeoutMs: 120000,
+    });
+    ctx.expect("ctest-exit", suite.exitCode);          // equal across sides
+    const out = Buffer.from(suite.stdoutBase64, "base64").toString("utf8");
+    ctx.expect("ctest-passed", out.includes("100% tests passed"));
+  };
+
+The host executes this source in each worktree, pairs expectations by position, and compares with the declared
+relations. An expectation mismatch fails the verification (fail-closed). Be conservative: if test discovery is not
+established from measured facts, throw a clear error rather than guessing.
+You may use context.plan for observable stages: const [id] = await plan.declare([{ title, children? }]); then
+await plan.begin(id) / plan.complete(id) / plan.fail(id, error). Declare at most a few steps.`;
 
 export function testWorkflowPrompt(
   workflowId: string,

@@ -35,7 +35,8 @@ export interface ResolveTestWorkflowOptions {
 export interface TestWorkflowResolution {
   readonly entry: string;
   readonly manifest: TestWorkflowManifest;
-  readonly workflow: TestWorkflowValue;
+  /** Declarative workflow object; null for self-driven (test-workflow-driven). */
+  readonly workflow: TestWorkflowValue | null;
   readonly sourceHash: string;
 }
 
@@ -50,50 +51,59 @@ export async function resolveTestWorkflow(
   const sourceHash = sha256(checked.source);
   const workspaceRoot = resolve(options.workspaceRoot ?? options.entryRoot);
   const facts: WorkflowFacts = { host: options.host, project: options.project };
-  const result = await runWorkflow({
-    entry,
-    cwd: workspaceRoot,
-    input: {
-      kind: "test-workflow-input",
-      version: 1,
-      build_workflow_id: options.buildWorkflow.workflow_id,
-      build_workflow_revision: options.buildWorkflow.workflow_revision,
-    },
-    facts,
-    timeoutMs: options.timeoutMs ?? 60_000,
-  });
-  if (result.status !== "pass") {
-    throw new Error(`test workflow failed: ${result.failure ?? result.status}`);
-  }
-
-  const workflow = TestWorkflow.parse(result.result);
-  if (workflow.workflow_id !== options.workflowId) {
-    throw new Error(
-      `test workflow id mismatch: expected '${options.workflowId}', got '${workflow.workflow_id}'`,
-    );
-  }
-  if (workflow.workflow_revision !== options.revision) {
-    throw new Error(
-      `test workflow revision mismatch: expected ${String(options.revision)}, got '${workflow.workflow_revision}'`,
-    );
-  }
-  if (
-    workflow.build_workflow_id !== options.buildWorkflow.workflow_id ||
-    workflow.build_workflow_revision !== options.buildWorkflow.workflow_revision
-  ) {
-    throw new Error("test workflow references a different BuildWorkflow");
-  }
-  if (workflow.runner === "ctest") {
-    CTestWorkflow.parse(workflow);
-    CTestSuiteSpec.parse(materializeCTestSuiteSpec(workflow, {
-      timeout_ms: 1,
-      parallelism: 1,
-    }));
-    for (const arg of workflow.extra_args) {
-      if (arg.includes("\0")) throw new Error("test workflow extra_args cannot contain NUL");
+  // Self-driven test workflows declare workflowKind = "test-workflow-driven".
+  // Like self-driven builds, they are executed later (once per worktree) by
+  // the host; resolution neither runs the function nor parses a declarative
+  // object.
+  const isSelfDriven = /export\s+const\s+workflowKind\s*=\s*["']test-workflow-driven["']/.test(checked.source);
+  let workflow: TestWorkflowValue | null = null;
+  if (!isSelfDriven) {
+    const result = await runWorkflow({
+      entry,
+      cwd: workspaceRoot,
+      input: {
+        kind: "test-workflow-input",
+        version: 1,
+        build_workflow_id: options.buildWorkflow.workflow_id,
+        build_workflow_revision: options.buildWorkflow.workflow_revision,
+      },
+      facts,
+      timeoutMs: options.timeoutMs ?? 60_000,
+    });
+    if (result.status !== "pass") {
+      throw new Error(`test workflow failed: ${result.failure ?? result.status}`);
     }
-  } else {
-    TestSpecWorkflow.parse(workflow);
+
+    const parsed = TestWorkflow.parse(result.result);
+    if (parsed.workflow_id !== options.workflowId) {
+      throw new Error(
+        `test workflow id mismatch: expected '${options.workflowId}', got '${parsed.workflow_id}'`,
+      );
+    }
+    if (parsed.workflow_revision !== options.revision) {
+      throw new Error(
+        `test workflow revision mismatch: expected ${String(options.revision)}, got '${parsed.workflow_revision}'`,
+      );
+    }
+    if (
+      parsed.build_workflow_id !== options.buildWorkflow.workflow_id ||
+      parsed.build_workflow_revision !== options.buildWorkflow.workflow_revision
+    ) {
+      throw new Error("test workflow references a different BuildWorkflow");
+    }
+    if (parsed.runner === "ctest") {
+      CTestWorkflow.parse(parsed);
+      CTestSuiteSpec.parse(materializeCTestSuiteSpec(parsed, {
+        timeout_ms: 1,
+        parallelism: 1,
+      }));
+      for (const arg of parsed.extra_args) {
+        if (arg.includes("\0")) throw new Error("test workflow extra_args cannot contain NUL");
+      }
+    } else {
+      TestSpecWorkflow.parse(parsed);
+    }
+    workflow = parsed;
   }
 
   const manifest = TestWorkflowManifest.parse({
@@ -109,7 +119,7 @@ export async function resolveTestWorkflow(
       markers: options.project?.markers ?? [],
       platforms: options.host ? [options.host.platform] : [],
       architectures: options.host ? [options.host.arch] : [],
-      required_tools: workflow.runner === "ctest" ? ["ctest"] : [],
+      required_tools: workflow !== null && workflow.runner === "ctest" ? ["ctest"] : [],
     },
     status: "draft",
   });
@@ -120,7 +130,7 @@ export function materializeTestWorkflow(
   resolution: TestWorkflowResolution,
   policy: CTestMaterializationPolicy,
 ): CTestSuiteSpec | null {
-  if (resolution.workflow.runner !== "ctest") return null;
+  if (resolution.workflow === null || resolution.workflow.runner !== "ctest") return null;
   return materializeCTestSuiteSpec(resolution.workflow, policy);
 }
 

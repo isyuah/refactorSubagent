@@ -20,6 +20,13 @@ import type { BuildWorkflowResolution } from "../workflow/build-workflow.js";
 import { executeBuildWorkflow, type BuildWorkflowExecution } from "../workflow/build-executor.js";
 import { classifyCTestBaseline, compareCTestSuites, createCTestCandidate } from "./ctest-comparator.js";
 import { runCTest } from "./ctest-runner.js";
+import { runTestSide } from "../workflow/test-executor.js";
+import { compareExpectations } from "../workflow/expectation-compare.js";
+import {
+  ExpectationBaseline,
+  ExpectationCandidate,
+  ExpectationComparisonResult,
+} from "../artifacts/index.js";
 import type { WorktreePair } from "./worktree.js";
 import type { E2ELogger } from "./e2e-log.js";
 
@@ -108,6 +115,12 @@ export async function runWorkflowVerification(
     : EnvironmentSpec.parse(request.build.output.environment);
   if (!submit(environment)) return emptyOutcome(request.store.state, results);
 
+  // Self-driven test workflows (workflow === null) execute their own test
+  // logic once per worktree and declare expectations; the host compares.
+  if (request.test.workflow === null) {
+    return runSelfDrivenVerification(request, orch, results, submit, environment);
+  }
+
   const suite = materializeTestWorkflow(request.test, {
     timeout_ms: request.ctestTimeoutMs ?? 1_200_000,
     parallelism: 1,
@@ -185,6 +198,153 @@ export async function runWorkflowVerification(
     baseline,
     candidate,
     comparison,
+  };
+}
+
+/**
+ * Self-driven TestWorkflow path: build both worktrees, run the test workflow
+ * once per side (it declares expectations via ctx.expect), then compare the
+ * two sides' declarations by position with the declared relations.
+ */
+async function runSelfDrivenVerification(
+  request: WorkflowVerificationRequest,
+  orch: Orchestrator,
+  results: SubmitResult[],
+  submit: (artifact: unknown) => boolean,
+  environment: unknown,
+): Promise<WorkflowVerificationOutcome> {
+  const empty = (extra: Record<string, unknown> = {}) => ({
+    ...emptyOutcome(request.store.state, results),
+    ...extra,
+  });
+
+  const baselineBuild = await executeBuild(request, request.worktrees.baselineDir, "baseline");
+  if (baselineBuild.status !== "pass") {
+    results.push(orch.abort(`baseline BuildWorkflow failed: ${baselineBuild.failure ?? "unknown failure"}`));
+    return empty({ baselineBuild });
+  }
+
+  request.logger?.phase("BASELINE_TEST_WORKFLOW");
+  const baselineRun = await runTestSide(request.test.entry, request.worktrees.baselineDir, {
+    host: request.host,
+    project: request.project,
+    policy: testWorkflowPolicy(request),
+    input: {
+      kind: "test-workflow-input",
+      version: 1,
+      build_workflow_id: request.build.manifest.id,
+      build_workflow_revision: request.build.manifest.revision,
+    },
+    timeoutMs: request.ctestTimeoutMs ?? 1_200_000,
+  });
+  if (baselineRun.status !== "pass") {
+    results.push(orch.abort(`baseline test workflow failed: ${baselineRun.failure ?? baselineRun.status}`));
+    return empty({ baselineBuild });
+  }
+  const baselineArtifact = ExpectationBaseline.parse({
+    kind: "expectation-baseline",
+    version: 1,
+    workflow_passed: true,
+    expectations: baselineRun.expectations,
+  });
+  request.store.saveArtifact(baselineArtifact);
+  request.logger?.artifact("expectation-baseline.json", baselineArtifact);
+  if (!submit(baselineArtifact)) return empty({ baselineBuild });
+
+  const patch: PatchRecord = {
+    kind: "patch-record",
+    version: 1,
+    ...request.patch,
+    base_commit_sha: request.worktrees.baseSha,
+  };
+  if (!submit(patch)) return empty({ baselineBuild });
+
+  const candidateBuild = await executeBuild(request, request.worktrees.candidateDir, "candidate");
+  if (candidateBuild.status !== "pass") {
+    results.push(orch.abort(`candidate BuildWorkflow failed: ${candidateBuild.failure ?? "unknown failure"}`));
+    return empty({ baselineBuild, candidateBuild });
+  }
+
+  request.logger?.phase("CANDIDATE_TEST_WORKFLOW");
+  const candidateRun = await runTestSide(request.test.entry, request.worktrees.candidateDir, {
+    host: request.host,
+    project: request.project,
+    policy: testWorkflowPolicy(request),
+    input: {
+      kind: "test-workflow-input",
+      version: 1,
+      build_workflow_id: request.build.manifest.id,
+      build_workflow_revision: request.build.manifest.revision,
+    },
+    timeoutMs: request.ctestTimeoutMs ?? 1_200_000,
+  });
+  if (candidateRun.status !== "pass") {
+    results.push(orch.abort(`candidate test workflow failed: ${candidateRun.failure ?? candidateRun.status}`));
+    return empty({ baselineBuild, candidateBuild });
+  }
+  const candidateArtifact = ExpectationCandidate.parse({
+    kind: "expectation-candidate",
+    version: 1,
+    workflow_passed: true,
+    expectations: candidateRun.expectations,
+  });
+  request.store.saveArtifact(candidateArtifact);
+  request.logger?.artifact("expectation-candidate.json", candidateArtifact);
+  if (!submit(candidateArtifact)) {
+    return empty({ baselineBuild, candidateBuild });
+  }
+
+  const comparison = compareExpectations(baselineRun.expectations, candidateRun.expectations);
+  const consistent = comparison.overall === "consistent";
+  const reason = consistent
+    ? `all ${String(comparison.matched.length)} expectation(s) consistent`
+    : [
+        ...comparison.errors,
+        ...comparison.mismatched.map((m) => `'${m.declaration.name}': ${m.reason}`),
+      ].join("; ") || "expectations inconsistent";
+  const comparisonArtifact = ExpectationComparisonResult.parse({
+    kind: "expectation-comparison-result",
+    version: 1,
+    overall: consistent ? "consistent" : "inconsistent",
+    declarations: [
+      ...comparison.matched.map((m) => ({
+        name: m.declaration.name,
+        relation: m.declaration.relation,
+        matched: true,
+        reason: "",
+      })),
+      ...comparison.mismatched.map((m) => ({
+        name: m.declaration.name,
+        relation: m.declaration.relation,
+        matched: false,
+        reason: m.reason,
+      })),
+    ],
+    errors: comparison.errors,
+    reason,
+  });
+  request.store.saveArtifact(comparisonArtifact);
+  request.logger?.artifact("expectation-comparison-result.json", comparisonArtifact);
+  submit(comparisonArtifact);
+  return {
+    state: request.store.state,
+    results,
+    baselineBuild,
+    candidateBuild,
+    baseline: null,
+    candidate: null,
+    comparison: null,
+  };
+}
+
+function testWorkflowPolicy(request: WorkflowVerificationRequest) {
+  return {
+    readableGlobs: ["**"],
+    writableGlobs: ["**"],
+    allowedTools: [],
+    maxProcesses: 4,
+    maxOutputBytes: 32 * 1024 * 1024,
+    maxFileBytes: 64 * 1024 * 1024,
   };
 }
 
@@ -279,7 +439,9 @@ function requiredBuildTools(output: BuildWorkflowOutput): string[] {
 }
 
 function requiredTopLevelTests(test: TestWorkflowResolution): readonly string[] {
-  return test.workflow.runner === "ctest" ? test.workflow.required_top_level_tests : [];
+  return test.workflow !== null && test.workflow.runner === "ctest"
+    ? test.workflow.required_top_level_tests
+    : [];
 }
 
 function emptyOutcome(

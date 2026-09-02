@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -41,7 +42,7 @@ export type TestWorkflowCandidateStatus =
 
 export interface StoredTestWorkflow {
   readonly manifestPath: string;
-  readonly workflowPath: string;
+  readonly workflowPath: string | null;
   readonly entry: string;
   readonly manifest: TestWorkflowManifestValue;
   readonly workflow: TestWorkflowValue | null;
@@ -99,6 +100,19 @@ export function saveTestWorkflow(
     entry: relative(root, entry).split(sep).join("/"),
     source_hash: sha256(source),
   });
+  // Self-driven test workflows have no declarative object (resolution.workflow
+  // is null); only the source + manifest are stored.
+  if (resolution.workflow === null) {
+    if (existsSync(workflowPath)) unlinkSync(workflowPath);
+    atomicWrite(manifestPath, `${JSON.stringify(storedManifest, null, 2)}\n`);
+    return {
+      manifestPath,
+      workflowPath: null,
+      entry,
+      manifest: storedManifest,
+      workflow: null,
+    };
+  }
   const workflow = TestWorkflow.parse(resolution.workflow);
   atomicWrite(manifestPath, `${JSON.stringify(storedManifest, null, 2)}\n`);
   atomicWrite(workflowPath, `${JSON.stringify(workflow, null, 2)}\n`);

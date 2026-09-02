@@ -74,7 +74,7 @@ console.log(JSON.stringify({
     entry: workflows.test.entry,
     id: workflows.test.manifest.id,
     revision: workflows.test.manifest.revision,
-    runner: workflows.test.workflow.runner,
+    runner: workflows.test.workflow?.runner ?? null,
   },
   builds_passed: buildsPassed,
   tests_completed: testsCompleted,

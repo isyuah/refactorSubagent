@@ -6,6 +6,9 @@ import type {
   CTestBaseline,
   CTestCandidate,
   CTestComparisonResult,
+  ExpectationBaseline,
+  ExpectationCandidate,
+  ExpectationComparisonResult,
 } from "../artifacts/index.js";
 import { matchGlob } from "../artifacts/scope-manifest.js";
 import { SessionStore, type SessionState } from "./store.js";
@@ -92,7 +95,9 @@ export class Orchestrator {
       ? "REJECTED"
       : artifact.kind === "ctest-comparison-result" && artifact.overall === "inconsistent"
         ? "REJECTED"
-        : transition.to;
+        : artifact.kind === "expectation-comparison-result" && artifact.overall === "inconsistent"
+          ? "REJECTED"
+          : transition.to;
 
     this.store.commitTransition(to, artifact.kind);
     return { ok: true, from: current, to };
@@ -132,6 +137,11 @@ export class Orchestrator {
     if (from === "ENV_READY") {
       if (artifact.kind === "observation-trace") return checkBaseline(artifact);
       if (artifact.kind === "ctest-baseline") return checkCTestBaseline(artifact);
+      if (artifact.kind === "expectation-baseline") {
+        // Baseline side must have run cleanly (workflow_passed is enforced
+        // by the schema literal true).
+        return null;
+      }
     }
     if (from === "BASELINE_READY" && artifact.kind === "patch-record") {
       return checkPatchScope(this.store, artifact);
@@ -142,6 +152,9 @@ export class Orchestrator {
     }
     if (from === "VERIFICATION_RUNNING" && artifact.kind === "ctest-comparison-result") {
       return checkCTestComparison(this.store, artifact);
+    }
+    if (from === "VERIFICATION_RUNNING" && artifact.kind === "expectation-comparison-result") {
+      return checkExpectationComparison(this.store, artifact);
     }
     return null;
   }
@@ -186,6 +199,15 @@ function expectedTransition(
   if (current === "VERIFICATION_RUNNING" && artifact.kind === "ctest-comparison-result") {
     return { to: "ACCEPTED", error: null };
   }
+  if (current === "ENV_READY" && artifact.kind === "expectation-baseline") {
+    return { to: "BASELINE_READY", error: null };
+  }
+  if (current === "PATCH_CREATED" && artifact.kind === "expectation-candidate") {
+    return { to: "VERIFICATION_RUNNING", error: null };
+  }
+  if (current === "VERIFICATION_RUNNING" && artifact.kind === "expectation-comparison-result") {
+    return { to: "ACCEPTED", error: null };
+  }
 
   if (artifact.kind !== rule.artifactKind) {
     return {
@@ -194,6 +216,26 @@ function expectedTransition(
     };
   }
   return { to: rule.to, error: null };
+}
+
+function checkExpectationComparison(
+  store: SessionStore,
+  artifact: ExpectationComparisonResult,
+): string | null {
+  const baseline = store.artifact("expectation-baseline");
+  const candidate = store.artifact("expectation-candidate");
+  if (baseline === null || candidate === null) {
+    return "expectation baseline/candidate artifact missing — cannot compare";
+  }
+  if (artifact.overall === "consistent") {
+    if (artifact.declarations.some((decl) => !decl.matched)) {
+      return "expectation comparison marked consistent but has unmatched declarations";
+    }
+    if (artifact.errors.length > 0) {
+      return "expectation comparison marked consistent but has structural errors";
+    }
+  }
+  return null;
 }
 
 function msg(error: unknown): string {

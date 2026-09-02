@@ -24,7 +24,7 @@ export interface ProposeTestWorkflowOptions {
  */
 export async function proposeTestWorkflow(
   options: ProposeTestWorkflowOptions,
-): Promise<TestWorkflowValue> {
+): Promise<TestWorkflowValue | null> {
   const entry = generatedEntry(options.repoDir, options.workflowId, options.revision);
   await generateWorkflowSource({
     cwd: options.repoDir,

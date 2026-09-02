@@ -12,6 +12,11 @@ import { BuildWorkflowManifest, BuildWorkflowOutput } from "./build-workflow.js"
 import { RefactorTestTask } from "./refactor-task.js";
 import { WorkflowResolution } from "./workflow-resolution.js";
 import { CTestBaseline, CTestCandidate, CTestComparisonResult } from "./ctest-suite.js";
+import {
+  ExpectationBaseline,
+  ExpectationCandidate,
+  ExpectationComparisonResult,
+} from "./expectation-suite.js";
 
 export * from "./common.js";
 export * from "./behavior-contract.js";
@@ -30,6 +35,7 @@ export * from "./sanitizer.js";
 export * from "./refactor-task.js";
 export * from "./test-workflow.js";
 export * from "./workflow-resolution.js";
+export * from "./expectation-suite.js";
 
 /** Union of every artifact kind the orchestrator accepts (some carry cross-field
  * refinements, so plain union instead of discriminatedUnion). */
@@ -48,6 +54,9 @@ export const Artifact = z.union([
   CTestBaseline,
   CTestCandidate,
   CTestComparisonResult,
+  ExpectationBaseline,
+  ExpectationCandidate,
+  ExpectationComparisonResult,
 ]);
 
 export type AnyArtifact = z.infer<typeof Artifact>;

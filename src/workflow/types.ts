@@ -156,6 +156,7 @@ export interface WorkflowCapabilities {
   readonly adapters: WorkflowAdapters;
   readonly validator: WorkflowValidator;
   readonly plan: WorkflowPlanApi;
+  readonly expect: WorkflowExpectApi;
 }
 
 export interface WorkflowContext {
@@ -171,6 +172,7 @@ export interface WorkflowContext {
   readonly adapters: WorkflowAdapters;
   readonly validator: WorkflowValidator;
   readonly plan: WorkflowPlanApi;
+  readonly expect: WorkflowExpectApi;
 }
 
 export interface WorkflowCapabilityPolicy {
@@ -244,6 +246,45 @@ export interface WorkflowPlanEvent {
   readonly description?: string;
   readonly error?: string;
 }
+
+/**
+ * Expectation relations between baseline and candidate observations.
+ * The workflow declares an expectation once; the host records the observed
+ * value on each side (baseline/candidate) and compares them using the
+ * relation semantics. The workflow never knows which side it runs on.
+ */
+export type ExpectationRelation =
+  | "equal"              // baseline === candidate
+  | "not-equal"          // baseline !== candidate
+  | "baseline-greater"   // baseline > candidate
+  | "baseline-less"      // baseline < candidate
+  | "both-matches";      // each side matches /regex/ (second arg of expect)
+
+/** One expectation declaration: name + relation + observed value (this side). */
+export interface ExpectationDeclaration {
+  readonly name: string;
+  readonly relation: ExpectationRelation;
+  /** Observed value on the current side (baseline or candidate). */
+  readonly value: unknown;
+  /** For "both-matches": the regex source to match against. */
+  readonly pattern?: string;
+}
+
+/** Worker-side expectation API injected as context.expect. */
+export interface WorkflowExpectApi {
+  /**
+   * Declare an expectation. The host compares the value observed on the
+   * baseline side with the value observed on the candidate side.
+   *
+   * relation "equal" (default): both sides must be equal.
+   * relation "both-matches": each side's value must match `pattern`.
+   * relation "baseline-greater": baseline value must be > candidate value.
+   * relation "baseline-less": baseline value must be < candidate value.
+   */
+  (name: string, value: unknown): void;
+  (name: string, relation: ExpectationRelation, value: unknown, pattern?: string): void;
+  (declaration: ExpectationDeclaration): void;
+}
 export interface WorkflowRunResult {
   status: "pass" | "failed" | "timeout" | "rejected";
   exitCode: number | null;
@@ -253,4 +294,6 @@ export interface WorkflowRunResult {
   failure: string | null;
   events: WorkflowEvent[];
   plan: WorkflowPlan | null;
+  /** Expectation declarations collected during this run (this side's values). */
+  expectations: ExpectationDeclaration[];
 }

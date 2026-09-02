@@ -21,6 +21,7 @@ import { probeHost } from "../src/runtime/host-preflight.js";
 import { detectCProject } from "../src/runtime/project-detector.js";
 import { resolveWorkflows } from "../src/workflow/resolve-workflows.js";
 import { executeBuildWorkflow } from "../src/workflow/build-executor.js";
+import { runTestSide } from "../src/workflow/test-executor.js";
 
 const LIBUV_VERSION = "v1.52.1";
 const LIBUV_REPO = "https://github.com/libuv/libuv.git";
@@ -153,6 +154,47 @@ for (const [name, path] of found) {
   }
 }
 
+console.log("\n=== 5. execute self-driven TestWorkflow (expectation check) ===");
+if (workflows.test.workflow === null) {
+  // AI generated a self-driven test workflow (test-workflow-driven): run it
+  // once in the built repo and confirm it passes with declared expectations.
+  console.log(`test entry: ${workflows.test.entry}`);
+  console.log(`test workflow: self-driven (test-workflow-driven)`);
+  const side = await runTestSide(workflows.test.entry, repo, {
+    host,
+    project,
+    policy: {
+      readableGlobs: ["**"],
+      writableGlobs: ["**"],
+      allowedTools: [],
+      maxProcesses: 4,
+      maxOutputBytes: 32 * 1024 * 1024,
+      maxFileBytes: 64 * 1024 * 1024,
+    },
+    input: {
+      kind: "test-workflow-input",
+      version: 1,
+      build_workflow_id: workflows.build.manifest.id,
+      build_workflow_revision: workflows.build.manifest.revision,
+    },
+    timeoutMs: 1_800_000,
+  });
+  console.log(`test run status: ${side.status}`);
+  for (const e of side.expectations) {
+    console.log(`  expect ${e.name}: relation=${e.relation} value=${JSON.stringify(e.value)}${e.pattern === undefined ? "" : ` pattern=${e.pattern}`}`);
+  }
+  if (side.status !== "pass") {
+    throw new Error(`self-driven TestWorkflow failed: ${side.failure ?? side.status}`);
+  }
+  if (side.expectations.length === 0) {
+    throw new Error("self-driven TestWorkflow declared no expectations (fail-closed)");
+  }
+  console.log(`self-driven TestWorkflow passed with ${String(side.expectations.length)} expectation(s)`);
+} else {
+  console.log(`test workflow: declarative (runner=${workflows.test.workflow.runner}); execution covered by product pipeline`);
+}
+
 console.log("\n=== PASS ===");
 console.log(`AI generated BuildWorkflow → schema valid → real libuv build → artifacts correct`);
+console.log(`AI generated TestWorkflow (self-driven) → expectations declared → run passed`);
 console.log(`session: ${sessionRoot}`);
