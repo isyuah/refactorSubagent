@@ -383,6 +383,10 @@ function testWorkflowPolicy(request: WorkflowVerificationRequest) {
   return {
     readableGlobs: ["**"],
     writableGlobs: ["**"],
+    // The self-driven test workflow runs the artifacts the declared builds
+    // produced (assertFile first, then process.run). Allow executables under
+    // the build tree only — never arbitrary programs.
+    executableGlobs: ["build/**"],
     allowedTools: [],
     maxProcesses: 4,
     maxOutputBytes: 32 * 1024 * 1024,
