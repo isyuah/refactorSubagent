@@ -120,7 +120,13 @@ observed values in the source. Do not attempt to discover them later through non
 Use workflow-driven when the project's build needs custom steps (e.g. makefiles, multi-target suites) — then
 drive it with context.process.run ({ program: "make", args: [...] }) etc. Never infer tool availability. Never
 emit shell commands as strings passed to a shell; context.process.run executes argv directly without a shell.
-Never emit absolute paths, add platform executable suffixes, or add compiler include flags for determinism headers.
+Never emit absolute paths or compiler include flags for determinism headers.
+
+Executable output paths on Windows end in .exe; on other platforms they do not. Decide the suffix from measured
+facts, never by guessing: ctx.facts.host.platform is "win32" on Windows (check it at runtime and append ".exe"
+to asserted artifact paths accordingly), or read CMAKE_EXECUTABLE_SUFFIX from the generated CMakeCache.txt after
+configure. Do not assume a bare path is the real artifact — the host rejects workflows that assert paths the
+build did not produce.
 
 The workflow source may use only injected WorkflowContext capabilities when execution is needed. It must not import
 node:/bun: modules or access process.*, Bun.*, the network, git, or arbitrary files. The host executes the source,
