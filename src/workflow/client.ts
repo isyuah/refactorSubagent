@@ -85,15 +85,20 @@ export class WorkflowCapabilityClient {
       snapshot: async (path) => await this.call("fs", "snapshot", [path]) as WorkflowFsSnapshot,
       diff: async (path, before) => await this.call("fs", "diff", [path, before]) as WorkflowFsEffect[],
     };
+    const decodeProcess = (result: ProcessResult): ProcessResult => ({
+      ...result,
+      stdout: Buffer.from(result.stdoutBase64, "base64").toString("utf8"),
+      stderr: Buffer.from(result.stderrBase64, "base64").toString("utf8"),
+    });
     const processCapability: WorkflowProcess = {
-      run: async (spec) => await this.call("process", "run", [spec]) as ProcessResult,
+      run: async (spec) => decodeProcess(await this.call("process", "run", [spec]) as ProcessResult),
       start: async (spec) => await this.call("process", "start", [spec]) as ProcessHandle,
-      wait: async (handle, timeoutMs) => await this.call(
+      wait: async (handle, timeoutMs) => decodeProcess(await this.call(
         "process",
         "wait",
         timeoutMs === undefined ? [handle] : [handle, timeoutMs],
-      ) as ProcessResult,
-      stop: async (handle) => await this.call("process", "stop", [handle]) as ProcessResult,
+      ) as ProcessResult),
+      stop: async (handle) => decodeProcess(await this.call("process", "stop", [handle]) as ProcessResult),
     };
     const tools: WorkflowTools = {
       available: async (name) => await this.call("tools", "available", [name]) as boolean,

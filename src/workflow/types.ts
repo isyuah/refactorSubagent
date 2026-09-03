@@ -63,6 +63,11 @@ export interface ProcessResult {
   readonly signal: string | null;
   readonly stdoutBase64: string;
   readonly stderrBase64: string;
+  /** Decoded stdout text (utf8). Present on results delivered to workflow
+   *  source via WorkflowCapabilityClient — workflows read result.stdout. */
+  readonly stdout?: string;
+  /** Decoded stderr text (utf8). See stdout. */
+  readonly stderr?: string;
   readonly durationMs: number;
   readonly error: string | null;
 }
