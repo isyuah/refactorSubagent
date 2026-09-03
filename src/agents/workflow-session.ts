@@ -4,8 +4,10 @@ import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import { buildWriterDefinition } from "./build-writer.js";
 import { LocalDependencyRegistry } from "./dep-registry.js";
 import { createDependencyMcpServer } from "./dep-registry-server.js";
+import type { SessionStore } from "@anthropic-ai/claude-agent-sdk";
 import { runAgent, type DriverRun } from "./driver.js";
 import { TEST_WORKFLOW_SYSTEM } from "./prompts.js";
+import type { Logger } from "../runtime/log.js";
 
 /**
  * workflow-session — orchestrates a test-writer Claude session that produces
@@ -44,6 +46,10 @@ export interface WorkflowSessionOptions {
   readonly forbiddenGlobs?: readonly string[];
   /** Injected capabilities seam for tests; defaults to runAgent. */
   readonly runAgentFn?: (options: WorkflowSessionAgentOptions) => Promise<DriverRun>;
+  /** Run-scoped logger for session-level events (mirrored to driver). */
+  readonly logger?: Logger;
+  /** Mirror the full AI session transcript to this store. */
+  readonly sessionStore?: SessionStore;
 }
 
 /** Options handed to the underlying agent runner (narrowed for testability). */
@@ -61,6 +67,10 @@ export interface WorkflowSessionAgentOptions {
   readonly skills: readonly string[];
   readonly maxTurns: number;
   readonly timeoutMs?: number;
+  /** Run-scoped logger; session events are mirrored by the runner. */
+  readonly logger?: Logger;
+  /** Mirror the full AI session transcript to this store. */
+  readonly sessionStore?: SessionStore;
 }
 
 export interface WorkflowSessionResult {
@@ -205,6 +215,8 @@ export async function runWorkflowSession(
     skills: ["workflow-spec:workflow-spec"],
     maxTurns: options.maxTurns ?? 48,
     timeoutMs: options.timeoutMs,
+    logger: options.logger,
+    sessionStore: options.sessionStore,
   });
 
   const testEntryExists = existsSync(options.testEntry);
@@ -251,5 +263,7 @@ async function defaultRunAgent(
     skills: [...o.skills],
     maxTurns: o.maxTurns,
     timeoutMs: o.timeoutMs,
+    logger: o.logger,
+    sessionStore: o.sessionStore,
   });
 }

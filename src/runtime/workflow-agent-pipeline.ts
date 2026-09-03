@@ -7,6 +7,7 @@ import { curateBuildWorkflow, loadAliases } from "../workflow/curator.js";
 import { analyzeRepo, type AnalysisResult } from "../agents/analyze.js";
 import { runRefactor } from "../agents/refactor.js";
 import { E2ELogger } from "./e2e-log.js";
+import { FileSessionStore } from "./session-store.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { SessionStore } from "../orchestrator/store.js";
 import { detectCProject } from "./project-detector.js";
@@ -80,6 +81,11 @@ export async function runAgentWorkflowVerification(
     join(req.sessionRoot, ".refactor", "e2e"),
     req.sessionId,
   );
+  // Mirror every AI session transcript (tool calls, subagent text, results)
+  // under the run dir so slow runs can be analyzed at full fidelity without
+  // raising the run.jsonl log level. One adapter per run; the SDK key is
+  // {projectKey, sessionId} so each session lands in its own file.
+  const sessionStore = new FileSessionStore(logger.runDir);
   let analysis: AnalysisResult | null = null;
   let declared: DeclaredAgentResolution | null = null;
   let verification: WorkflowVerificationOutcome | null = null;
@@ -89,13 +95,18 @@ export async function runAgentWorkflowVerification(
 
   try {
     logger.phase("PREFLIGHT");
-    const host = probeHost(req.repoPath);
-    store.saveHostPreflight(host);
-    logger.artifact("host-preflight.json", host);
-
-    const project = detectCProject(req.repoPath, host);
-    store.saveProjectDetection(project);
-    logger.artifact("project-detection.json", project);
+    const host = timed(logger, "host probe", () => {
+      const probed = probeHost(req.repoPath);
+      store.saveHostPreflight(probed);
+      logger.artifact("host-preflight.json", probed);
+      return probed;
+    });
+    const project = timed(logger, "project detection", () => {
+      const detected = detectCProject(req.repoPath, host);
+      store.saveProjectDetection(detected);
+      logger.artifact("project-detection.json", detected);
+      return detected;
+    });
     logger.info("C project preflight completed", {
       status: project.status,
       primary_build_system: project.primary_build_system,
@@ -108,13 +119,15 @@ export async function runAgentWorkflowVerification(
     }
 
     logger.phase("ANALYSIS");
-    analysis = analyzeRepo({
-      repoDir: req.repoPath,
-      taskContext: req.task,
-      host,
-      project,
-      allowedEditableFiles: req.allowedEditableFiles,
-    });
+    analysis = timed(logger, "host-side analysis probe", () =>
+      analyzeRepo({
+        repoDir: req.repoPath,
+        taskContext: req.task,
+        host,
+        project,
+        allowedEditableFiles: req.allowedEditableFiles,
+      }),
+    );
     logger.artifact("analysis-report.txt", { report: analysis.report });
     logger.info("project probed; modification scope derived from host policy", {
       editable_files: analysis.scope.editable_files.map((target) => target.file),
@@ -123,6 +136,7 @@ export async function runAgentWorkflowVerification(
     logger.phase("WORKFLOW_SESSION");
     logger.info("running test-writer session (declare build deps, author TestWorkflow)");
     logger.startHeartbeat(5_000);
+    const sessionStarted = performance.now();
     try {
       declared = await runDeclaredResolution({
         repoDir: req.repoPath,
@@ -132,11 +146,13 @@ export async function runAgentWorkflowVerification(
         host,
         project,
         logger,
+        sessionStore,
         workflowTimeoutMs: req.workflowTimeoutMs,
       });
     } finally {
       logger.stopHeartbeat();
     }
+    logger.info("test-writer session wall time", { duration_ms: Math.round(performance.now() - sessionStarted) });
     logger.artifact("declared-build-set.json", declared.declaredSet);
     logger.artifact("workflow-resolution-test.json", declared.testResolution);
     logger.artifact("test-workflow.json", declared.testSource === "" ? null : JSON.parse(declared.testSource));
@@ -148,8 +164,10 @@ export async function runAgentWorkflowVerification(
 
     const baseSha = resolveHead(req.repoPath);
     const branch = `refactor/agent-${req.sessionId}`;
-    gitIn(req.repoPath, ["branch", branch, baseSha]);
-    worktrees = createWorktrees(req.repoPath, store.sessionDir, branch, baseSha);
+    worktrees = timed(logger, "branch + worktree creation", () => {
+      gitIn(req.repoPath, ["branch", branch, baseSha]);
+      return createWorktrees(req.repoPath, store.sessionDir, branch, baseSha);
+    });
     logger.info("isolated baseline and candidate worktrees created", {
       base_sha: baseSha,
       branch,
@@ -158,8 +176,14 @@ export async function runAgentWorkflowVerification(
     });
 
     logger.phase("REFACTOR");
-    const editable = analysis.scope.editable_files.map((target) => target.file);
-    const refactor = await runRefactor(worktrees.candidateDir, req.task, analysis.scope);
+    const analysisNow = analysis;
+    const editable = analysisNow.scope.editable_files.map((target) => target.file);
+    const refactor = await timedAsync(logger, "refactor agent session", () =>
+      runRefactor(worktrees!.candidateDir, req.task, analysisNow.scope, {
+        logger,
+        sessionStore,
+      }),
+    );
     refactorSummary = refactor.summary;
     scopeDenials = refactor.denials;
     logger.artifact("refactor-summary.json", {
@@ -200,6 +224,8 @@ export async function runAgentWorkflowVerification(
       return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
     }
     const firstBuild = declared.buildResolutions[0]!;
+    logger.info("workflow verification started", { phase_detail: "all builds + ctest both sides" });
+    const verificationStarted = performance.now();
     verification = await runWorkflowVerification({
       repoPath: req.repoPath,
       worktrees,
@@ -243,13 +269,16 @@ export async function runAgentWorkflowVerification(
       ctestTimeoutMs: req.ctestTimeoutMs,
       knownEnvironmentPatterns: req.knownEnvironmentPatterns,
     });
+    logger.info("workflow verification completed", { duration_ms: Math.round(performance.now() - verificationStarted) });
     return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
   } catch (error) {
     const reason = errorMessage(error);
     abort(orch, logger, reason);
     return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
   } finally {
-    worktrees?.cleanup();
+    timed(logger, "worktree cleanup", () => {
+      worktrees?.cleanup();
+    });
     if (store.state === "ACCEPTED") {
       await promoteRunLocalBuilds(declared, req.repoPath, logger);
       logger.finish("accepted", "workflow verification accepted candidate");
@@ -259,7 +288,6 @@ export async function runAgentWorkflowVerification(
     logger.close();
   }
 }
-
 function enforceEditablePolicy(
   analysis: AnalysisResult,
   allowed: readonly string[] | undefined,
@@ -302,8 +330,24 @@ function result(
   };
 }
 
+/** First non-empty line of an agent summary, used as the commit subject. */
 function firstSummaryLine(summary: string): string | null {
   return summary.split(/\r?\n/).find((line) => line.trim().length > 0) ?? null;
+}
+
+/** Time one host-side stage; logs completion at info with duration_ms. */
+function timed<R>(logger: E2ELogger, what: string, fn: () => R): R {
+  const started = performance.now();
+  const value = fn();
+  logger.info(`${what} completed`, { duration_ms: Math.round(performance.now() - started) });
+  return value;
+}
+
+async function timedAsync<T>(logger: E2ELogger, what: string, fn: () => Promise<T>): Promise<T> {
+  const started = performance.now();
+  const value = await fn();
+  logger.info(`${what} completed`, { duration_ms: Math.round(performance.now() - started) });
+  return value;
 }
 
 function gitIn(dir: string, args: string[]): string {
@@ -342,6 +386,7 @@ async function runDeclaredResolution(options: {
   readonly host: HostPreflight;
   readonly project: ProjectDetection;
   readonly logger: E2ELogger;
+  readonly sessionStore: FileSessionStore;
   readonly workflowTimeoutMs?: number;
 }): Promise<DeclaredAgentResolution> {
   const testRelDir = join(".refactor", "runs", options.sessionId, "workflows", "test");
@@ -354,6 +399,8 @@ async function runDeclaredResolution(options: {
     testEntry,
     host: options.host,
     project: options.project,
+    logger: options.logger,
+    sessionStore: options.sessionStore,
     timeoutMs: options.workflowTimeoutMs,
   });
   if (!session.ok) {
