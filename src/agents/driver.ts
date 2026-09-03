@@ -362,13 +362,18 @@ export function checkToolScope(
     }
     const resolved = relativeAgentPath(filePath, root);
     if (!resolved.allowed) return resolved;
+    // Explicit editable authorization wins over broad forbidden globs: the
+    // host hands the agent its exact deliverable path (e.g. a run-local test
+    // workflow under .refactor/runs/<session>/), which is simultaneously
+    // inside a ".refactor/**" catch-all denial. A path that matches an
+    // editable entry is authorized by construction.
+    if (matchesScope(resolved.path, editableFiles)) {
+      return { allowed: true, reason: null };
+    }
     if (matchesScope(resolved.path, forbiddenGlobs)) {
       return { allowed: false, reason: `path is forbidden: ${resolved.path}` };
     }
-    if (!matchesScope(resolved.path, editableFiles)) {
-      return { allowed: false, reason: `path is outside Modification Scope: ${resolved.path}` };
-    }
-    return { allowed: true, reason: null };
+    return { allowed: false, reason: `path is outside Modification Scope: ${resolved.path}` };
   }
 
   if (toolName === "Read") {

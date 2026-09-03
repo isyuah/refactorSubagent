@@ -47,7 +47,11 @@ describe("Agent scope enforcement", () => {
     expect(checkToolScope("Grep", { path: ".", glob: "**/*.c" }, root, ["**"], forbidden, editable).reason).toContain("may include forbidden");
     expect(checkToolScope("Write", { file_path: "src/main.c" }, root, readable, forbidden, editable).allowed).toBeTrue();
     expect(checkToolScope("Write", { file_path: "src/other.c" }, root, readable, forbidden, editable).reason).toContain("Modification Scope");
-    expect(checkToolScope("Write", { file_path: "tests/generated.c" }, root, ["**"], forbidden, ["tests/generated.c"]).reason).toContain("forbidden");
+    // An editable entry is host authorization by construction: it wins over
+    // broad forbidden globs (e.g. a run-local deliverable under .refactor/**).
+    expect(checkToolScope("Write", { file_path: "tests/generated.c" }, root, ["**"], forbidden, ["tests/generated.c"]).allowed).toBeTrue();
+    // Without an editable entry, the same path stays forbidden.
+    expect(checkToolScope("Write", { file_path: "tests/other.c" }, root, ["**"], forbidden, editable).reason).toContain("forbidden");
     expect(checkToolScope("Read", { file_path: "../outside.c" }, root, ["**"], [], editable).reason).toContain("escapes");
     // Claude Code sends Glob with an absolute repo-root path plus a pattern;
     // a pattern targeting a readable subtree must not be denied just because
