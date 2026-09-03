@@ -98,12 +98,13 @@ const DEFAULT_READABLE = [
   "*.h",
 ] as const;
 
+// The test-writer must READ the project's existing tests to write meaningful
+// test workflows; only repo internals and its own run artifacts stay hidden.
+// Editable scope is still limited to the single test workflow file.
 const DEFAULT_FORBIDDEN = [
   "baseline/**",
   ".refactor/**",
   "node_modules/**",
-  "test/**",
-  "tests/**",
 ] as const;
 
 const SESSION_PROMPT = (
@@ -132,11 +133,14 @@ Workflow of the session:
      and entries generated earlier this run (status run-local).
   2. Decide: reuse a suitable library build, or author a new one.
      - Reuse: use its id in declareDependency.
-     - New: spawn the build-writer subagent via the Task tool. It writes the
-       BuildWorkflow source through the host (generateBuildWorkflow) and reports
-       the assigned workflow_id plus EVERY artifact path the build produces and
-       how to invoke each. After it reports, call generateBuildWorkflow
-       yourself only if you must adjust; otherwise declare its workflow_id.
+     - New: spawn the build-writer subagent via the Task tool. IMPORTANT: run it
+       in the FOREGROUND (run_in_background: false) and WAIT for its result
+       before doing anything else — spawn one agent, collect its report, then
+       continue. Never fire background agents and finish without their results;
+       the session is not complete until the build exists and you have its
+       artifact paths. The build-writer writes the BuildWorkflow source through
+       the host (generateBuildWorkflow) and reports the assigned workflow_id
+       plus EVERY artifact path the build produces and how to invoke each.
   3. Call declareDependency with the final complete set.
   4. Write the test workflow file. Your test workflow:
      - MUST NOT rebuild anything — the host already built every declared build

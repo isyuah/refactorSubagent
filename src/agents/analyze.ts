@@ -91,14 +91,14 @@ function buildReadableGlobs(sourceFiles: readonly string[]): string[] {
   return [...globs];
 }
 
+// NOTE: no bare "*.c"/"*.h" here — a root-level wildcard has an empty literal
+// prefix and would make every readable↔forbidden pair look overlapping.
 const DEFAULT_READABLE_GLOBS = [
   "CMakeLists.txt",
   "cmake/**",
   "config/**",
   "include/**",
   "src/**",
-  "*.c",
-  "*.h",
 ] as const;
 
 const DEFAULT_FORBIDDEN_GLOBS = [
