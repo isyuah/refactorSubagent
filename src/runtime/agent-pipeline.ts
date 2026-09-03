@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { analyzeRepo } from "../agents/analyze.js";
+import { analyzeRepoLegacy } from "../agents/analyze-legacy.js";
 import { runRefactor } from "../agents/refactor.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { SessionStore } from "../orchestrator/store.js";
@@ -34,7 +34,7 @@ function gitIn(dir: string, args: string[]): string {
  * Agent Pipeline — Claude proposes and refactors; the program validates,
  * commits, builds, runs and decides.
  *
- *   analyzeRepo()          → artifact proposals (zod-validated, 1 retry)
+ *   analyzeRepoLegacy()          → artifact proposals (zod-validated, 1 retry)
  *   createWorktrees()      → physical isolation
  *   runRefactor()          → edits candidate worktree, scope-enforced by hook
  *   program git commit     → the agent never touches git
@@ -66,7 +66,7 @@ export async function runAgentVerification(
   }
 
   // Analysis receives measured host and project facts.
-  const analysis = await analyzeRepo(req.repoPath, req.task, host, project);
+  const analysis = await analyzeRepoLegacy(req.repoPath, req.task, host, project);
   // 2. Candidate branch at current HEAD; agent edits land in its worktree.
   const branch = `refactor/agent-${req.sessionId}`;
   const headBefore = resolveHead(req.repoPath);

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import { curateBuildWorkflow, loadAliases } from "../workflow/curator.js";
-import { analyzeRepo, proposalArtifacts, type AnalysisResult } from "../agents/analyze.js";
+import { analyzeRepo, type AnalysisResult } from "../agents/analyze.js";
 import { runRefactor } from "../agents/refactor.js";
 import { E2ELogger } from "./e2e-log.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
@@ -16,7 +16,13 @@ import { createWorktrees, resolveHead, type WorktreePair } from "./worktree.js";
 import { runWorkflowSession } from "../agents/workflow-session.js";
 import { LocalDependencyRegistry } from "../agents/dep-registry.js";
 import { resolveDeclaredWorkflows } from "../workflow/resolve-declared.js";
-import type { DeclaredBuildSet as DeclaredBuildSetValue, WorkflowResolution } from "../artifacts/index.js";
+import type {
+  BehaviorContract,
+  DeclaredBuildSet as DeclaredBuildSetValue,
+  DependencyManifest,
+  TestSpec,
+  WorkflowResolution,
+} from "../artifacts/index.js";
 import type { TestWorkflowResolution } from "../workflow/test-workflow.js";
 import type { BuildWorkflowResolution } from "../workflow/build-workflow.js";
 
@@ -102,14 +108,16 @@ export async function runAgentWorkflowVerification(
     }
 
     logger.phase("ANALYSIS");
-    analysis = await analyzeRepo(req.repoPath, req.task, host, project);
-    for (const artifact of proposalArtifacts(analysis)) {
-      logger.artifact(`analysis-${artifact.kind}.json`, artifact);
-    }
-    enforceEditablePolicy(analysis, req.allowedEditableFiles);
-    logger.info("Claude analysis accepted by host schemas", {
+    analysis = analyzeRepo({
+      repoDir: req.repoPath,
+      taskContext: req.task,
+      host,
+      project,
+      allowedEditableFiles: req.allowedEditableFiles,
+    });
+    logger.artifact("analysis-report.txt", { report: analysis.report });
+    logger.info("project probed; modification scope derived from host policy", {
       editable_files: analysis.scope.editable_files.map((target) => target.file),
-      test_case_count: analysis.tests.cases.length,
     });
 
     logger.phase("WORKFLOW_SESSION");
@@ -199,10 +207,10 @@ export async function runAgentWorkflowVerification(
       logger,
       host,
       project,
-      contract: analysis.contract,
+      contract: defaultContract(),
       scope: analysis.scope,
-      deps: analysis.deps,
-      tests: analysis.tests,
+      deps: defaultDeps(),
+      tests: defaultTests(),
       // Declared mode: DeclaredBuildSet artifact + declared test resolution
       // replace the legacy single build resolution in the state machine.
       buildResolution: {
@@ -480,4 +488,63 @@ function readDescriptionSidecar(entry: string): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * Host-constructed default proposal artifacts. In the declared-mode flow the
+ * behavior contract, dependency list and test spec are decided inside the AI
+ * sessions (test workflow declares expectations; the build/test workflows
+ * self-drive). The state machine still requires these artifacts to advance
+ * INIT → CONTRACT_READY → SCOPE_READY → DEPENDENCY_READY → TESTS_READY, so the
+ * host submits minimal, semantically-neutral placeholders that carry no
+ * verification meaning — the real gate is the DeclaredBuildSet + expectation
+ * diff that follows.
+ */
+function defaultContract(): BehaviorContract {
+  const ignore = { mode: "ignore" as const };
+  return {
+    kind: "behavior-contract",
+    version: 1,
+    channels: {
+      exit_code: ignore,
+      signals: ignore,
+      stdout: ignore,
+      stderr: ignore,
+      filesystem: ignore,
+    },
+    allowed_change: { internal_structure: true, execution_time: true },
+    notes: ["host-derived placeholder: expectations are declared by the test workflow"],
+  };
+}
+
+function defaultDeps(): DependencyManifest {
+  return {
+    kind: "dependency-manifest",
+    version: 1,
+    dependencies: [
+      {
+        name: "none-declared",
+        kind: "time",
+        strategy: "reject",
+        evidence: [],
+        notes: "host-derived placeholder: no static dependency analysis in declared mode",
+      },
+    ],
+  };
+}
+
+function defaultTests(): TestSpec {
+  return {
+    kind: "test-spec",
+    version: 1,
+    cases: [
+      {
+        id: "self-driven",
+        kind: "differential",
+        argv: [],
+        stdin: "",
+        fixtures: [],
+      },
+    ],
+  };
 }
