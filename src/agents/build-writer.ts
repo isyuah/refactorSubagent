@@ -1,28 +1,25 @@
+import type { AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { BUILD_WORKFLOW_SYSTEM } from "./prompts.js";
 
 /**
  * build-writer — AgentDefinition for the subagent that authors
  * workflow-driven BuildWorkflow sources on request of the test-writer.
  *
- * Security model: the build-writer has NO Write/Edit/Bash tools. Its `tools`
- * allowlist covers only read tools (Read/Glob/Grep); the dep-registry MCP
- * tools (generateBuildWorkflow/inspectWorkflow) are inherited from the parent
- * session, so the writer can only hand produced source to the host — never
- * touch the repository itself. The host validates the source before
- * materializing it under the run directory.
+ * Security model: the build-writer has NO Write/Edit/Bash tools. Its only
+ * write path is the host-side dep-registry MCP server (generateBuildWorkflow),
+ * which validates the produced source before materializing it under the run
+ * directory — the writer can never touch the repository itself.
+ *
+ * MCP visibility: an AgentDefinition with an explicit `tools` list does NOT
+ * inherit the parent session's MCP tools. The writer must name its MCP tools
+ * in `tools` AND declare the server in `mcpServers` (the SDK bridges the
+ * parent's in-process server to the subagent by name).
  *
  * Reporting contract: after generating, the writer's final message must tell
  * the caller what was produced — the workflow id, and every artifact path the
  * build will create with its purpose — so the test-writer can reference those
  * paths (the host does not inject artifact locations).
  */
-
-/** Shape accepted by SDK query `agents` option. */
-export interface AgentDefinition {
-  readonly description: string;
-  readonly tools?: readonly string[];
-  readonly prompt: string;
-}
 
 const WRITING_RULES = `You write workflow-driven BuildWorkflow TypeScript sources.
 
@@ -37,7 +34,7 @@ succeeds.
 
 Tool availability in this session:
   - Read / Glob / Grep — inspect the repository (CMakeLists.txt, cmake/, src/,
-    include/) to write a correct build.
+    include/, tests/) to write a correct build.
   - mcp__dep-registry__generateBuildWorkflow — materialize your produced source.
   - mcp__dep-registry__inspectWorkflow — check whether a suitable build already
     exists before writing a new one (prefer reuse).
@@ -70,21 +67,36 @@ export function buildWriterDefinition(
   mcpServerName = "dep-registry",
 ): AgentDefinition {
   const generateTool = `mcp__${mcpServerName}__generateBuildWorkflow`;
+  const inspectTool = `mcp__${mcpServerName}__inspectWorkflow`;
   return {
     description:
       "Writes a workflow-driven BuildWorkflow (TypeScript source) on request. " +
       "Inspects the repository and produces a validated build workflow via the " +
       `generateBuildWorkflow tool (${generateTool}). Use when a test workflow ` +
       "needs a build that does not already exist or is not suitable.",
-    tools: ["Read", "Glob", "Grep"],
+    tools: [
+      "Read",
+      "Glob",
+      "Grep",
+      // The agent's only write path is the host-side registry: it must be
+      // able to call generateBuildWorkflow (and inspect existing builds).
+      // An explicit tools list does NOT inherit parent MCP tools, so name
+      // them here AND declare the server in mcpServers below.
+      generateTool,
+      inspectTool,
+    ],
+    // Reference the parent session's dep-registry server by name so this
+    // subagent can reach the host-side registry (the SDK bridges the
+    // in-process server to the subagent by server name).
+    mcpServers: [mcpServerName],
     prompt: [
       BUILD_WORKFLOW_SYSTEM,
       WRITING_RULES,
       DECISION_RULES,
       REPORTING_CONTRACT,
-      `MCP tools available in this session (inherited from the caller): ` +
-        `${generateTool}, and inspectWorkflow. Prefer inspectWorkflow to check ` +
-        `whether a suitable build already exists before generating a new one.`,
+      `MCP tools available in this session: ${generateTool} and ${inspectTool}. ` +
+        `Prefer ${inspectTool} to check whether a suitable build already exists ` +
+        "before generating a new one.",
     ].join("\n\n"),
   };
 }

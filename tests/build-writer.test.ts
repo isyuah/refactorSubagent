@@ -50,6 +50,16 @@ describe("buildWriterDefinition", () => {
     expect(def.prompt).toContain("how the test can invoke it");
   });
 
+  test("declares the dep-registry server so MCP tools reach the subagent", () => {
+    const def = buildWriterDefinition();
+    expect(def.mcpServers).toEqual(["dep-registry"]);
+    expect(def.tools).toContain("mcp__dep-registry__generateBuildWorkflow");
+    expect(def.tools).toContain("mcp__dep-registry__inspectWorkflow");
+    const custom = buildWriterDefinition("my-dep");
+    expect(custom.mcpServers).toEqual(["my-dep"]);
+    expect(custom.tools).toContain("mcp__my-dep__generateBuildWorkflow");
+  });
+
   test("honors a custom MCP server name", () => {
     const def = buildWriterDefinition("my-dep");
     expect(def.prompt).toContain("mcp__my-dep__generateBuildWorkflow");
