@@ -565,11 +565,21 @@ export class LocalCapabilityBroker implements CapabilityBroker {
   private resolveProgram(program: string): string {
     const measured = this.resolveMeasuredTool(program);
     if (measured !== null) return measured;
-    if (isAbsolute(program)) throw new Error(`absolute executable paths are not allowed: ${program}`);
-    if (!program.includes("/") && !program.includes("\\")) {
+    let candidate = program;
+    if (isAbsolute(program)) {
+      // An absolute path inside the workspace is the same executable as its
+      // relative form; workflows naturally build paths from ctx.workspaceRoot.
+      // Normalize to the workspace-relative path and continue the checks.
+      const rel = relative(this.workspaceRoot, program).split(sep).join("/");
+      if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
+        throw new Error(`absolute executable paths are not allowed: ${program}`);
+      }
+      candidate = rel;
+    }
+    if (!candidate.includes("/") && !candidate.includes("\\")) {
       throw new Error(`measured tool is unavailable: ${program}`);
     }
-    const absolute = this.resolveReadable(program);
+    const absolute = this.resolveReadable(candidate);
     if (!matchesAnyGlob(this.relativeWorkspace(absolute), this.policy.executableGlobs)) {
       throw new Error(`executable is not allowed by executableGlobs: ${program}`);
     }
