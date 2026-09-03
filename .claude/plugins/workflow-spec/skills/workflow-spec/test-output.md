@@ -23,6 +23,19 @@ export default async (ctx: WorkflowContext) => {
 - 每次执行收集你 `ctx.expect` 声明的（name, relation, value）
 - 宿主**按位置配对**两侧声明（第 1 个对第 1 个，依此类推），用 relation 比较
 
+## 构建产物（重要）
+
+你的 test workflow 运行时，宿主**已经在你声明的每个 build 上完成了构建**
+（baseline/candidate 各一次）。因此：
+
+- **绝不要自己 rebuild**——不要 configure、不要编译、不要创建新的 build 目录。
+  需要的是**运行/检查已构建的产物**。
+- 产物路径来自你的会话：build-writer 汇报的路径（或你从仓库布局推断的
+  常规位置）。引用这些路径前用 `ctx.validator.assertFile(path, desc)` 断言存在；
+  断言失败 → throw → 本侧失败（fail-closed）。不要"发现缺了再自己编"。
+- 测试目标是**跑已构建的可执行/库并观测行为**（退出码、输出、计数），
+  把这些观测用 `ctx.expect` 声明。
+
 ## ctx.expect API
 
 ```ts

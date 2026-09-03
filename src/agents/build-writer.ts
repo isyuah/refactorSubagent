@@ -4,12 +4,12 @@ import { BUILD_WORKFLOW_SYSTEM } from "./prompts.js";
  * build-writer — AgentDefinition for the subagent that authors
  * workflow-driven BuildWorkflow sources on request of the test-writer.
  *
- * Security model: the build-writer has NO Write/Edit/Bash tools. It can only
- * read the repo (Read/Glob/Grep) and hand its produced source to the host via
- * the generateBuildWorkflow MCP tool. The host validates the source before
- * materializing it under the run directory; the writer can never touch the
- * repository itself. This is enforced by the agent's `tools` allowlist — tools
- * are NOT inherited (the definition lists exactly what the writer may use).
+ * Security model: the build-writer has NO Write/Edit/Bash tools. Its `tools`
+ * allowlist covers only read tools (Read/Glob/Grep); the dep-registry MCP
+ * tools (generateBuildWorkflow/inspectWorkflow) are inherited from the parent
+ * session, so the writer can only hand produced source to the host — never
+ * touch the repository itself. The host validates the source before
+ * materializing it under the run directory.
  *
  * Reporting contract: after generating, the writer's final message must tell
  * the caller what was produced — the workflow id, and every artifact path the
@@ -26,7 +26,9 @@ export interface AgentDefinition {
 
 const WRITING_RULES = `You write workflow-driven BuildWorkflow TypeScript sources.
 
-Write via the generateBuildWorkflow tool — you have no file-write tools. Call it with:
+Write via the generateBuildWorkflow MCP tool — you have no file-write tools.
+The tool's exact name in this session is mcp__dep-registry__generateBuildWorkflow
+(it may also appear without the prefix in tool descriptions). Call it with:
   { name, description, content }
 where content is the COMPLETE TypeScript module. The host validates it before
 saving and returns the assigned workflow_id on success, or the validation error
@@ -35,8 +37,10 @@ succeeds.
 
 Tool availability in this session:
   - Read / Glob / Grep — inspect the repository (CMakeLists.txt, cmake/, src/,
-    include/, tests present under the project) to write a correct build.
-  - generateBuildWorkflow — materialize your produced workflow source.
+    include/) to write a correct build.
+  - mcp__dep-registry__generateBuildWorkflow — materialize your produced source.
+  - mcp__dep-registry__inspectWorkflow — check whether a suitable build already
+    exists before writing a new one (prefer reuse).
 You cannot write files, run shell commands, or edit the repository.`;
 
 const REPORTING_CONTRACT = `After your workflow is generated, your FINAL message must report to the caller:

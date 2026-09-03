@@ -23,8 +23,8 @@ description: >-
 | 文档 | 何时读 | 内容 |
 |---|---|---|
 | `workflow-api.md` | **总是** | WorkflowContext 完整接口、capabilities 精确签名、常见反例 |
-| `build-output.md` | 生成 **BuildWorkflow** 时 | BuildWorkflowOutput 完整 schema（4 种 build kind） |
-| `test-output.md` | 生成 **TestWorkflow** 时 | TestWorkflow 完整 schema（ctest / test-spec） |
+| `build-output.md` | 生成 **BuildWorkflow** 时 | workflow-driven BuildWorkflow 规范：驱动构建 + validator 断言 |
+| `test-output.md` | 生成 **TestWorkflow** 时 | 自驱动 TestWorkflow 规范：ctx.expect、产物契约 |
 | `cmake.md` | 项目是 **CMake** 时 | CMake CLI 用法、`--target` 单值陷阱、MSVC Debug 路径 |
 | `ctest.md` | 项目用 **CTest** 时 | CTest 用法、顶层测试名观察 |
 

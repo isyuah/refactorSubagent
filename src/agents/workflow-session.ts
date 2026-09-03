@@ -115,29 +115,46 @@ const SESSION_PROMPT = (
 Task under test:
 ${task}
 
-Your deliverable is a self-driven TestWorkflow TypeScript module. Write it to
-exactly:
-  ${testEntry}
+You must produce TWO deliverables before the session ends:
+  1. A dependency declaration — call declareDependency with the COMPLETE set
+     of build workflow ids your test depends on. ALWAYS call it, even with an
+     empty array [] (meaning: no build needed). The host executes every
+     declared build (baseline and candidate) BEFORE running your test workflow,
+     so declare every build whose artifacts your test references. Missing or
+     malformed declarations fail the session.
+  2. A self-driven TestWorkflow TypeScript module, written to exactly:
+       ${testEntry}
+     (repo-relative editable path: ${editableRel})
 
-You may spawn the build-writer subagent (available via the Task tool) to author
-a workflow-driven BuildWorkflow when the tests need build artifacts that no
-existing build workflow provides. The build-writer reports the artifacts it
-produces; your test workflow references those exact paths and asserts them with
-context.validator.assertFile. You do NOT run the build yourself — the host
-executes every build you declare.
+Workflow of the session:
+  1. Call inspectWorkflow (kind: "build") to see what build workflows exist:
+     library entries (status library-verified/library-draft, with descriptions)
+     and entries generated earlier this run (status run-local).
+  2. Decide: reuse a suitable library build, or author a new one.
+     - Reuse: use its id in declareDependency.
+     - New: spawn the build-writer subagent via the Task tool. It writes the
+       BuildWorkflow source through the host (generateBuildWorkflow) and reports
+       the assigned workflow_id plus EVERY artifact path the build produces and
+       how to invoke each. After it reports, call generateBuildWorkflow
+       yourself only if you must adjust; otherwise declare its workflow_id.
+  3. Call declareDependency with the final complete set.
+  4. Write the test workflow file. Your test workflow:
+     - MUST NOT rebuild anything — the host already built every declared build
+       in this worktree before your function runs. Reference the artifact paths
+       the build-writer reported (or that you know from the repo) directly and
+       assert them with context.validator.assertFile — if an artifact is
+       missing, fail (do NOT fall back to building it yourself).
+     - Runs once per worktree (baseline, then candidate) with the SAME source;
+       you cannot tell which side you are on. Declare expectations with
+       ctx.expect(...) — same declarations, same order, on both runs.
 
-Dependency declaration is REQUIRED. Before you finish, call declareDependency
-with the COMPLETE set of build workflow ids your test depends on (call it even
-when the set is empty). The host executes every declared build (baseline and
-candidate) before running your test workflow, so declare every build whose
-artifacts your test references.
+If the build-writer reports a failure or the generated workflow is rejected,
+do not guess: either fall back to an existing library build (declare its id) or
+stop and explain what is missing in your final message — the host will fail the
+session rather than run a broken test.
 
-Inspect available build workflows with inspectWorkflow before deciding: prefer
-a library entry when one fits; only author a new one when none does.
-
-Write the complete test workflow source to ${testEntry} (an editable path
-relative to the repo: ${editableRel}). The host validates the file after the
-session.`;
+The host validates your test workflow file and your declaration after the
+session; both must be complete before you finish.`;
 
 /**
  * Run a test-writer session. Returns the session outcome; the caller decides

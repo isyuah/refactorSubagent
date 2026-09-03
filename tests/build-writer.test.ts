@@ -38,6 +38,18 @@ describe("buildWriterDefinition", () => {
     expect(def.prompt).toContain("You cannot write files");
   });
 
+  test("prompt uses the full MCP tool name and forbids imports", () => {
+    const def = buildWriterDefinition();
+    expect(def.prompt).toContain("mcp__dep-registry__generateBuildWorkflow");
+    expect(def.prompt).toContain("never emit import statements at all");
+  });
+
+  test("reporting contract requires artifact paths for the test-writer", () => {
+    const def = buildWriterDefinition();
+    expect(def.prompt).toContain("EVERY artifact path");
+    expect(def.prompt).toContain("how the test can invoke it");
+  });
+
   test("honors a custom MCP server name", () => {
     const def = buildWriterDefinition("my-dep");
     expect(def.prompt).toContain("mcp__my-dep__generateBuildWorkflow");

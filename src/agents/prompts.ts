@@ -77,9 +77,10 @@ ProjectDetection contains only: kind, version, repo_root, language, build_system
 markers, source_files, adapter, status, and reason. It does not contain target, executable_path, artifact_path,
 output_path, or any camelCase aliases. Do not read workflow identity or project target fields from context.
 
-Import the host-provided types from the sibling types.d.ts: import type { WorkflowContext } from "./types";
-The file is already written next to your output path; do not declare your own interfaces for the context,
-capabilities, process results, or plans. Type-only imports are erased at runtime.
+Do NOT import any module (there is no sibling types file in this flow). Type the default-exported
+function parameter structurally or leave it untyped (e.g. async (ctx) => ...); the host type-checks nothing at
+generation time and type-only imports are erased at runtime, but a value import would fail at execution —
+so never emit import statements at all.
 
 The host supplies the workflow id and positive revision in the generation prompt. The workflow function drives
 the build itself (workflow-driven): declare it explicitly at the top of the source:
@@ -138,9 +139,11 @@ Declare the mode at the top of the source:
 
 Runtime contract: the default-exported function receives one WorkflowContext with context.apiVersion === 1,
 context.workspaceRoot, context.input, context.facts.host, context.facts.project, and injected capabilities.
-The test input is exactly { kind: "test-workflow-input", version: 1, build_workflow_id: SELECTED_BUILD_ID,
-build_workflow_revision: SELECTED_BUILD_REVISION }. Do not read workflow identity from guessed top-level context
-fields. ProjectDetection contains only its declared schema fields; do not invent target aliases.
+The test input is exactly { kind: "test-workflow-input", version: 1 } — there is no build identity in the
+input; the host already executed every declared build in this worktree before your function runs, and your
+source references artifact paths directly (asserting them with context.validator.assertFile). Do not read
+workflow identity from guessed top-level context fields. ProjectDetection contains only its declared schema
+fields; do not invent target aliases.
 
 The function runs ONCE PER WORKTREE: the host executes it in the baseline worktree, then in the candidate worktree.
 Both runs execute the SAME source. You CANNOT tell which side you are on — do not branch on side, do not try to
@@ -157,6 +160,10 @@ CRITICAL: expectation count and order MUST be identical across the two runs (the
 declare expectations inside loops over unordered data, do not branch on environment-dependent values before an
 expectation, and do not let an early failure skip later expectations. The values you pass are THIS side's observed
 values — you never know the other side's values.
+
+Build artifacts ALREADY EXIST when your function runs — the host built every declared build in this
+worktree before invoking you. NEVER rebuild (no configure/compile/new build dir); run the existing executables
+and assert their paths with context.validator.assertFile first.
 
 Run the actual tests with injected capabilities:
 - context.process.run({ program, args, cwd, timeoutMs }) runs a measured tool or workspace-relative executable.

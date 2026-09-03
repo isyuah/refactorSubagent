@@ -134,6 +134,17 @@ describe("runWorkflowSession", () => {
     expect(result.testEntryExists).toBe(false);
   });
 
+  test("session prompt demands both deliverables (declaration + file)", async () => {
+    const h = makeSessionHarness({ writeTestEntry: true });
+    await h.run();
+    const o = h.captured();
+    expect(o!.prompt).toContain("declareDependency");
+    expect(o!.prompt).toContain("empty array []");
+    expect(o!.prompt).toContain("MUST NOT rebuild");
+    expect(o!.prompt).toContain("inspectWorkflow");
+    expect(o!.prompt).toContain("build-writer");
+  });
+
   test("fails when the session errors without output", async () => {
     const h = makeSessionHarness({ isError: true, result: "" });
     const result = await h.run();
