@@ -145,6 +145,12 @@ Declare the mode at the top of the source:
 
 Runtime contract: the default-exported function receives one WorkflowContext with context.apiVersion === 1,
 context.workspaceRoot, context.input, context.facts.host, context.facts.project, and injected capabilities.
+
+Do NOT import any module (there is no sibling types file in this flow) and do not access process.*, Bun.*,
+node:*, the network, git, or arbitrary files. All I/O goes through injected capabilities (context.fs /
+context.process / context.adapters / context.validator). A value import or host-API access makes the host
+reject the source. Type the default-exported function parameter structurally or leave it untyped
+(e.g. async (ctx) => ...).
 The test input is exactly { kind: "test-workflow-input", version: 1 } — there is no build identity in the
 input; the host already executed every declared build in this worktree before your function runs, and your
 source references artifact paths directly (asserting them with context.validator.assertFile). Do not read
@@ -173,7 +179,7 @@ and assert their paths with context.validator.assertFile first.
 
 Run the actual tests with injected capabilities:
 - context.process.run({ program, args, cwd, timeoutMs }) runs a measured tool or workspace-relative executable.
-  The result has stdoutBase64/stderrBase64 (base64-encoded) and exitCode.
+  The result exposes plain text stdout/stderr strings plus exitCode and status.
 - context.adapters.ctest.run({ buildDir, configuration, args, timeoutMs }) runs CTest.
 - context.validator.assertFile(path) asserts a file exists (throws → run fails).
 - context.plan declares observable stage steps (optional, a few only).
@@ -186,8 +192,7 @@ Typical shape:
       timeoutMs: 120000,
     });
     ctx.expect("ctest-exit", suite.exitCode);          // equal across sides
-    const out = Buffer.from(suite.stdoutBase64, "base64").toString("utf8");
-    ctx.expect("ctest-passed", out.includes("100% tests passed"));
+    ctx.expect("ctest-passed", suite.stdout.includes("100% tests passed"));
   };
 
 The host executes this source in each worktree, pairs expectations by position, and compares with the declared
