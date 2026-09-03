@@ -402,6 +402,22 @@ export function checkToolScope(
   const searchPath = deriveSearchPath(toolName, explicitPath, pattern, fileGlob);
   const resolved = relativeAgentPath(searchPath, root);
   if (!resolved.allowed) return resolved;
+  // Prefer the literal glob prefix as the effective search root: Claude Code
+  // sends Glob with an absolute repo-root path plus a pattern (e.g.
+  // path=<root> pattern=src/**). Matching the bare root against readableGlobs
+  // would deny every scoped search even when the pattern targets a readable
+  // subtree. When the pattern prefix is readable and cannot reach forbidden
+  // trees, allow; otherwise fall back to the path-root checks below.
+  const filter = toolName === "Glob" ? pattern : fileGlob;
+  const prefix = literalGlobPrefix(filter.replaceAll("\\", "/"));
+  if (prefix.length > 0) {
+    if (matchesScope(prefix, forbiddenGlobs)) {
+      return { allowed: false, reason: `search pattern is forbidden: ${prefix}` };
+    }
+    if (matchesScope(prefix, readableGlobs) && !maySearchForbidden(prefix, forbiddenGlobs)) {
+      return { allowed: true, reason: null };
+    }
+  }
   if (matchesScope(resolved.path, forbiddenGlobs)) {
     return { allowed: false, reason: `search root is forbidden: ${resolved.path}` };
   }

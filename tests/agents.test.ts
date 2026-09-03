@@ -49,6 +49,12 @@ describe("Agent scope enforcement", () => {
     expect(checkToolScope("Write", { file_path: "src/other.c" }, root, readable, forbidden, editable).reason).toContain("Modification Scope");
     expect(checkToolScope("Write", { file_path: "tests/generated.c" }, root, ["**"], forbidden, ["tests/generated.c"]).reason).toContain("forbidden");
     expect(checkToolScope("Read", { file_path: "../outside.c" }, root, ["**"], [], editable).reason).toContain("escapes");
+    // Claude Code sends Glob with an absolute repo-root path plus a pattern;
+    // a pattern targeting a readable subtree must not be denied just because
+    // the bare root is not itself listed as readable.
+    expect(checkToolScope("Glob", { path: root, pattern: "src/**" }, root, readable, forbidden, editable).allowed).toBeTrue();
+    expect(checkToolScope("Glob", { path: root, pattern: "tests/**" }, root, readable, forbidden, editable).reason).toContain("forbidden");
+    expect(checkToolScope("Glob", { path: root, pattern: "**/*" }, root, readable, forbidden, editable).reason).not.toBeNull();
   });
 });
 describe("Agent tool input normalization", () => {
