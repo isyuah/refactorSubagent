@@ -75,6 +75,8 @@ export interface DependencyRegistry {
   generate(input: GenerateBuildWorkflowInput): Promise<GenerateBuildWorkflowResult>;
   /** Persisted + run-local ids known to this registry (for validation). */
   knownBuildIds(): Promise<readonly string[]>;
+  /** True once declareDependency was called at least once (even with []). */
+  declaredExplicitly(): Promise<boolean>;
 }
 
 export interface DependencyRegistryOptions {
@@ -162,6 +164,7 @@ export class LocalDependencyRegistry implements DependencyRegistry {
   private readonly runLocal = new Map<string, RunLocalWorkflow>();
   private declared: readonly string[] = [];
   private revisionCounter = new Map<string, number>();
+  private declareCalled = false;
 
   constructor(options: DependencyRegistryOptions) {
     this.workspaceRoot = resolve(options.workspaceRoot);
@@ -245,6 +248,7 @@ export class LocalDependencyRegistry implements DependencyRegistry {
   }
 
   async declare(input: DeclareDependencyInput): Promise<readonly string[]> {
+    this.declareCalled = true;
     const known = new Set(await this.knownBuildIds());
     const unknown = input.buildWorkflowIds.filter((id) => !known.has(id));
     if (unknown.length > 0) {
@@ -259,6 +263,10 @@ export class LocalDependencyRegistry implements DependencyRegistry {
 
   async currentDeclared(): Promise<readonly string[]> {
     return [...this.declared];
+  }
+
+  async declaredExplicitly(): Promise<boolean> {
+    return this.declareCalled;
   }
 
   /**

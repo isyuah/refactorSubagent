@@ -1,7 +1,12 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  type AgentDefinition,
+  type McpServerConfig,
+  type Options,
+} from "@anthropic-ai/claude-agent-sdk";
 
 /** Tool-owned plugin dir (workflow-spec skill). Relative to this source. */
 const TOOL_PLUGIN_DIR = resolve(import.meta.dir, "..", "..", ".claude", "plugins", "workflow-spec");
@@ -74,6 +79,12 @@ export interface DriverOptions {
    *  no skills are visible to the model — skills only load when listed here,
    *  giving the host exact control over when a skill's full content loads. */
   skills?: string[];
+  /** Programmatically defined subagents (Agent tool) visible in this session. */
+  agents?: Record<string, AgentDefinition>;
+  /** In-process MCP servers exposed as tools (mcp__<name>__<tool>). */
+  mcpServers?: Record<string, McpServerConfig>;
+  /** Extra tool names to auto-allow (e.g. mcp__server__tool). */
+  extraAllowedTools?: string[];
 }
 
 export interface ScopeCheck {
@@ -132,18 +143,23 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
 
   const executable = o.executable ?? resolveClaudeExecutable();
   const abortController = new AbortController();
+  const combinedAllowed = o.extraAllowedTools !== undefined && o.extraAllowedTools.length > 0
+    ? [...(o.allowedTools ?? []), ...o.extraAllowedTools]
+    : o.allowedTools;
   const q = query({
     prompt: o.prompt,
     options: {
       cwd: o.cwd,
-      tools: o.allowedTools,
-      allowedTools: o.allowedTools,
+      tools: combinedAllowed,
+      allowedTools: combinedAllowed,
       permissionMode: "acceptEdits",
       settingSources: ["user"],
       plugins: [{ type: "local", path: TOOL_PLUGIN_DIR }],
       settings: { disableAllHooks: true },
       persistSession: false,
       ...(o.skills !== undefined ? { skills: o.skills } : {}),
+      ...(o.agents !== undefined ? { agents: o.agents } : {}),
+      ...(o.mcpServers !== undefined ? { mcpServers: o.mcpServers } : {}),
       systemPrompt: o.systemPrompt,
       maxTurns: o.maxTurns ?? 32,
       abortController,
