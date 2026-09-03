@@ -38,6 +38,8 @@ export interface AgentWorkflowPipelineRequest {
   /** Optional project policy; declared editable scope must stay within this set. */
   readonly allowedEditableFiles?: readonly string[];
   readonly workflowTimeoutMs?: number;
+  /** When false, skip PreToolUse scope enforcement for all agent sessions. */
+  readonly enforceScope?: boolean;
   readonly buildTimeoutMs?: number;
   readonly ctestTimeoutMs?: number;
   readonly knownEnvironmentPatterns?: readonly RegExp[];
@@ -147,6 +149,7 @@ export async function runAgentWorkflowVerification(
         project,
         logger,
         sessionStore,
+        enforceScope: req.enforceScope,
         workflowTimeoutMs: req.workflowTimeoutMs,
       });
     } finally {
@@ -388,6 +391,7 @@ async function runDeclaredResolution(options: {
   readonly project: ProjectDetection;
   readonly logger: E2ELogger;
   readonly sessionStore: FileSessionStore;
+  readonly enforceScope?: boolean;
   readonly workflowTimeoutMs?: number;
 }): Promise<DeclaredAgentResolution> {
   const testRelDir = join(".refactor", "runs", options.sessionId, "workflows", "test");
@@ -402,6 +406,7 @@ async function runDeclaredResolution(options: {
     project: options.project,
     logger: options.logger,
     sessionStore: options.sessionStore,
+    enforceScope: options.enforceScope,
     timeoutMs: options.workflowTimeoutMs,
   });
   if (!session.ok) {

@@ -85,6 +85,13 @@ export interface DriverOptions {
    * CLI's session dir via CLAUDE_CONFIG_DIR when provided.
    */
   sessionStore?: SessionStore;
+  /**
+   * When false, the PreToolUse scope hook is skipped entirely: the agent may
+   * Read/Glob/Grep/Write freely (no readable/forbidden/editable checks, no
+   * path normalization). Used to get a flow running end-to-end before the
+   * scoping model is tightened again. Defaults to true (enforced).
+   */
+  enforceScope?: boolean;
   /** Override Claude Code executable; defaults to the bundled SDK binary on Windows. */
   executable?: string;
   outputFormat?: Options["outputFormat"];
@@ -119,6 +126,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
         hooks: [
           async (input) => {
             if (input.hook_event_name !== "PreToolUse") return {};
+            if (o.enforceScope === false) return {}; // scope enforcement off
             const check = checkToolScope(
               input.tool_name,
               input.tool_input,

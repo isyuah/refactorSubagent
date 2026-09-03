@@ -50,6 +50,8 @@ export interface WorkflowSessionOptions {
   readonly logger?: Logger;
   /** Mirror the full AI session transcript to this store. */
   readonly sessionStore?: SessionStore;
+  /** When false, skip PreToolUse scope enforcement (free tool access). */
+  readonly enforceScope?: boolean;
 }
 
 /** Options handed to the underlying agent runner (narrowed for testability). */
@@ -71,6 +73,8 @@ export interface WorkflowSessionAgentOptions {
   readonly logger?: Logger;
   /** Mirror the full AI session transcript to this store. */
   readonly sessionStore?: SessionStore;
+  /** When false, skip PreToolUse scope enforcement (free tool access). */
+  readonly enforceScope?: boolean;
 }
 
 export interface WorkflowSessionResult {
@@ -222,6 +226,7 @@ export async function runWorkflowSession(
     timeoutMs: options.timeoutMs,
     logger: options.logger,
     sessionStore: options.sessionStore,
+    enforceScope: options.enforceScope,
   });
 
   const testEntryExists = existsSync(options.testEntry);
@@ -270,5 +275,6 @@ async function defaultRunAgent(
     timeoutMs: o.timeoutMs,
     logger: o.logger,
     sessionStore: o.sessionStore,
+    enforceScope: o.enforceScope,
   });
 }
