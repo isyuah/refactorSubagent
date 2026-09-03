@@ -104,6 +104,11 @@ const DEFAULT_READABLE = [
   "config/**",
   "include/**",
   "src/**",
+  // The test-writer and its build-writer subagent must read existing
+  // tests to author meaningful workflows (CMakeLists references test
+  // sources; the build must compile them).
+  "test/**",
+  "tests/**",
   "*.c",
   "*.h",
 ] as const;
