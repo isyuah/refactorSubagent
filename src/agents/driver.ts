@@ -169,6 +169,9 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       settings: { disableAllHooks: true },
       // The SDK requires local persistence when mirroring to a sessionStore.
       persistSession: o.sessionStore !== undefined,
+      // eager: flush every transcript frame so an interrupted run (host kill,
+      // timeout abort) still leaves the full conversation on disk for analysis.
+      sessionStoreFlush: o.sessionStore !== undefined ? ("eager" as const) : undefined,
       ...(o.sessionStore !== undefined ? { sessionStore: o.sessionStore } : {}),
       ...(o.skills !== undefined ? { skills: o.skills } : {}),
       ...(o.agents !== undefined ? { agents: o.agents } : {}),
