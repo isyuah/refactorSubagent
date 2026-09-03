@@ -38,7 +38,7 @@ const result = await runAgentWorkflowVerification({
     "保持返回指针、原地写入、前后空白处理、空字符串、全空白字符串和退出行为不变。" +
     "构建和测试流程必须由你根据项目事实写成可执行的 TypeScript BuildWorkflow 与 TestWorkflow 源文件；" +
     "如果某一步无法从事实证明，不要猜测。",
-  workflowTimeoutMs: 600_000,
+  workflowTimeoutMs: 1_800_000,  // test-writer + build-writer subagent needs headroom
   buildTimeoutMs: 120_000,
   ctestTimeoutMs: 180_000,
 });
