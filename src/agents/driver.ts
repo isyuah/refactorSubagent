@@ -7,6 +7,7 @@ import {
   type McpServerConfig,
   type Options,
   type SessionStore,
+  type ThinkingConfig,
 } from "@anthropic-ai/claude-agent-sdk";
 
 /** Tool-owned plugin dir (workflow-spec skill). Relative to this source. */
@@ -76,6 +77,13 @@ export interface DriverOptions {
   timeoutMs?: number;
   /** Treat N ms without any SDK message as a dead stream and abort (default 180s). */
   stallTimeoutMs?: number;
+  /**
+   * Extended-thinking config passed to the SDK query. Defaults to disabled:
+   * the local model gateway (kizuna) rejects Anthropic thinking streams from
+   * non-Anthropic upstreams ("signed_reasoning_not_replayable" → HTTP 400),
+   * and DeepSeek flash gains nothing from thinking. Override to re-enable.
+   */
+  thinking?: ThinkingConfig;
   /** Run-scoped logger; session events are mirrored at trace/debug level. */
   logger?: Logger;
   /**
@@ -180,6 +188,9 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       ...(o.mcpServers !== undefined ? { mcpServers: o.mcpServers } : {}),
       systemPrompt: o.systemPrompt,
       maxTurns: o.maxTurns ?? 32,
+      // kizuna gateway cannot replay signed Anthropic thinking from its
+      // DeepSeek upstream; disable extended thinking unless a caller opts in.
+      thinking: o.thinking ?? { type: "disabled" },
       abortController,
       ...(o.outputFormat ? { outputFormat: o.outputFormat } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
