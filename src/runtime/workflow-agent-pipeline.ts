@@ -155,7 +155,8 @@ export async function runAgentWorkflowVerification(
     logger.info("test-writer session wall time", { duration_ms: Math.round(performance.now() - sessionStarted) });
     logger.artifact("declared-build-set.json", declared.declaredSet);
     logger.artifact("workflow-resolution-test.json", declared.testResolution);
-    logger.artifact("test-workflow.json", declared.testSource === "" ? null : JSON.parse(declared.testSource));
+    // testSource is TypeScript source, not JSON — store it as text for audit.
+    logger.artifact("test-workflow.json", { kind: "test-workflow-source", source: declared.testSource });
     logger.info("declared build set resolved", {
       build_count: declared.declaredSet.builds.length,
       test_entry: declared.testResolution.entry,
