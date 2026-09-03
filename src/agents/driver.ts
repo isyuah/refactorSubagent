@@ -74,6 +74,8 @@ export interface DriverOptions {
   maxTurns?: number;
   /** Host deadline for the SDK query. Omitted means no deadline. */
   timeoutMs?: number;
+  /** Treat N ms without any SDK message as a dead stream and abort (default 180s). */
+  stallTimeoutMs?: number;
   /** Run-scoped logger; session events are mirrored at trace/debug level. */
   logger?: Logger;
   /**
@@ -198,8 +200,32 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
   }
   const logger = o.logger;
   const logSession = (msg: unknown): void => { logSessionEvent(logger, msg); };
+  // Stall guard: the SDK can hang with no message when its CLI subprocess dies
+  // (observed under a model proxy). Treat N seconds without ANY message as a
+  // dead stream, abort, and report a stall instead of waiting for timeoutMs.
+  const stallMs = o.stallTimeoutMs ?? 180_000;
+  let stalled = false;
+  // Stall watchdog: a single timer, reset on every message. If it ever fires,
+  // the stream produced nothing for stallMs — abort instead of hanging until
+  // the overall timeout (observed when the SDK's CLI subprocess dies under a
+  // model proxy while the host keeps waiting on the query stream).
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  let stallReject: ((error: Error) => void) | null = null;
+  const armStall = (): void => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      stallReject?.(new Error(`Claude agent stream stalled: no message for ${stallMs}ms`));
+    }, stallMs);
+  };
+  const stallPromise = new Promise<never>((_, reject) => { stallReject = reject; });
   try {
-    for await (const msg of q) {
+    const iterator = q[Symbol.asyncIterator]();
+    armStall();
+    while (true) {
+      const next = await Promise.race([iterator.next(), stallPromise]);
+      armStall();
+      if (next.done) break;
+      const msg = next.value;
       logSession(msg);
       if (msg.type === "result") {
         isError = msg.is_error;
@@ -208,13 +234,24 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       }
     }
   } catch (error) {
-    if (!timedOut) throw error;
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes("stream stalled")) {
+      stalled = true;
+      timedOut = true;
+      abortController.abort();
+      q.close();
+    } else if (!timedOut) {
+      throw error;
+    }
   } finally {
+    clearTimeout(stallTimer);
     q.close();
     clearTimeout(timer);
   }
   if (timedOut) {
-    const reason = `Claude agent timed out after ${String(timeoutMs)}ms`;
+    const reason = stalled
+      ? `Claude agent stream stalled (no message for ${stallMs}ms); CLI subprocess likely died`
+      : `Claude agent timed out after ${String(timeoutMs)}ms`;
     result = result.length === 0 ? reason : `${result}\n${reason}`;
     isError = true;
   }
