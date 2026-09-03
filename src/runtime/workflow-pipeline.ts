@@ -206,6 +206,11 @@ export async function runWorkflowVerification(
  * once per side (it declares expectations via ctx.expect), then compare the
  * two sides' declarations by position with the declared relations.
  */
+interface BuildToExecute {
+  readonly id: string;
+  readonly resolution: BuildWorkflowResolution;
+}
+
 async function runSelfDrivenVerification(
   request: WorkflowVerificationRequest,
   orch: Orchestrator,
@@ -213,12 +218,27 @@ async function runSelfDrivenVerification(
   submit: (artifact: unknown) => boolean,
   environment: unknown,
 ): Promise<WorkflowVerificationOutcome> {
+  return runSelfDrivenCore(
+    request, orch, results, submit, environment,
+    [{ id: request.build.manifest.id, resolution: request.build }],
+  );
+}
+
+async function runSelfDrivenCore(
+  request: WorkflowVerificationRequest,
+  orch: Orchestrator,
+  results: SubmitResult[],
+  submit: (artifact: unknown) => boolean,
+  environment: unknown,
+  buildList: readonly BuildToExecute[],
+): Promise<WorkflowVerificationOutcome> {
   const empty = (extra: Record<string, unknown> = {}) => ({
     ...emptyOutcome(request.store.state, results),
     ...extra,
   });
 
-  const baselineBuild = await executeBuild(request, request.worktrees.baselineDir, "baseline");
+  // Run every build in the (declaration) set on the baseline worktree.
+  const baselineBuild = await executeBuildList(request, request.worktrees.baselineDir, "baseline", buildList);
   if (baselineBuild.status !== "pass") {
     results.push(orch.abort(`baseline BuildWorkflow failed: ${baselineBuild.failure ?? "unknown failure"}`));
     return empty({ baselineBuild });
@@ -259,7 +279,7 @@ async function runSelfDrivenVerification(
   };
   if (!submit(patch)) return empty({ baselineBuild });
 
-  const candidateBuild = await executeBuild(request, request.worktrees.candidateDir, "candidate");
+  const candidateBuild = await executeBuildList(request, request.worktrees.candidateDir, "candidate", buildList);
   if (candidateBuild.status !== "pass") {
     results.push(orch.abort(`candidate BuildWorkflow failed: ${candidateBuild.failure ?? "unknown failure"}`));
     return empty({ baselineBuild, candidateBuild });
@@ -345,6 +365,44 @@ function testWorkflowPolicy(request: WorkflowVerificationRequest) {
     maxProcesses: 4,
     maxOutputBytes: 32 * 1024 * 1024,
     maxFileBytes: 64 * 1024 * 1024,
+  };
+}
+
+/**
+ * Run every build in a (declaration) set on one worktree, sequentially.
+ * Stops at the first failure (fail-closed). Single-build callers pass one item.
+ */
+async function executeBuildList(
+  request: WorkflowVerificationRequest,
+  cwd: string,
+  side: "baseline" | "candidate",
+  buildList: readonly BuildToExecute[],
+): Promise<BuildWorkflowExecution> {
+  let last: BuildWorkflowExecution | null = null;
+  for (const item of buildList) {
+    request.logger?.info(`executing ${side} build ${item.id}`, { cwd });
+    const result = await executeBuildFor(
+      request,
+      item.resolution,
+      cwd,
+      side,
+      `${side}-build-${item.id.replace(/[^A-Za-z0-9._-]/g, "_")}`,
+    );
+    last = result;
+    if (result.status !== "pass") {
+      return {
+        ...result,
+        failure: `build ${item.id} failed: ${result.failure ?? result.status}`,
+      };
+    }
+  }
+  return last ?? {
+    status: "pass",
+    artifact: { kind: "custom", version: 1, workflow_id: "", workflow_revision: 0, paths: {}, metadata: {} },
+    steps: [],
+    missingArtifacts: [],
+    events: [],
+    failure: null,
   };
 }
 
@@ -474,4 +532,21 @@ function kindOf(value: unknown): string {
   if (typeof value !== "object" || value === null || !("kind" in value)) return "unknown";
   const kind = (value as { kind?: unknown }).kind;
   return typeof kind === "string" ? kind : "unknown";
+}
+
+/**
+ * Declared-set workflow verification (subagent-driven flow). The test-writer
+ * session declared N build workflows; the host executes every one on both
+ * worktrees, then runs the self-driven test workflow once per side and compares
+ * expectations. Mirrors runSelfDrivenVerification but over a build list.
+ */
+export async function runDeclaredWorkflowVerification(
+  request: WorkflowVerificationRequest,
+  orch: Orchestrator,
+  results: SubmitResult[],
+  submit: (artifact: unknown) => boolean,
+  environment: unknown,
+  builds: readonly BuildToExecute[],
+): Promise<WorkflowVerificationOutcome> {
+  return runSelfDrivenCore(request, orch, results, submit, environment, builds);
 }
