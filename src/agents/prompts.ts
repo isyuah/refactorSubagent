@@ -194,6 +194,12 @@ export function refactorPrompt(task: string, editableFiles: readonly string[]): 
   return [
     `Modification Scope (the ONLY files you may edit): ${editableFiles.join(", ")}`,
     `Task: ${task}`,
-    `Work from the current directory; it already IS the candidate worktree.`,
+    "Work from the current directory; it already IS the candidate worktree.",
+    "The editable files exist and are readable. Do NOT spend turns exploring:",
+    "  - Read each editable file once (they are small), then plan the edit.",
+    "  - Make the edit with Edit/Write, then Read it back ONCE to confirm.",
+    "  - Do not Glob or Grep the tree unless you hit a genuine ambiguity.",
+    "  - Finish with a one-paragraph summary of what you changed and why it",
+    "    preserves behavior. End your turn as soon as the edit is confirmed.",
   ].join("\n");
 }

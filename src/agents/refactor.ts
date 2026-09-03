@@ -26,7 +26,7 @@ export async function runRefactor(
     readableGlobs: [...scope.readable_globs],
     forbiddenGlobs: [...new Set([...DEFAULT_AGENT_FORBIDDEN_GLOBS, ...scope.forbidden_globs])],
     editableFiles,
-    maxTurns: 40,
+    maxTurns: 80,
     logger: sessionHooks?.logger,
     sessionStore: sessionHooks?.sessionStore,
   });
