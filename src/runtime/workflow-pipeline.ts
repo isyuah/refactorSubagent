@@ -353,37 +353,48 @@ async function executeBuild(
   cwd: string,
   build: "baseline" | "candidate",
 ): Promise<BuildWorkflowExecution> {
-  request.logger?.phase(`${build.toUpperCase()}_BUILD`);
-  request.logger?.info(`executing ${build} BuildWorkflow`, {
-    workflow_id: request.build.manifest.id,
-    workflow_revision: request.build.manifest.revision,
+  return executeBuildFor(request, request.build, cwd, build, `${build}-build`);
+}
+
+/** Execute one build workflow resolution in one worktree. */
+async function executeBuildFor(
+  request: WorkflowVerificationRequest,
+  resolution: BuildWorkflowResolution,
+  cwd: string,
+  side: "baseline" | "candidate",
+  artifactName: string,
+): Promise<BuildWorkflowExecution> {
+  request.logger?.phase(`${side.toUpperCase()}_BUILD`);
+  request.logger?.info(`executing ${side} BuildWorkflow`, {
+    workflow_id: resolution.manifest.id,
+    workflow_revision: resolution.manifest.revision,
     cwd,
   });
   const result = await executeBuildWorkflow({
     cwd,
-    output: request.build.output,
+    output: resolution.output,
     host: request.host,
     project: request.project,
-    entry: request.build.entry,
+    entry: resolution.entry,
     policy: {
       readableGlobs: ["**"],
-      writableGlobs: request.build.output !== null && isWorkflowDriven(request.build.output)
+      writableGlobs: resolution.output !== null && isWorkflowDriven(resolution.output)
         ? ["**"]
-        : request.build.output === null
+        : resolution.output === null
           ? ["**"]
           : ["build/**"],
-      allowedTools: request.build.output === null
+      allowedTools: resolution.output === null
         ? []
-        : requiredBuildTools(request.build.output),
+        : requiredBuildTools(resolution.output),
       maxProcesses: 4,
       maxOutputBytes: 16 * 1024 * 1024,
       maxFileBytes: 64 * 1024 * 1024,
     },
     timeoutMs: request.buildTimeoutMs ?? 1_200_000,
   });
-  request.logger?.artifact(`${build}-build.json`, result);
+  request.logger?.artifact(`${artifactName}.json`, result);
   for (const step of result.steps) {
-    request.logger?.info(`${build} build step ${step.name}: ${step.status}`, {
+    request.logger?.info(`${side} build step ${step.name}: ${step.status}`, {
       exit_code: step.exitCode,
       duration_ms: step.durationMs,
       error: step.error,

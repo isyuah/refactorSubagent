@@ -120,18 +120,30 @@ export class Orchestrator {
       }
     }
     if (from === "BUILD_WORKFLOW_READY" && artifact.kind === "workflow-resolution") {
-      if (artifact.workflow_kind !== "test" || artifact.build_workflow === null) {
+      if (artifact.workflow_kind !== "test") {
         return "TestWorkflow resolution has an invalid BuildWorkflow dependency";
       }
-      const build = this.store.workflowResolution("build");
-      if (build === null || build.workflow_kind !== "build") {
-        return "BuildWorkflow resolution missing — cannot audit TestWorkflow dependency";
-      }
-      if (
-        artifact.build_workflow.id !== build.workflow_id ||
-        artifact.build_workflow.revision !== build.workflow_revision
-      ) {
-        return "TestWorkflow resolution references a different BuildWorkflow";
+      if (artifact.mode === "declared") {
+        // Declared-mode test workflows are self-driven: build dependencies live
+        // in the DeclaredBuildSet artifact, not a single static reference.
+        const set = this.store.artifact("declared-build-set");
+        if (set === null) {
+          return "DeclaredBuildSet missing — cannot audit TestWorkflow dependency";
+        }
+      } else {
+        if (artifact.build_workflow === null) {
+          return "TestWorkflow resolution has an invalid BuildWorkflow dependency";
+        }
+        const build = this.store.workflowResolution("build");
+        if (build === null || build.workflow_kind !== "build") {
+          return "BuildWorkflow resolution missing — cannot audit TestWorkflow dependency";
+        }
+        if (
+          artifact.build_workflow.id !== build.workflow_id ||
+          artifact.build_workflow.revision !== build.workflow_revision
+        ) {
+          return "TestWorkflow resolution references a different BuildWorkflow";
+        }
       }
     }
     if (from === "ENV_READY") {
@@ -171,6 +183,9 @@ function expectedTransition(
   rule: TransitionRule,
 ): ExpectedTransition {
   // New path: test intent → build workflow → test workflow → environment.
+  if (current === "TESTS_READY" && artifact.kind === "declared-build-set") {
+    return { to: "BUILD_WORKFLOW_READY", error: null };
+  }
   if (current === "TESTS_READY" && artifact.kind === "workflow-resolution") {
     return artifact.workflow_kind === "build"
       ? { to: "BUILD_WORKFLOW_READY", error: null }
