@@ -10,10 +10,9 @@ import { resolveTestWorkflow, type TestWorkflowResolution } from "./test-workflo
  * set of build workflow ids. This module resolves every declared build
  * (fail-closed on unknown/missing), then resolves the test workflow source.
  *
- * Unlike the legacy resolveWorkflows (chooser/selection/generation), there is
- * no Claude selection here: ids are host-validated against the registry's
- * known set, and entries come from the run-local directory or the persisted
- * library.
+ * There is no Claude selection here: ids are host-validated against the
+ * registry's known set, and entries come from the run-local directory or the
+ * persisted library.
  */
 
 export interface DeclaredBuildSource {

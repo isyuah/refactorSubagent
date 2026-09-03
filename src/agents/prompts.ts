@@ -190,39 +190,6 @@ established from measured facts, throw a clear error rather than guessing.
 You may use context.plan for observable stages: const [id] = await plan.declare([{ title, children? }]); then
 await plan.begin(id) / plan.complete(id) / plan.fail(id, error). Declare at most a few steps.`;
 
-export function testWorkflowPrompt(
-  workflowId: string,
-  revision: number,
-  buildWorkflowId: string,
-  buildWorkflowRevision: number,
-  hostContext?: string,
-  projectContext?: string,
-  taskContext?: string,
-): string {
-  return [
-    `Write a TypeScript TestWorkflow source module for ${workflowId}@${String(revision)}.`,
-    `It must reference BuildWorkflow ${buildWorkflowId}@${String(buildWorkflowRevision)}.`,
-    hostContext ? `\nMeasured host environment:\n${hostContext}` : "",
-    projectContext ? `\nMeasured project build detection:\n${projectContext}` : "",
-    taskContext ? `\nTask context:\n${taskContext}` : "",
-  ].join("\n");
-}
-
-export function buildWorkflowPrompt(
-  workflowId: string,
-  revision: number,
-  hostContext?: string,
-  projectContext?: string,
-  taskContext?: string,
-): string {
-  return [
-    `Write a TypeScript BuildWorkflow source module for ${workflowId}@${String(revision)}.`,
-    hostContext ? `\nMeasured host environment:\n${hostContext}` : "",
-    projectContext ? `\nMeasured project build detection:\n${projectContext}` : "",
-    taskContext ? `\nTask context:\n${taskContext}` : "",
-  ].join("\n");
-}
-
 export function refactorPrompt(task: string, editableFiles: readonly string[]): string {
   return [
     `Modification Scope (the ONLY files you may edit): ${editableFiles.join(", ")}`,

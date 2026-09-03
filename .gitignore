@@ -2,3 +2,4 @@ node_modules/
 .refactor/
 *.tsbuildinfo
 .claude/skills/
+.refactorsa/

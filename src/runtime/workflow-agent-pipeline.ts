@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
-import type { WorkflowRequest } from "../workflow/resolve-workflows.js";
 import { curateBuildWorkflow, loadAliases } from "../workflow/curator.js";
 import { analyzeRepo, proposalArtifacts, type AnalysisResult } from "../agents/analyze.js";
 import { runRefactor } from "../agents/refactor.js";
@@ -29,9 +28,6 @@ export interface AgentWorkflowPipelineRequest {
   /** Root under which the durable session is created. */
   readonly sessionRoot: string;
   readonly sessionId: string;
-  /** Optional provided Workflow candidates; non-forced entries go through Claude selection. */
-  readonly build?: WorkflowRequest;
-  readonly test?: WorkflowRequest;
   /** Optional project policy; declared editable scope must stay within this set. */
   readonly allowedEditableFiles?: readonly string[];
   readonly workflowTimeoutMs?: number;
