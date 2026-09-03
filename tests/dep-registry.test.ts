@@ -71,8 +71,8 @@ describe("validateBuildWorkflowSource", () => {
 });
 
 describe("LocalDependencyRegistry.generate", () => {
-  test("materializes a run-local build workflow under the session dir", async () => {
-    const { reg, sessionRoot } = makeRegistry();
+  test("materializes a run-local build workflow under the repo run dir", async () => {
+    const { reg, root } = makeRegistry();
     const result = await reg.generate({
       name: "My CMake Build",
       description: "builds the test runner",
@@ -81,7 +81,7 @@ describe("LocalDependencyRegistry.generate", () => {
     expect(result.workflowId).toMatch(/^my-cmake-build-sess/);
     expect(result.revision).toBe(1);
     expect(result.lineCount).toBeGreaterThan(0);
-    const expectedDir = join(sessionRoot, ".refactor", "runs", "sess-abc123", "workflows", "build");
+    const expectedDir = join(root, ".refactor", "runs", "sess-abc123", "workflows", "build");
     expect(existsSync(join(expectedDir, `${result.workflowId}.ts`))).toBe(true);
     // File content matches (with trailing newline normalization).
     const written = readFileSync(join(expectedDir, `${result.workflowId}.ts`), "utf8");
@@ -89,12 +89,12 @@ describe("LocalDependencyRegistry.generate", () => {
   });
 
   test("rejects invalid content before writing (fail-closed)", async () => {
-    const { reg, sessionRoot } = makeRegistry();
+    const { reg, root } = makeRegistry();
     await expect(
       reg.generate({ name: "bad", description: "", content: "not a workflow at all" }),
     ).rejects.toThrow(/invalid workflow source/);
     // Nothing materialized.
-    const buildDir = join(sessionRoot, ".refactor", "runs", "sess-abc123", "workflows", "build");
+    const buildDir = join(root, ".refactor", "runs", "sess-abc123", "workflows", "build");
     expect(existsSync(buildDir)).toBe(false);
   });
 

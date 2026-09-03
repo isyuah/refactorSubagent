@@ -34,7 +34,7 @@ describe("resolveDeclaredWorkflows", () => {
     const testEntry = entry("test", "t1");
     const result = await resolveDeclaredWorkflows({
       workspaceRoot: root,
-      repoRoot: root,
+      entryRoot: root,
       testEntry,
       testWorkflowId: "test-1",
       testRevision: 1,
@@ -53,7 +53,7 @@ describe("resolveDeclaredWorkflows", () => {
     const testEntry = entry("test", "t1");
     const result = await resolveDeclaredWorkflows({
       workspaceRoot: root,
-      repoRoot: root,
+      entryRoot: root,
       testEntry,
       testWorkflowId: "test-multi",
       testRevision: 1,
@@ -71,7 +71,7 @@ describe("resolveDeclaredWorkflows", () => {
     const testEntry = entry("test", "t0");
     const result = await resolveDeclaredWorkflows({
       workspaceRoot: root,
-      repoRoot: root,
+      entryRoot: root,
       testEntry,
       testWorkflowId: "test-none",
       testRevision: 1,
@@ -90,7 +90,7 @@ describe("resolveDeclaredWorkflows", () => {
     await expect(
       resolveDeclaredWorkflows({
         workspaceRoot: root,
-        repoRoot: root,
+        entryRoot: root,
         testEntry,
         testWorkflowId: "test-1",
         testRevision: 1,
@@ -105,7 +105,7 @@ describe("resolveDeclaredWorkflows", () => {
     await expect(
       resolveDeclaredWorkflows({
         workspaceRoot: root,
-        repoRoot: root,
+        entryRoot: root,
         testEntry,
         testWorkflowId: "test-1",
         testRevision: 1,

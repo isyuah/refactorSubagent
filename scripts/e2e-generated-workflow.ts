@@ -43,14 +43,13 @@ const result = await runAgentWorkflowVerification({
   ctestTimeoutMs: 180_000,
 });
 
-const workflows = result.workflows;
-const generated = workflows !== null &&
-  workflows.buildResolution.mode === "generated" &&
-  workflows.testResolution.mode === "generated" &&
-  workflows.build.entry.endsWith(".ts") &&
-  workflows.test.entry.endsWith(".ts") &&
-  existsSync(workflows.build.entry) &&
-  existsSync(workflows.test.entry);
+const declared = result.declared;
+const workflowsProduced = declared !== null &&
+  declared.declaredSet.builds.length >= 0 &&
+  declared.testResolution.entry.endsWith(".ts") &&
+  existsSync(declared.testResolution.entry) &&
+  declared.buildResolutions.length > 0 &&
+  declared.buildResolutions.every((b) => existsSync(b.entry));
 const buildsPassed = result.verification?.baselineBuild?.status === "pass" &&
   result.verification?.candidateBuild?.status === "pass";
 const testsCompleted = result.verification?.baseline !== null &&
@@ -62,19 +61,16 @@ const accepted = result.state === "ACCEPTED";
 console.log(JSON.stringify({
   scenario: "generated-typescript-workflow-e2e",
   state: result.state,
-  generated_workflows: generated,
-  build_workflow: workflows === null ? null : {
-    mode: workflows.buildResolution.mode,
-    entry: workflows.build.entry,
-    id: workflows.build.manifest.id,
-    revision: workflows.build.manifest.revision,
-  },
-  test_workflow: workflows === null ? null : {
-    mode: workflows.testResolution.mode,
-    entry: workflows.test.entry,
-    id: workflows.test.manifest.id,
-    revision: workflows.test.manifest.revision,
-    runner: workflows.test.workflow?.runner ?? null,
+  workflows_produced: workflowsProduced,
+  declared_builds: declared === null ? [] : declared.declaredSet.builds.map((b) => ({
+    id: b.id,
+    entry: b.entry,
+    run_local: b.run_local,
+  })),
+  test_workflow: declared === null ? null : {
+    entry: declared.testResolution.entry,
+    id: declared.workflowId,
+    revision: declared.workflowRevision,
   },
   builds_passed: buildsPassed,
   tests_completed: testsCompleted,
@@ -83,7 +79,7 @@ console.log(JSON.stringify({
   history: result.store.history.map((event) => `${event.from} -> ${event.to}`),
 }, null, 2));
 
-if (!generated || !buildsPassed || !testsCompleted || !accepted) process.exitCode = 1;
+if (!workflowsProduced || !buildsPassed || !testsCompleted || !accepted) process.exitCode = 1;
 
 function parseOptions(args: readonly string[]): Options {
   const rootArg = valueAfter(args, "--root");

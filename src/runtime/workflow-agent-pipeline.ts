@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { join, relative } from "node:path";
+import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
+import type { WorkflowRequest } from "../workflow/resolve-workflows.js";
 import { analyzeRepo, proposalArtifacts, type AnalysisResult } from "../agents/analyze.js";
 import { runRefactor } from "../agents/refactor.js";
-import { resolveWorkflows, type ResolvedWorkflows, type WorkflowRequest } from "../workflow/resolve-workflows.js";
 import { E2ELogger } from "./e2e-log.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { SessionStore } from "../orchestrator/store.js";
@@ -11,6 +13,12 @@ import { detectCProject } from "./project-detector.js";
 import { probeHost } from "./host-preflight.js";
 import { runWorkflowVerification, type WorkflowVerificationOutcome } from "./workflow-pipeline.js";
 import { createWorktrees, resolveHead, type WorktreePair } from "./worktree.js";
+import { runWorkflowSession } from "../agents/workflow-session.js";
+import { LocalDependencyRegistry } from "../agents/dep-registry.js";
+import { resolveDeclaredWorkflows } from "../workflow/resolve-declared.js";
+import type { DeclaredBuildSet as DeclaredBuildSetValue, WorkflowResolution } from "../artifacts/index.js";
+import type { TestWorkflowResolution } from "../workflow/test-workflow.js";
+import type { BuildWorkflowResolution } from "../workflow/build-workflow.js";
 
 export interface AgentWorkflowPipelineRequest {
   /** Git repository containing the base C project. */
@@ -32,13 +40,24 @@ export interface AgentWorkflowPipelineRequest {
   readonly logger?: E2ELogger;
 }
 
+export interface DeclaredAgentResolution {
+  /** DeclaredBuildSet artifact carrying the whole declaration. */
+  readonly declaredSet: DeclaredBuildSetValue;
+  readonly testResolution: TestWorkflowResolution;
+  /** Resolved build workflows, in declaration order. */
+  readonly buildResolutions: readonly BuildWorkflowResolution[];
+  readonly testSource: string;
+  readonly workflowId: string;
+  readonly workflowRevision: number;
+}
+
 export interface AgentWorkflowPipelineResult {
   readonly store: SessionStore;
   readonly state: string;
   readonly refactorSummary: string;
   readonly scopeDenials: string[];
   readonly analysis: AnalysisResult | null;
-  readonly workflows: ResolvedWorkflows | null;
+  readonly declared: DeclaredAgentResolution | null;
   readonly verification: WorkflowVerificationOutcome | null;
   readonly logDir: string;
 }
@@ -59,7 +78,7 @@ export async function runAgentWorkflowVerification(
     req.sessionId,
   );
   let analysis: AnalysisResult | null = null;
-  let workflows: ResolvedWorkflows | null = null;
+  let declared: DeclaredAgentResolution | null = null;
   let verification: WorkflowVerificationOutcome | null = null;
   let refactorSummary = "";
   let scopeDenials: string[] = [];
@@ -82,7 +101,7 @@ export async function runAgentWorkflowVerification(
     });
     if (project.status !== "ready") {
       abort(orch, logger, `project build detection blocked: ${project.reason}`);
-      return result(store, logger, analysis, workflows, verification, refactorSummary, scopeDenials);
+      return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
     }
 
     logger.phase("ANALYSIS");
@@ -96,34 +115,30 @@ export async function runAgentWorkflowVerification(
       test_case_count: analysis.tests.cases.length,
     });
 
-    logger.phase("WORKFLOW_RESOLUTION");
-    logger.info("generating and validating TypeScript BuildWorkflow and TestWorkflow sources");
+    logger.phase("WORKFLOW_SESSION");
+    logger.info("running test-writer session (declare build deps, author TestWorkflow)");
     logger.startHeartbeat(5_000);
     try {
-      workflows = await resolveWorkflows({
-        workspaceRoot: req.repoPath,
+      declared = await runDeclaredResolution({
+        repoDir: req.repoPath,
         sessionRoot: store.sessionDir,
+        sessionId: req.sessionId,
+        task: req.task,
         host,
         project,
-        taskContext: req.task,
+        logger,
         workflowTimeoutMs: req.workflowTimeoutMs,
-        build: req.build,
-        test: req.test,
       });
     } finally {
       logger.stopHeartbeat();
     }
-    logger.artifact("workflow-resolution-build.json", workflows.buildResolution);
-    logger.artifact("workflow-resolution-test.json", workflows.testResolution);
-    logger.artifact("build-workflow-output.json", workflows.build.output);
-    logger.artifact("test-workflow.json", workflows.test.workflow);
-    logger.logFile("build-workflow.ts", readFileSync(workflows.build.entry, "utf8"));
-    logger.logFile("test-workflow.ts", readFileSync(workflows.test.entry, "utf8"));
-    logger.info("AI-generated TypeScript workflows validated", {
-      build_source: workflows.build.entry,
-      test_source: workflows.test.entry,
-      build_mode: workflows.buildResolution.mode,
-      test_mode: workflows.testResolution.mode,
+    logger.artifact("declared-build-set.json", declared.declaredSet);
+    logger.artifact("workflow-resolution-test.json", declared.testResolution);
+    logger.artifact("test-workflow.json", declared.testSource === "" ? null : JSON.parse(declared.testSource));
+    logger.info("declared build set resolved", {
+      build_count: declared.declaredSet.builds.length,
+      test_entry: declared.testResolution.entry,
+      test_id: declared.workflowId,
     });
 
     const baseSha = resolveHead(req.repoPath);
@@ -153,7 +168,7 @@ export async function runAgentWorkflowVerification(
     const status = gitIn(worktrees.candidateDir, ["status", "--porcelain"]);
     if (status.trim().length === 0) {
       abort(orch, logger, "refactor agent made no changes");
-      return result(store, logger, analysis, workflows, verification, refactorSummary, scopeDenials);
+      return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
     }
     gitIn(worktrees.candidateDir, ["add", "-A"]);
     const summaryLine = firstSummaryLine(refactor.summary) ?? req.task;
@@ -175,6 +190,11 @@ export async function runAgentWorkflowVerification(
     });
 
     logger.phase("VERIFICATION");
+    if (declared === null || declared.buildResolutions.length === 0) {
+      abort(orch, logger, "declared workflow resolution missing or empty build set");
+      return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
+    }
+    const firstBuild = declared.buildResolutions[0]!;
     verification = await runWorkflowVerification({
       repoPath: req.repoPath,
       worktrees,
@@ -186,10 +206,28 @@ export async function runAgentWorkflowVerification(
       scope: analysis.scope,
       deps: analysis.deps,
       tests: analysis.tests,
-      buildResolution: workflows.buildResolution,
-      testResolution: workflows.testResolution,
-      build: workflows.build,
-      test: workflows.test,
+      // Declared mode: DeclaredBuildSet artifact + declared test resolution
+      // replace the legacy single build resolution in the state machine.
+      buildResolution: {
+        kind: "workflow-resolution",
+        version: 1,
+        workflow_kind: "build",
+        mode: "declared",
+        workflow_id: "declared-set",
+        workflow_revision: 1,
+        build_workflow: null,
+        entry_root: "workspace",
+        root_path: req.repoPath,
+        entry: "declared-build-set",
+        source_hash: declared.declaredSet.source_hash,
+        candidate_entries: [],
+        reason: "declared build set",
+      },
+      testResolution: declaredResolutionArtifact(declared),
+      build: firstBuild,
+      test: declared.testResolution,
+      declaredSet: declared.declaredSet,
+      declaredBuilds: declared.buildResolutions,
       patch: {
         branch,
         commit_sha: gitIn(worktrees.candidateDir, ["rev-parse", "HEAD"]),
@@ -200,11 +238,11 @@ export async function runAgentWorkflowVerification(
       ctestTimeoutMs: req.ctestTimeoutMs,
       knownEnvironmentPatterns: req.knownEnvironmentPatterns,
     });
-    return result(store, logger, analysis, workflows, verification, refactorSummary, scopeDenials);
+    return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
   } catch (error) {
     const reason = errorMessage(error);
     abort(orch, logger, reason);
-    return result(store, logger, analysis, workflows, verification, refactorSummary, scopeDenials);
+    return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
   } finally {
     worktrees?.cleanup();
     if (store.state === "ACCEPTED") logger.finish("accepted", "workflow verification accepted candidate");
@@ -239,7 +277,7 @@ function result(
   store: SessionStore,
   logger: E2ELogger,
   analysis: AnalysisResult | null,
-  workflows: ResolvedWorkflows | null,
+  declared: DeclaredAgentResolution | null,
   verification: WorkflowVerificationOutcome | null,
   refactorSummary: string,
   scopeDenials: string[],
@@ -250,7 +288,7 @@ function result(
     refactorSummary,
     scopeDenials,
     analysis,
-    workflows,
+    declared,
     verification,
     logDir: logger.runDir,
   };
@@ -275,4 +313,126 @@ function gitIn(dir: string, args: string[]): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Hash the ordered declaration (id:entry) for the artifact audit field. */
+function declaredSetHash(builds: readonly { id: string; entry: string }[]): string {
+  const h = createHash("sha256");
+  for (const b of builds) h.update(`${b.id}:${b.entry}\n`);
+  return h.digest("hex");
+}
+
+/**
+ * Run the test-writer session, resolve every declared build, and assemble the
+ * DeclaredAgentResolution consumed by the verification stage.
+ */
+async function runDeclaredResolution(options: {
+  readonly repoDir: string;
+  readonly sessionRoot: string;
+  readonly sessionId: string;
+  readonly task: string;
+  readonly host: HostPreflight;
+  readonly project: ProjectDetection;
+  readonly logger: E2ELogger;
+  readonly workflowTimeoutMs?: number;
+}): Promise<DeclaredAgentResolution> {
+  const testRelDir = join(".refactor", "runs", options.sessionId, "workflows", "test");
+  const testEntry = join(options.repoDir, testRelDir, "test-workflow.ts");
+  const session = await runWorkflowSession({
+    repoDir: options.repoDir,
+    sessionRoot: options.sessionRoot,
+    sessionId: options.sessionId,
+    task: options.task,
+    testEntry,
+    host: options.host,
+    project: options.project,
+    timeoutMs: options.workflowTimeoutMs,
+  });
+  if (!session.ok) {
+    throw new Error(
+      `test-writer session failed: ${session.failure ?? "unknown"}${session.summary.length > 0 ? ` — ${session.summary.slice(0, 400)}` : ""}`,
+    );
+  }
+  options.logger.info("test-writer session completed", {
+    declared_builds: session.declaredBuilds.join(", "),
+    summary: session.summary.slice(0, 200),
+  });
+
+  // Rebuild the registry (run-local files restored from disk) to resolve
+  // declared build ids to their workflow entries.
+  const registry = new LocalDependencyRegistry({
+    workspaceRoot: options.repoDir,
+    sessionRoot: options.sessionRoot,
+    sessionId: options.sessionId,
+    host: options.host,
+    project: options.project,
+  });
+  const buildSources: { id: string; entry: string; runLocal: boolean }[] = [];
+  for (const id of session.declaredBuilds) {
+    const resolved = await registry.resolveBuildEntry(id);
+    if (resolved === null) {
+      throw new Error(`declared build workflow '${id}' cannot be resolved to a source`);
+    }
+    buildSources.push({ id, entry: resolved.entry, runLocal: resolved.runLocal });
+  }
+
+  const resolved = await resolveDeclaredWorkflows({
+    workspaceRoot: options.repoDir,
+    entryRoot: options.repoDir,
+    host: options.host,
+    project: options.project,
+    testEntry,
+    testWorkflowId: `test-${options.sessionId}`,
+    testRevision: 1,
+    builds: buildSources.map((b) => ({ id: b.id, entry: b.entry, runLocal: b.runLocal })),
+  });
+
+  const testSource = existsSync(testEntry) ? readFileSync(testEntry, "utf8") : "";
+  const declaredSet: DeclaredBuildSetValue = {
+    kind: "declared-build-set",
+    version: 1,
+    test_workflow_id: `test-${options.sessionId}`,
+    test_workflow_revision: 1,
+    builds: buildSources.map((b) => ({
+      id: b.id,
+      entry: relative(options.repoDir, b.entry).split("\\").join("/"),
+      source_hash: b.runLocal ? sha256File(b.entry) : resolved.builds.find((r) => r.id === b.id)?.resolution.sourceHash ?? "",
+      run_local: b.runLocal,
+    })),
+    source_hash: declaredSetHash(buildSources),
+  };
+
+  return {
+    declaredSet,
+    testResolution: resolved.test,
+    buildResolutions: resolved.builds.map((b) => b.resolution),
+    testSource,
+    workflowId: `test-${options.sessionId}`,
+    workflowRevision: 1,
+  };
+}
+
+function sha256File(path: string): string {
+  return createHash("sha256").update(readFileSync(path, "utf8"), "utf8").digest("hex");
+}
+
+/** Test workflow-resolution artifact (declared mode, no single build ref). */
+function declaredResolutionArtifact(declared: DeclaredAgentResolution): WorkflowResolution {
+  return {
+    kind: "workflow-resolution",
+    version: 1,
+    workflow_kind: "test",
+    mode: "declared",
+    workflow_id: declared.workflowId,
+    workflow_revision: declared.workflowRevision,
+    build_workflow: null,
+    entry_root: "workspace",
+    root_path: declared.testResolution.entry,
+    entry: relative(declared.testResolution.entry, declared.testResolution.entry).length === 0
+      ? "test-workflow"
+      : declared.testResolution.entry,
+    source_hash: declared.testResolution.sourceHash,
+    candidate_entries: [],
+    reason: "declared test workflow",
+  };
 }

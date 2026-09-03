@@ -4,6 +4,7 @@ import type {
   CTestBaseline,
   CTestCandidate,
   CTestComparisonResult,
+  DeclaredBuildSet as DeclaredBuildSetValue,
   DependencyManifest,
   HostPreflight,
   PatchRecord,
@@ -45,6 +46,10 @@ export interface WorkflowVerificationRequest {
   readonly testResolution: WorkflowResolution;
   readonly build: BuildWorkflowResolution;
   readonly test: TestWorkflowResolution;
+  /** Declared-set mode artifact (carries the whole declaration set). */
+  readonly declaredSet?: DeclaredBuildSetValue;
+  /** Declared build resolutions, in declaration order (executed each side). */
+  readonly declaredBuilds?: readonly BuildWorkflowResolution[];
   readonly patch: Omit<PatchRecord, "kind" | "version" | "base_commit_sha">;
   readonly buildTimeoutMs?: number;
   readonly ctestTimeoutMs?: number;
@@ -95,10 +100,20 @@ export async function runWorkflowVerification(
   if (!submit(request.contract) ||
       !submit(request.scope) ||
       !submit(request.deps) ||
-      !submit(request.tests) ||
-      !submit(request.buildResolution) ||
-      !submit(request.testResolution)) {
+      !submit(request.tests)) {
     return emptyOutcome(request.store.state, results);
+  }
+  if (request.declaredSet !== undefined) {
+    // Declared mode: the single DeclaredBuildSet artifact carries the whole
+    // declaration (N build resolutions are executed later); it transitions
+    // TESTS_READY -> BUILD_WORKFLOW_READY, then the declared test resolution
+    // -> TEST_WORKFLOW_READY. No per-build workflow-resolution artifact exists
+    // in this mode (the set is the audit record).
+    if (!submit(request.declaredSet)) return emptyOutcome(request.store.state, results);
+    if (!submit(request.testResolution)) return emptyOutcome(request.store.state, results);
+  } else {
+    if (!submit(request.buildResolution)) return emptyOutcome(request.store.state, results);
+    if (!submit(request.testResolution)) return emptyOutcome(request.store.state, results);
   }
 
   // workflow-driven builds have no static plan at resolution time; the host
@@ -118,6 +133,13 @@ export async function runWorkflowVerification(
   // Self-driven test workflows (workflow === null) execute their own test
   // logic once per worktree and declare expectations; the host compares.
   if (request.test.workflow === null) {
+    if (request.declaredBuilds !== undefined && request.declaredBuilds.length > 0) {
+      const buildList = request.declaredBuilds.map((resolution) => ({
+        id: resolution.manifest.id,
+        resolution,
+      }));
+      return runDeclaredWorkflowVerification(request, orch, results, submit, environment, buildList);
+    }
     return runSelfDrivenVerification(request, orch, results, submit, environment);
   }
 

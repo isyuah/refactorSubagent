@@ -29,9 +29,10 @@ export interface DeclaredBuildSource {
 }
 
 export interface ResolveDeclaredWorkflowsOptions {
+  /** Target project root exposed through workflow capabilities. */
   readonly workspaceRoot: string;
-  /** Root used as the trust boundary for workflow entries. */
-  readonly repoRoot: string;
+  /** Root used as the trust boundary for workflow source entries. */
+  readonly entryRoot: string;
   readonly host?: HostPreflight;
   readonly project?: ProjectDetection;
   /** Absolute entry of the produced TestWorkflow source. */
@@ -72,8 +73,8 @@ export async function resolveDeclaredWorkflows(
       entry: source.entry,
       workflowId: source.workflowId,
       revision: source.revision,
-      cwd: options.repoRoot,
-      entryRoot: options.repoRoot,
+      cwd: options.workspaceRoot,
+      entryRoot: options.entryRoot,
       workspaceRoot: options.workspaceRoot,
       host: options.host,
       project: options.project,
@@ -83,7 +84,7 @@ export async function resolveDeclaredWorkflows(
 
   const test = await resolveTestWorkflow({
     entry: options.testEntry,
-    entryRoot: options.repoRoot,
+    entryRoot: options.entryRoot,
     workspaceRoot: options.workspaceRoot,
     workflowId: options.testWorkflowId,
     revision: options.testRevision,

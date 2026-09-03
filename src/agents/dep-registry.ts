@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import { discoverBuildWorkflows } from "../workflow/registry.js";
@@ -172,10 +172,41 @@ export class LocalDependencyRegistry implements DependencyRegistry {
     this.sessionId = options.sessionId;
     this.host = options.host;
     this.project = options.project;
+    this.restoreRunLocal();
+  }
+
+  /** Recover run-local builds materialized on disk (host restarts/rebuilds registry). */
+  private restoreRunLocal(): void {
+    const dir = this.runLocalBuildDir();
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir).filter((name) => name.endsWith(".ts"));
+    } catch {
+      return; // dir not created yet
+    }
+    for (const name of names) {
+      const id = name.slice(0, -3);
+      const entry = join(dir, name);
+      try {
+        const size = statSync(entry).size;
+        if (size === 0) continue;
+      } catch {
+        continue;
+      }
+      if (this.runLocal.has(id)) continue;
+      this.runLocal.set(id, {
+        id,
+        kind: "build",
+        name: id,
+        description: "",
+        revision: 1,
+        entry,
+      });
+    }
   }
 
   runLocalBuildDir(): string {
-    return join(this.sessionRoot, RUN_DIR, this.sessionId, WORKFLOW_DIR, BUILD_DIR);
+    return join(this.workspaceRoot, RUN_DIR, this.sessionId, WORKFLOW_DIR, BUILD_DIR);
   }
 
   private runLocalEntry(id: string): string {
