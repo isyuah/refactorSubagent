@@ -125,6 +125,7 @@ function buildManifest(
       architectures: [host.arch],
       required_tools: [],
     },
+    description: "",
     status: "draft",
   };
 }

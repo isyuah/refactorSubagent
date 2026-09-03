@@ -49,6 +49,7 @@ export interface BuildWorkflowCandidate {
 export function saveBuildWorkflow(
   repoRoot: string,
   resolution: BuildWorkflowResolution,
+  description = "",
 ): StoredBuildWorkflow {
   const root = resolve(repoRoot);
   const sourceEntry = resolveInside(root, relative(root, resolution.entry), "workflow source");
@@ -83,6 +84,7 @@ export function saveBuildWorkflow(
     ...resolution.manifest,
     entry: relative(root, entry).split(sep).join("/"),
     source_hash: sha256(source),
+    description: description.length > 0 ? description : resolution.manifest.description,
   });
   atomicWrite(manifestPath, JSON.stringify(storedManifest, null, 2) + "\n");
   if (resolution.output === null) {

@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import { discoverBuildWorkflows } from "../workflow/registry.js";
@@ -198,7 +198,7 @@ export class LocalDependencyRegistry implements DependencyRegistry {
         id,
         kind: "build",
         name: id,
-        description: "",
+        description: this.readDescriptionSidecar(entry),
         revision: 1,
         entry,
       });
@@ -211,6 +211,17 @@ export class LocalDependencyRegistry implements DependencyRegistry {
 
   private runLocalEntry(id: string): string {
     return join(this.runLocalBuildDir(), `${id}.ts`);
+  }
+
+  private readDescriptionSidecar(entry: string): string {
+    try {
+      const parsed = JSON.parse(readFileSync(`${entry}.description.json`, "utf8")) as {
+        description?: string;
+      };
+      return parsed.description ?? "";
+    } catch {
+      return "";
+    }
   }
 
   async inspect(query: InspectQuery): Promise<InspectResult> {
@@ -232,7 +243,7 @@ export class LocalDependencyRegistry implements DependencyRegistry {
           status: candidate.manifest.status === "verified"
             ? "library-verified"
             : "library-draft",
-          description: "",
+          description: candidate.manifest.description ?? "",
           entry: candidate.entry ?? "",
           producedArtifacts: [],
           appliesTo: {
@@ -319,6 +330,13 @@ export class LocalDependencyRegistry implements DependencyRegistry {
     mkdirSync(this.runLocalBuildDir(), { recursive: true });
     const target = this.runLocalEntry(id);
     writeFileSync(target, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+    // Persist the description next to the source so later processes (registry
+    // rebuild, curator promotion) can recover it without holding this instance.
+    writeFileSync(
+      `${target}.description.json`,
+      JSON.stringify({ name: slugged, description: input.description }) + "\n",
+      "utf8",
+    );
     this.runLocal.set(id, {
       id,
       kind: "build",

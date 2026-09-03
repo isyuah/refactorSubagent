@@ -171,6 +171,25 @@ describe("LocalDependencyRegistry.inspect", () => {
     const { reg } = makeRegistry();
     expect((await reg.inspect({ kind: "build" })).items).toEqual([]);
   });
+
+  test("description survives registry rebuild via sidecar", async () => {
+    const { reg, root, sessionRoot } = makeRegistry("sess-restore");
+    const gen = await reg.generate({
+      name: "persistent",
+      description: "survives restart",
+      content: VALID_BUILD_SOURCE,
+    });
+    // A fresh registry instance over the same dirs restores run-local from disk.
+    const reg2 = new LocalDependencyRegistry({
+      workspaceRoot: root,
+      sessionRoot,
+      sessionId: "sess-restore",
+    });
+    const items = await reg2.inspect({ kind: "build", id: gen.workflowId });
+    expect(items.items).toHaveLength(1);
+    expect(items.items[0]?.description).toBe("survives restart");
+    expect(items.items[0]?.status).toBe("run-local");
+  });
 });
 
 describe("LocalDependencyRegistry.resolveBuildEntry", () => {

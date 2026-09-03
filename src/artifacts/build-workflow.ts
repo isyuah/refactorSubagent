@@ -52,6 +52,8 @@ export const BuildWorkflowManifest = z.object({
   source_hash: Sha256Hex,
   workflow_api_version: z.literal(1),
   applies_to: BuildWorkflowAppliesTo.default({}),
+  /** Human/agent-facing description of what this workflow builds and produces. */
+  description: z.string().max(2048).default(""),
   status: z.enum(["draft", "verified"]).default("draft"),
 });
 export type BuildWorkflowManifest = z.infer<typeof BuildWorkflowManifest>;

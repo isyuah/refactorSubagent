@@ -9,6 +9,7 @@ import {
   saveAlias,
 } from "../src/workflow/curator.js";
 import { discoverBuildWorkflows } from "../src/workflow/registry.js";
+import { LocalDependencyRegistry } from "../src/agents/dep-registry.js";
 
 const VALID_BUILD = `export const workflowKind = "workflow-driven";
 export default async () => { return; };
@@ -40,6 +41,7 @@ describe("curateBuildWorkflow", () => {
       repoRoot: root,
       entry: runLocalEntry,
       runLocalId: "trim-build-s1",
+      description: "builds trim_app test runner",
     });
     expect(result.promoted).toBe(true);
     expect(result.libraryId).toBe("trim-build");
@@ -50,6 +52,7 @@ describe("curateBuildWorkflow", () => {
     expect(lib).toBeDefined();
     expect(lib?.status).toBe("draft");
     expect(existsSync(lib!.entry!)).toBe(true);
+    expect(lib?.manifest?.description).toBe("builds trim_app test runner");
   });
 
   test("idempotent: second promote does not duplicate", async () => {
@@ -72,6 +75,27 @@ describe("curateBuildWorkflow", () => {
     });
     expect(result.promoted).toBe(false);
     expect(result.reason).toContain("missing");
+  });
+
+  test("library description is visible to dep-registry inspect", async () => {
+    const root = tempRepo();
+    const runLocalEntry = join(root, ".refactor", "runs", "s1", "workflows", "build", "vis-s1.ts");
+    writeFileSync(runLocalEntry, VALID_BUILD, "utf8");
+    await curateBuildWorkflow({
+      repoRoot: root,
+      entry: runLocalEntry,
+      runLocalId: "vis-s1",
+      description: "visible after promotion",
+    });
+    const reg = new LocalDependencyRegistry({
+      workspaceRoot: root,
+      sessionRoot: root,
+      sessionId: "s1",
+    });
+    const items = await reg.inspect({ kind: "build" });
+    const lib = items.items.find((item) => item.id === "vis");
+    expect(lib?.status).toBe("library-draft");
+    expect(lib?.description).toBe("visible after promotion");
   });
 
   test("honors an explicit library id", async () => {

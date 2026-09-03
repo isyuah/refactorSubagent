@@ -23,6 +23,8 @@ export interface CuratorOptions {
   readonly runLocalId: string;
   /** Optional stable library id; derived from the source when omitted. */
   readonly libraryId?: string;
+  /** Description of what this build produces; persisted in the library manifest. */
+  readonly description?: string;
   readonly host?: HostPreflight;
   readonly project?: ProjectDetection;
 }
@@ -102,7 +104,7 @@ export async function curateBuildWorkflow(
     project: options.project,
   });
 
-  const stored = saveBuildWorkflow(repoRoot, resolution);
+  const stored = saveBuildWorkflow(repoRoot, resolution, options.description ?? "");
   saveAlias(repoRoot, options.runLocalId, libraryId);
   return {
     libraryId,

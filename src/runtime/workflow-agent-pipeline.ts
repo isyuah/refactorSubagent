@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import type { WorkflowRequest } from "../workflow/resolve-workflows.js";
+import { curateBuildWorkflow, loadAliases } from "../workflow/curator.js";
 import { analyzeRepo, proposalArtifacts, type AnalysisResult } from "../agents/analyze.js";
 import { runRefactor } from "../agents/refactor.js";
 import { E2ELogger } from "./e2e-log.js";
@@ -245,7 +246,10 @@ export async function runAgentWorkflowVerification(
     return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
   } finally {
     worktrees?.cleanup();
-    if (store.state === "ACCEPTED") logger.finish("accepted", "workflow verification accepted candidate");
+    if (store.state === "ACCEPTED") {
+      await promoteRunLocalBuilds(declared, req.repoPath, logger);
+      logger.finish("accepted", "workflow verification accepted candidate");
+    }
     else if (store.state === "REJECTED") logger.finish("rejected", "workflow verification rejected candidate");
     else if (store.state === "ABORTED") logger.finish("aborted", "workflow verification aborted");
     logger.close();
@@ -435,4 +439,49 @@ function declaredResolutionArtifact(declared: DeclaredAgentResolution): Workflow
     candidate_entries: [],
     reason: "declared test workflow",
   };
+}
+
+/** Promote run-local build workflows to the library after an accepted run. */
+async function promoteRunLocalBuilds(
+  declared: DeclaredAgentResolution | null,
+  repoRoot: string,
+  logger: E2ELogger,
+): Promise<void> {
+  if (declared === null) return;
+  const existingAliases = loadAliases(repoRoot).aliases;
+  for (const build of declared.declaredSet.builds) {
+    if (!build.run_local) continue;
+    if (existingAliases[build.id] !== undefined) continue; // already promoted
+    const entry = join(repoRoot, build.entry);
+    if (!existsSync(entry)) {
+      logger.warn(`run-local build source missing, skip promotion: ${build.entry}`);
+      continue;
+    }
+    try {
+      const description = readDescriptionSidecar(entry);
+      const result = await curateBuildWorkflow({
+        repoRoot,
+        entry,
+        runLocalId: build.id,
+        description,
+      });
+      logger.info(`promoted run-local build '${build.id}' -> '${result.libraryId}'`, {
+        library_id: result.libraryId,
+        revision: result.revision,
+      });
+    } catch (error) {
+      logger.warn(`promotion failed for '${build.id}': ${errorMessage(error)}`);
+    }
+  }
+}
+
+function readDescriptionSidecar(entry: string): string {
+  try {
+    const parsed = JSON.parse(readFileSync(`${entry}.description.json`, "utf8")) as {
+      description?: string;
+    };
+    return parsed.description ?? "";
+  } catch {
+    return "";
+  }
 }
