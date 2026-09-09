@@ -4,6 +4,16 @@
 > 需要把权限收回来而不让"探索被拒→猜路径→死循环"的慢问题复发。
 > 时间:2026-09-04。
 
+> **最终裁决(2026-09-04,提交 66f462e):本方案未落地,机制被整体移除。**
+> 评审中确认两点:① editable_files 要求宿主预声明"重构可改哪些文件",
+> 对真实拆分型重构不可行(宿主无法预知拆成几个文件);② 读放开后 Grep 与
+> Read 内容面等价,单独拦 Grep 无增益。最终决策:scope-manifest /
+> checkToolScope / R4 / SCOPE_READY 全部删除,agent 边界只剩 SDK
+> allowedTools 白名单(无 Bash)+ 可弃 worktree/session 目录;行为保持由
+> baseline/candidate 双跑 workflow 裁决;Linux 生产可另配 SDK
+> permissionMode + sandbox(原生 Windows 不支持,见正文 2.4 遗留)。
+> 本文档保留作演进记录。
+
 ## 1. 为什么旧模型会死循环(根因,代码级)
 
 `driver.ts:checkToolScope` 旧逻辑对三类工具分别判定:
