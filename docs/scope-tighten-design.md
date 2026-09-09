@@ -39,48 +39,49 @@ AI 再猜 → 24+ 次拒绝 → 无进展
 
 | 层 | 旧模型 | 新模型 |
 |---|---|---|
-| 读(Read/Glob/Grep) | 精确文件 glob 白名单 | **repo 根可递归读**;forbidden 仅保留少量敏感目录 |
+| 读(Read/Glob/Grep) | 精确文件 glob 白名单 | **repo 根内一致放开**,仅防路径逃逸 |
 | 写(Write/Edit) | editable_files 全局列表 | **按会话的写目录白名单**(窄于读) |
-| forbidden | 与 editable/产物冲突 | 只做"绝对不可碰"硬拒,且永不与写目录重叠 |
+| forbidden | 与 editable/产物冲突 | 只对**写**生效的硬拒;读方向不参与判定 |
 | 拒绝反馈 | 无方向 | 带**可用范围提示**(防猜路径) |
 
-### 2.1 读:repo 根可递归(默认放开)
+### 2.1 读:repo 根内一致放开(Read/Glob/Grep)
 
-- 检查器的 root 就是会话 cwd(repo 或 worktree),**根内一切可读**。
-- `forbidden_globs` 收窄为真正不该看的:`node_modules/**`、`.git/**`、
-  `**/.env`、`**/*.pem`、`**/id_rsa*` 等。分析源码、读测试、Glob 全仓都不再受限。
+- 检查器的 root 就是会话 cwd(repo 或 worktree),**根内一切可读**:
+  Read 任意文件、Glob 全仓递归、Grep 全仓搜索,一律放行。
+- 读方向唯一保留的检查是**逃逸**:路径穿越(`..`)、symlink 解析出 root、
+  绝对路径出 root —— relativeAgentPath 精确拦截,agent 出不了会话 root。
 - **读不再是慢问题的来源**:探索永不因 scope 被拒;Glob 根递归天然允许。
 
 > 风险与对策:agent 可读整个 repo —— 对代码重构任务,repo 本来就是输入,
 > 无新增敏感面(敏感信息本就不该在 demo repo 里;生产另有 secret 扫描层,
 > 不在本组件职责)。这是"读宽"的明确取舍。
 
-### 2.1a Glob 为什么不再需要"语法检测"(换判定时机,不是放任)
+### 2.1a 读方向不做内容级禁区:Glob/Grep/Read 一致放开
 
 旧 hook 对 Glob 的死结:**在执行前静态判定 pattern 的命中集是否越界是做不到的**。
 Glob 语法空间无限(`**/*` 空前缀、`{a,b}/**`、`[!x]` 字符类…),hook 只能取
 pattern 的字面前缀猜搜索根 —— 空前缀/复杂语法时无从判断,只能保守拒绝,
 于是 Explore 的 `Glob **/*` 永远被拒、陷入猜路径死循环(见调查文档 §3)。
 
-收紧后 Glob 的判定从"pattern 命中集"换成"搜索起点",两者判定难度完全不同:
+读宽后 Glob/Grep/Read 三者的判定统一为**搜索/目标起点 ∈ repo 根**:
 
-1. **Glob 只校验显式搜索起点**(`path` 参数,repo 内 → 放行)。起点是精确路径,
-   无语法歧义;pattern 由工具自己执行,命中集不预判。
-2. **Glob 结果只含路径名,不含内容** —— 即使命中 `node_modules/**` 也只是
-   列出一个路径,无信息泄露。内容访问必须走 Read,而 Read 是"目标路径精确
-   forbid 判定"(无 pattern 推断),安全边界落在 Read。
-3. 分工因此清晰:**Glob 管"搜索起点合法",Read 管"内容可读"**。forbidden 里
-   的目录 Glob 可以列到(无害),Read 读不到(拦截)。
+1. **起点是精确路径,无语法歧义** —— pattern 由工具自己执行,命中集不预判。
+2. **内容泄露面等价,禁止必须一致**:Read 返回全文、Grep 返回匹配行、Glob
+   只返回路径名 —— 三者信息量不同,但 Read 已放行时单独拦 Grep 无安全增益
+   只有一致性损失(agent 能 Read 就能拿到内容)。读方向不再做内容级禁区。
+3. **禁区语义只留给写**:forbidden 对 Write/Edit 是硬拒;读方向 forbidden
+   不生效(见 2.2)。
 
-这是"把不可判定的前置推断,换成可判定的分层职责",不是放弃检查。
+> 读方向唯一保留的检查是**逃逸**:路径穿越(`..`)、symlink 解析出 root、
+> 绝对路径出 root —— 这些仍在 relativeAgentPath 精确拦截。root 即会话
+> cwd(repo 或 worktree),agent 永远出不去。
 
-> **Grep 的例外**:Grep 与 Glob 不同,它的结果**含匹配行内容**(等于读)。
-> 因此 Grep 不能只查搜索起点 —— 若搜索根能触达 forbidden 目录,仍要在
-> 执行前按"搜索根 ∈ repo 且 ∉ forbidden 前缀"拒绝(搜索根是显式路径,判定
-> 精确)。此外 Grep 常带 `glob` 参数限定文件集,若该 glob 为空前缀(可能
-> 命中 forbidden),保守拒绝 —— 因为 Grep 的内容泄露经"文件集"发生。
-> 差异的根源是"结果是否含内容",不是语法推断:Glob 只给路径名 → 可放;
-> Grep 给内容 → 需按搜索根精确判定。
+> **Bash 不在 agent 工具集内(第一道防线)**:refactor / test-writer /
+> build-writer 的 allowedTools 均无 Bash(白名单:Read/Glob/Grep/Write/Edit,
+> build-writer 另无 Write/Edit)。SDK 级工具白名单意味着模型**根本无法调用**
+> 未列工具 —— scope hook 只是第二道防线。所有会执行命令的路径(构建/ctest)
+> 都在宿主进程,agent 只写 workflow 描述意图。若未来给 agent 加 Bash,
+> 那将击穿本模型,属于单独的设计决策,不是当前漏洞。
 
 ### 2.2 写:按会话分配写目录
 
@@ -106,7 +107,7 @@ denied: path is outside this session's writable directories
 writable: .refactor/runs/<session>/workflows/test/
 ```
 
-AI 看到范围后要么改路径要么停止,不再瞎猜。读基本不拒(2.1),写有明确范围。
+AI 看到范围后要么改路径要么停止,不再瞎猜。读方向不拒(2.1),写越权有明确范围提示。
 
 ### 2.4 兼容与迁移
 
@@ -122,18 +123,20 @@ AI 看到范围后要么改路径要么停止,不再瞎猜。读基本不拒(2.1
 
 ## 3. 改动清单
 
-1. `driver.ts`:checkToolScope 重构为目录级读 + 会话写目录;reason 带范围提示
+1. `driver.ts`:checkToolScope 重构为「读=root 内放行(仅防逃逸)、写=writableDirs
+   白名单」;删除 readableGlobs/forbiddenGlobs 的读判定路径;reason 带写范围提示
 2. `refactor.ts` / `workflow-session.ts`:editableFiles → writableDirs 传参
-3. `analyze.ts`:ScopeManifest 保留,但 readable 不再需要精确推导(简化 buildReadableGlobs);
-   forbidden 收窄
+3. `analyze.ts`:ScopeManifest 保留 editable_files(→ 会话写目录来源),readable
+   推导与 forbidden 收窄不再需要(读方向不消费);产物目录不再进 forbidden
 4. `workflow-agent-pipeline.ts`:enforceScope 默认 strict
-5. e2e + 单测:补 checkToolScope 单测(读全放、写目录判定、拒绝提示)、
+5. e2e + 单测:补 checkToolScope 单测(读全放、写目录判定、逃逸拦截、拒绝提示)、
    e2e 跑 strict 全链路回归
 
 ## 4. 验证方式
 
-- 单测:`checkToolScope` 对 Read(任意 repo 内路径放行)、Write(目录内放行/目录外拒)、
-  Glob(root 递归放行)、拒绝信息含 writable 提示
+- 单测:`checkToolScope` 对 Read/Glob/Grep(repo 内任意起点放行)、
+  Write(写目录内放行/目录外拒)、逃逸(`..`/symlink/绝对路径出 root 拒)、
+  拒绝信息含 writable 提示
 - e2e:strict 模式下完整跑一遍,确认:
   (a) 探索不再有 denial(日志中 scope denial count = 0)
   (b) test/build-writer 正常写产物目录
