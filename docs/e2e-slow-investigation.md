@@ -112,3 +112,44 @@ c0383c1 fix(build-writer): declare dep-registry MCP server
 3bb0cce fix(driver): stall watchdog for hung SDK stream
 dcbda7d chore(deps): bump claude-agent-sdk to 0.3.259
 ```
+
+---
+
+## 7. 验证段续跑成功（2026-09-03 晚）
+
+复用 e2e-fix-18 的产物（test/build workflow 文件 + refactor patch commit +
+declared-build-set artifact），`scripts/resume-verification.ts` 只跑验证段：
+
+- baseline build: pass
+- candidate build: pass
+- 期望对比：10/10 consistent（ctest 退出码、trim_behavior、CLI 输出等）
+- 状态：**ACCEPTED**（声明制全链首次）
+
+证明：resolveProgram 绝对路径修复生效；fix-18 的 AI 产物本身全对，之前只差
+宿主拒绝绝对可执行路径。
+
+## 8. 待办改动（流程缺陷 → 后续修改）
+
+续跑脚本暴露的真实流程缺陷，按价值排序：
+
+1. **pipeline 阶段恢复机制缺失**（最重要）
+   - AI 产物（workflow 文件、patch commit）都已持久化，但 pipeline 是单函数
+     原子执行，abort 后无恢复入口 → 每次失败重付 ~20 分钟 AI 成本。
+   - 改：pipeline 导出构造 helper（defaultContract/defaultDeps/defaultTests/
+     declaredResolutionArtifact），把 resume 收编为一等能力；e2e 加 `--resume`：
+     检测已有产物 → 跳过 AI 阶段直接验证。
+
+2. **registry 的 declared 声明是纯内存态**
+   - `declareDependency` 后不跑完 pipeline 声明即丢，唯一持久记录是事后 artifact。
+   - 改：声明落盘到 repo/.refactor，resume 不靠 artifact 猜、声明可审计。
+
+3. **状态机 terminal 不可逆**
+   - ABORTED 后 resume 只能开新 session 从 INIT 重放全部 artifact。
+   - 改（远期）：状态机支持从非 terminal 状态恢复，审计连续。
+
+4. **scope 收紧策略未定**
+   - e2e 现跑 `enforceScope: false`（TEMP），需重新设计 Glob/白名单模型
+     （支持根递归 Glob + 目录读取），再逐步加回。
+
+5. **完整 e2e 未端到端确认**
+   - AI 两阶段 + 验证段分别验证过，但一次完整跑（fix-19）未执行。
