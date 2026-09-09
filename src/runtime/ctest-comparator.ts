@@ -9,8 +9,6 @@ import {
 export function classifyCTestBaseline(
   result: CTestSuiteResult,
   options: {
-    readonly scopeFiles?: readonly string[];
-    readonly scopeSymbols?: readonly string[];
     readonly knownEnvironmentPatterns?: readonly RegExp[];
   } = {},
 ): CTestBaseline {
@@ -23,7 +21,6 @@ export function classifyCTestBaseline(
   const classifications: CTestFailureClassification[] = failures.map((failure) => ({
     test: failure.name,
     category: classifyFailure(failure.output, options.knownEnvironmentPatterns),
-    related_to_scope: appearsScopeRelated(failure.output, options.scopeFiles ?? [], options.scopeSymbols ?? []),
     explanation: explainFailure(failure.output),
   }));
 
@@ -88,10 +85,6 @@ function classifyFailure(output: string, patterns: readonly RegExp[] | undefined
     return "environment";
   }
   return "unknown";
-}
-
-function appearsScopeRelated(output: string, files: readonly string[], symbols: readonly string[]): boolean {
-  return [...files, ...symbols].some((value) => value.length > 0 && output.includes(value));
 }
 
 function explainFailure(output: string): string {

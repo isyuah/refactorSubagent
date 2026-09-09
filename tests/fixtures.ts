@@ -6,7 +6,6 @@ import type {
   EnvironmentSpec,
   TestSpec,
   PatchRecord,
-  ScopeManifest,
   ObservationTrace,
 } from "../src/artifacts/index.js";
 
@@ -26,14 +25,6 @@ export const contract = (): BehaviorContract => ({
   },
   allowed_change: { internal_structure: true, execution_time: true },
   notes: [],
-});
-
-export const scope = (): ScopeManifest => ({
-  kind: "scope-manifest",
-  version: 1,
-  editable_files: [{ file: "src/util.c", symbols: ["trim"] }],
-  readable_globs: ["src/**"],
-  forbidden_globs: ["tests/**"],
 });
 
 export const deps = (): DependencyManifest => ({
@@ -135,7 +126,6 @@ export function comparison(
 /** Happy-path artifact sequence, in submission order. */
 export const happyPath = (): AnyArtifact[] => [
   contract(),
-  scope(),
   deps(),
   tests(),
   env(),

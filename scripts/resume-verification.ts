@@ -69,7 +69,8 @@ logger.info("worktrees recreated", { baseline: worktrees.baselineDir, candidate:
 // declared-build-set.json artifact saved after the session.
 const declaredArtifactPath = join(e2eRunDir, "artifacts", "declared-build-set.json");
 const declaredArtifact = JSON.parse(await Bun.file(declaredArtifactPath).text()) as {
-  builds: { id: string; entry: string; run_local: boolean }[];
+  source_hash?: string;
+  builds: { id: string; entry: string; run_local: boolean; source_hash?: string }[];
 };
 if (declaredArtifact.builds.length === 0) {
   console.error("no declared builds in artifact");
@@ -102,14 +103,6 @@ const contract = {
   allowed_change: { internal_structure: true, execution_time: true },
   notes: ["host-derived placeholder: expectations are declared by the test workflow"],
 };
-const scope = {
-  kind: "scope-manifest",
-  version: 1,
-  editable_files: [{ file: "src/trim.c", symbols: ["*"] }],
-  readable_globs: ["CMakeLists.txt", "cmake/**", "config/**", "include/**", "src/**", "test/**", "tests/**"],
-  forbidden_globs: ["baseline/**", ".refactor/**", "node_modules/**"],
-  notes: [],
-};
 const deps = {
   kind: "dependency-manifest",
   version: 1,
@@ -139,7 +132,6 @@ const verification = await runWorkflowVerification({
   host,
   project,
   contract: contract as never,
-  scope: scope as never,
   deps: deps as never,
   tests: tests as never,
   buildResolution: {

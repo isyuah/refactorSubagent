@@ -46,8 +46,7 @@ export const CTestSuiteResult = z.object({
 
 export const CTestFailureClassification = z.object({
   test: z.string().min(1),
-  category: z.enum(["environment", "preexisting_behavior", "scope_related", "unknown"]),
-  related_to_scope: z.boolean(),
+  category: z.enum(["environment", "preexisting_behavior", "unknown"]),
   explanation: z.string().min(1),
 });
 

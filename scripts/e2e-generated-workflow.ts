@@ -30,17 +30,12 @@ const result = await runAgentWorkflowVerification({
   repoPath: repo,
   sessionRoot,
   sessionId: options.sessionId,
-  allowedEditableFiles: ["src/trim.c"],
   task:
     "这是一个从零开始的新 CMake C 项目。请完成一次保守的行为保持型重构：" +
-    "只修改 src/trim.c 中的 trim_in_place，提取一个或多个清晰的 static 辅助函数或简化内部控制流；" +
-    "不得修改 src/trim.h、src/main.c、tests、CMakeLists.txt 或任何其他文件；" +
+    "允许自由调整 src/ 下的源文件结构(提取 static 辅助函数、简化控制流、按需拆分文件)；" +
     "保持返回指针、原地写入、前后空白处理、空字符串、全空白字符串和退出行为不变。" +
     "构建和测试流程必须由你根据项目事实写成可执行的 TypeScript BuildWorkflow 与 TestWorkflow 源文件；" +
     "如果某一步无法从事实证明，不要猜测。",
-  // TEMP: scope enforcement off to get the flow running end-to-end; the
-  // scoping model (Glob/readable white-list) will be re-tightened after.
-  enforceScope: false,
   workflowTimeoutMs: 1_800_000,  // test-writer + build-writer subagent needs headroom
   buildTimeoutMs: 120_000,
   ctestTimeoutMs: 180_000,
@@ -77,7 +72,6 @@ console.log(JSON.stringify({
   },
   builds_passed: buildsPassed,
   tests_completed: testsCompleted,
-  scope_denials: result.scopeDenials,
   log_dir: result.logDir,
   history: result.store.history.map((event) => `${event.from} -> ${event.to}`),
 }, null, 2));

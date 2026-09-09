@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { BehaviorContract } from "./behavior-contract.js";
-import { ScopeManifest } from "./scope-manifest.js";
 import { DependencyManifest } from "./dependency-manifest.js";
 import { EnvironmentSpec } from "./environment-spec.js";
 import { TestSpec } from "./test-spec.js";
@@ -20,7 +19,6 @@ import {
 } from "./expectation-suite.js";
 export * from "./common.js";
 export * from "./behavior-contract.js";
-export * from "./scope-manifest.js";
 export * from "./dependency-manifest.js";
 export * from "./environment-spec.js";
 export * from "./test-spec.js";
@@ -41,7 +39,6 @@ export * from "./expectation-suite.js";
  * refinements, so plain union instead of discriminatedUnion). */
 export const Artifact = z.union([
   BehaviorContract,
-  ScopeManifest,
   DependencyManifest,
   EnvironmentSpec,
   TestSpec,

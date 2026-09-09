@@ -19,7 +19,6 @@ import {
 export const SessionState = z.enum([
   "INIT",
   "CONTRACT_READY",
-  "SCOPE_READY",
   "DEPENDENCY_READY",
   "TESTS_READY",
   "BUILD_WORKFLOW_READY",

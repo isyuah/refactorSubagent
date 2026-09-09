@@ -25,7 +25,6 @@ export type RefactorTestCase = z.infer<typeof RefactorTestCase>;
 export const BaselineFailureClassification = z.object({
   test: z.string().min(1),
   category: z.enum(["environment", "test_failure", "unknown"]),
-  related_to_scope: z.boolean(),
   explanation: z.string().min(1),
 });
 export type BaselineFailureClassification = z.infer<typeof BaselineFailureClassification>;

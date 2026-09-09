@@ -1,6 +1,6 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import {
   query,
   type AgentDefinition,
@@ -11,7 +11,6 @@ import {
 
 /** Tool-owned plugin dir (workflow-spec skill). Relative to this source. */
 const TOOL_PLUGIN_DIR = resolve(import.meta.dir, "..", "..", ".claude", "plugins", "workflow-spec");
-import { matchGlob } from "../artifacts/scope-manifest.js";
 import type { Logger } from "../runtime/log.js";
 
 const moduleRequire = createRequire(import.meta.url);
@@ -19,34 +18,12 @@ const moduleRequire = createRequire(import.meta.url);
 /**
  * AgentDriver — thin wrapper over the Claude Agent SDK.
  *
- * Enforcement model (fail-closed, NOT prompt-based):
- *   - tools + allowedTools define the model's available and auto-allowed tools;
- *   - PreToolUse hook validates every read/search/write path;
- *   - denied operations are surfaced in the run result for audit and gating.
+ * Tool access is bounded by the SDK allowlist (allowedTools), not by a
+ * host-side scope hook: no agent session gets Bash, and every agent runs in
+ * a disposable worktree/session directory, so a misbehaving agent can only
+ * damage its own scratch space.
  */
 
-const READ_TOOLS = new Set(["Read", "Glob", "Grep"]);
-const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
-
-/** Conservative source/configuration view used before a manifest exists. */
-export const DEFAULT_AGENT_READABLE_GLOBS = [
-  "CMakeLists.txt",
-  "cmake/**",
-  "config/**",
-  "include/**",
-  "src/**",
-  "*.c",
-  "*.h",
-] as const;
-
-/** Trees that model-facing agents must never inspect by default. */
-export const DEFAULT_AGENT_FORBIDDEN_GLOBS = [
-  "test/**",
-  "tests/**",
-  "baseline/**",
-  ".refactor/**",
-  "node_modules/**",
-] as const;
 
 export interface DriverRun {
   /** Final assistant text (empty on error). */
@@ -56,8 +33,6 @@ export interface DriverRun {
   isError: boolean;
   /** True when the host deadline closed the SDK query. */
   timedOut: boolean;
-  /** Tool calls denied by the scope hook — surfaced for audit trails. */
-  denials: string[];
 }
 
 export interface DriverOptions {
@@ -65,12 +40,6 @@ export interface DriverOptions {
   prompt: string;
   systemPrompt?: string;
   allowedTools?: string[];
-  /** Repo-relative globs the agent may read/search. Empty means deny all scoped tools. */
-  readableGlobs?: string[];
-  /** Repo-relative hard denials checked before readableGlobs. */
-  forbiddenGlobs?: string[];
-  /** Repo-relative files/globs the agent may rewrite. */
-  editableFiles?: string[];
   maxTurns?: number;
   /** Host deadline for the SDK query. Omitted means no deadline. */
   timeoutMs?: number;
@@ -85,13 +54,6 @@ export interface DriverOptions {
    * CLI's session dir via CLAUDE_CONFIG_DIR when provided.
    */
   sessionStore?: SessionStore;
-  /**
-   * When false, the PreToolUse scope hook is skipped entirely: the agent may
-   * Read/Glob/Grep/Write freely (no readable/forbidden/editable checks, no
-   * path normalization). Used to get a flow running end-to-end before the
-   * scoping model is tightened again. Defaults to true (enforced).
-   */
-  enforceScope?: boolean;
   /** Override Claude Code executable; defaults to the bundled SDK binary on Windows. */
   executable?: string;
   outputFormat?: Options["outputFormat"];
@@ -107,61 +69,9 @@ export interface DriverOptions {
   extraAllowedTools?: string[];
 }
 
-export interface ScopeCheck {
-  readonly allowed: boolean;
-  readonly reason: string | null;
-}
 
 export async function runAgent(o: DriverOptions): Promise<DriverRun> {
-  const denials: string[] = [];
-  const readable = o.readableGlobs ?? [];
-  const forbidden = o.forbiddenGlobs ?? [];
-  const editable = o.editableFiles ?? [];
   const timeoutMs = normalizeTimeout(o.timeoutMs);
-
-  const hooks: Options["hooks"] = {
-    PreToolUse: [
-      {
-        matcher: "Read|Glob|Grep|Write|Edit|MultiEdit|NotebookEdit",
-        hooks: [
-          async (input) => {
-            if (input.hook_event_name !== "PreToolUse") return {};
-            if (o.enforceScope === false) return {}; // scope enforcement off
-            const check = checkToolScope(
-              input.tool_name,
-              input.tool_input,
-              o.cwd,
-              readable,
-              forbidden,
-              editable,
-            );
-            if (check.allowed) {
-              const updatedInput = normalizeToolInput(input.tool_name, input.tool_input, o.cwd);
-              return updatedInput === null
-                ? {}
-                : {
-                    hookSpecificOutput: {
-                      hookEventName: "PreToolUse" as const,
-                      updatedInput,
-                    },
-                  };
-            }
-            const reason = check.reason ?? "operation denied by agent scope";
-            denials.push(`${input.tool_name}: ${reason}`);
-            return {
-              continue: true,
-              hookSpecificOutput: {
-                hookEventName: "PreToolUse" as const,
-                permissionDecision: "deny" as const,
-                permissionDecisionReason: reason,
-              },
-            };
-          },
-        ],
-      },
-    ],
-  };
-
   const executable = o.executable ?? resolveClaudeExecutable();
   const abortController = new AbortController();
   const combinedAllowed = o.extraAllowedTools !== undefined && o.extraAllowedTools.length > 0
@@ -191,7 +101,6 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       abortController,
       ...(o.outputFormat ? { outputFormat: o.outputFormat } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
-      hooks,
     },
   });
   let result = "";
@@ -263,7 +172,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
     result = result.length === 0 ? reason : `${result}\n${reason}`;
     isError = true;
   }
-  return { result, structuredOutput, isError, timedOut, denials };
+  return { result, structuredOutput, isError, timedOut };
 }
 
 function normalizeTimeout(timeoutMs: number | undefined): number | undefined {
@@ -376,228 +285,10 @@ export function logSessionEvent(logger: Logger | undefined, msg: unknown): void 
 }
 
 
-/**
- * Validate a Claude Code tool call before execution.
- * Search tools are denied when their search root could include a forbidden tree;
- * this is intentionally conservative because the hook cannot inspect results
- * before the tool runs.
- */
-export function checkToolScope(
-  toolName: string,
-  rawInput: unknown,
-  root: string,
-  readableGlobs: readonly string[] = [],
-  forbiddenGlobs: readonly string[] = [],
-  editableFiles: readonly string[] = [],
-): ScopeCheck {
-  if (!READ_TOOLS.has(toolName) && !WRITE_TOOLS.has(toolName)) {
-    return { allowed: true, reason: null };
-  }
-
-  const input = recordInput(rawInput);
-  const filePath = typeof input.file_path === "string"
-    ? input.file_path
-    : typeof input.notebook_path === "string"
-      ? input.notebook_path
-      : null;
-
-  if (WRITE_TOOLS.has(toolName)) {
-    if (filePath === null || filePath.length === 0) {
-      return { allowed: false, reason: "write tool did not provide file_path" };
-    }
-    const resolved = relativeAgentPath(filePath, root);
-    if (!resolved.allowed) return resolved;
-    // Explicit editable authorization wins over broad forbidden globs: the
-    // host hands the agent its exact deliverable path (e.g. a run-local test
-    // workflow under .refactor/runs/<session>/), which is simultaneously
-    // inside a ".refactor/**" catch-all denial. A path that matches an
-    // editable entry is authorized by construction.
-    if (matchesScope(resolved.path, editableFiles)) {
-      return { allowed: true, reason: null };
-    }
-    if (matchesScope(resolved.path, forbiddenGlobs)) {
-      return { allowed: false, reason: `path is forbidden: ${resolved.path}` };
-    }
-    return { allowed: false, reason: `path is outside Modification Scope: ${resolved.path}` };
-  }
-
-  if (toolName === "Read") {
-    if (filePath === null || filePath.length === 0) {
-      return { allowed: false, reason: "Read did not provide file_path" };
-    }
-    const resolved = relativeAgentPath(filePath, root);
-    if (!resolved.allowed) return resolved;
-    if (matchesScope(resolved.path, forbiddenGlobs)) {
-      return { allowed: false, reason: `path is forbidden: ${resolved.path}` };
-    }
-    if (!matchesScope(resolved.path, readableGlobs)) {
-      return { allowed: false, reason: `path is outside Observation Scope: ${resolved.path}` };
-    }
-    return { allowed: true, reason: null };
-  }
-
-  const explicitPath = typeof input.path === "string" && input.path.length > 0
-    ? input.path
-    : ".";
-  const pattern = typeof input.pattern === "string" ? input.pattern : "";
-  const fileGlob = typeof input.glob === "string" ? input.glob : "";
-  if (
-    containsParentTraversal(explicitPath) ||
-    containsParentTraversal(pattern) ||
-    containsParentTraversal(fileGlob)
-  ) {
-    return { allowed: false, reason: "search path or glob contains parent traversal" };
-  }
-
-  const searchPath = deriveSearchPath(toolName, explicitPath, pattern, fileGlob);
-  const resolved = relativeAgentPath(searchPath, root);
-  if (!resolved.allowed) return resolved;
-  // Prefer the literal glob prefix as the effective search root: Claude Code
-  // sends Glob with an absolute repo-root path plus a pattern (e.g.
-  // path=<root> pattern=src/**). Matching the bare root against readableGlobs
-  // would deny every scoped search even when the pattern targets a readable
-  // subtree. When the pattern prefix is readable and cannot reach forbidden
-  // trees, allow; otherwise fall back to the path-root checks below.
-  const filter = toolName === "Glob" ? pattern : fileGlob;
-  const prefix = literalGlobPrefix(filter.replaceAll("\\", "/"));
-  if (prefix.length > 0) {
-    if (matchesScope(prefix, forbiddenGlobs)) {
-      return { allowed: false, reason: `search pattern is forbidden: ${prefix}` };
-    }
-    if (matchesScope(prefix, readableGlobs) && !maySearchForbidden(prefix, forbiddenGlobs)) {
-      return { allowed: true, reason: null };
-    }
-  }
-  if (matchesScope(resolved.path, forbiddenGlobs)) {
-    return { allowed: false, reason: `search root is forbidden: ${resolved.path}` };
-  }
-  if (!matchesScope(resolved.path, readableGlobs)) {
-    return { allowed: false, reason: `search root is outside Observation Scope: ${resolved.path}` };
-  }
-  if (maySearchForbidden(resolved.path, forbiddenGlobs)) {
-    return { allowed: false, reason: `search may include forbidden paths below: ${resolved.path}` };
-  }
-  return { allowed: true, reason: null };
-}
-
-/**
- * Normalize a scope-checked tool call so Claude Code executes it under the
- * requested agent cwd rather than the parent process cwd.
- */
-export function normalizeToolInput(
-  toolName: string,
-  rawInput: unknown,
-  root: string,
-): Record<string, unknown> | null {
-  const input = recordInput(rawInput);
-  if (toolName === "Read" || WRITE_TOOLS.has(toolName)) {
-    const field = typeof input.file_path === "string"
-      ? "file_path"
-      : typeof input.notebook_path === "string"
-        ? "notebook_path"
-        : null;
-    if (field === null) return null;
-    const path = input[field];
-    if (typeof path !== "string" || !relativeAgentPath(path, root).allowed) return null;
-    return { ...input, [field]: resolve(root, path) };
-  }
-  if (toolName !== "Glob" && toolName !== "Grep") return null;
-  const explicitPath = typeof input.path === "string" && input.path.length > 0
-    ? input.path
-    : ".";
-  const pattern = typeof input.pattern === "string" ? input.pattern : "";
-  const fileGlob = typeof input.glob === "string" ? input.glob : "";
-  if (containsParentTraversal(explicitPath) || containsParentTraversal(pattern) || containsParentTraversal(fileGlob)) {
-    return null;
-  }
-  const searchPath = deriveSearchPath(toolName, explicitPath, pattern, fileGlob);
-  if (!relativeAgentPath(searchPath, root).allowed) return null;
-  return { ...input, path: resolve(root, searchPath) };
-}
-
 function recordInput(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-function deriveSearchPath(
-  toolName: string,
-  explicitPath: string,
-  pattern: string,
-  fileGlob: string,
-): string {
-  if (explicitPath !== ".") return explicitPath;
-  const filter = toolName === "Glob" ? pattern : fileGlob;
-  const prefix = literalGlobPrefix(filter.replaceAll("\\", "/"));
-  return prefix.length > 0 ? prefix : explicitPath;
-}
-
-function relativeAgentPath(filePath: string, root: string): ScopeCheck & { readonly path: string } {
-  const base = resolve(root);
-  const absolute = isAbsolute(filePath) ? resolve(filePath) : resolve(base, filePath);
-  const rel = relative(base, absolute).split(sep).join("/");
-  if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
-    return { allowed: false, path: rel, reason: `path escapes agent cwd: ${filePath}` };
-  }
-
-  let current = absolute;
-  while (true) {
-    try {
-      const info = lstatSync(current);
-      if (info.isSymbolicLink()) {
-        const real = realpathSync(current);
-        const realRel = relative(base, real).split(sep).join("/");
-        if (realRel === ".." || realRel.startsWith("../") || isAbsolute(realRel)) {
-          return { allowed: false, path: rel, reason: `path resolves outside agent cwd: ${filePath}` };
-        }
-      } else {
-        const real = realpathSync(current);
-        const realRel = relative(base, real).split(sep).join("/");
-        if (realRel === ".." || realRel.startsWith("../") || isAbsolute(realRel)) {
-          return { allowed: false, path: rel, reason: `path resolves outside agent cwd: ${filePath}` };
-        }
-      }
-      break;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") {
-        return { allowed: false, path: rel, reason: `cannot inspect agent path: ${filePath}` };
-      }
-      const parent = dirname(current);
-      if (parent === current) break;
-      current = parent;
-    }
-  }
-  return { allowed: true, path: rel.length === 0 ? "." : rel, reason: null };
-}
-
-function matchesScope(path: string, globs: readonly string[]): boolean {
-  return globs.some((glob) => {
-    const normalized = glob.replaceAll("\\", "/");
-    const base = normalized.endsWith("/**") ? normalized.slice(0, -3) : null;
-    return matchGlob(path, [normalized]) || (base !== null && (path === base || path.startsWith(`${base}/`)));
-  });
-}
-
-function maySearchForbidden(searchRoot: string, forbiddenGlobs: readonly string[]): boolean {
-  if (forbiddenGlobs.length === 0) return false;
-  if (searchRoot === ".") return true;
-  return forbiddenGlobs.some((glob) => {
-    const prefix = literalGlobPrefix(glob.replaceAll("\\", "/"));
-    if (prefix.length === 0) return true;
-    return searchRoot === prefix || searchRoot.startsWith(`${prefix}/`) || prefix.startsWith(`${searchRoot}/`);
-  });
-}
-
-function literalGlobPrefix(glob: string): string {
-  const wildcard = glob.search(/[?*]/);
-  const prefix = wildcard < 0 ? glob : glob.slice(0, wildcard);
-  return prefix.replace(/\/+$/, "");
-}
-
-function containsParentTraversal(path: string): boolean {
-  return path.split(/[\\/]+/).some((part) => part === "..");
 }
 
 /** Extract the last fenced ```json block (or bare object) from agent text. */

@@ -30,10 +30,8 @@ export const FailureClassification = z.object({
   category: z.enum([
     "environment", // infra problem unrelated to scope (missing lib, …)
     "preexisting_behavior", // old code genuinely fails this case
-    "scope_related", // touches the modification scope → must block
     "unknown",
   ]),
-  related_to_scope: z.boolean(),
   explanation: z.string().min(1),
 });
 

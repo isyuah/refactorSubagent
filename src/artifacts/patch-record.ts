@@ -17,7 +17,7 @@ export const PatchRecord = z.object({
   commit_sha: z.string().regex(/^[0-9a-f]{7,40}$/),
   base_commit_sha: z.string().regex(/^[0-9a-f]{7,40}$/),
 
-  /** Files touched; orchestrator re-checks against ScopeManifest.editable_files. */
+  /** Files touched by the refactor (audit only; acceptance is behavior-gated). */
   changed_files: z.array(RelPath).min(1),
 
   summary: z.string().min(1),

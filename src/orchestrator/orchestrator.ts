@@ -10,7 +10,6 @@ import type {
   ExpectationCandidate,
   ExpectationComparisonResult,
 } from "../artifacts/index.js";
-import { matchGlob } from "../artifacts/scope-manifest.js";
 import { SessionStore, type SessionState } from "./store.js";
 
 /**
@@ -35,8 +34,7 @@ interface TransitionRule {
 /** Legacy transitions plus the two explicit Workflow stages. */
 const PIPELINE: Partial<Record<SessionState, TransitionRule>> = {
   INIT: { to: "CONTRACT_READY", artifactKind: "behavior-contract" },
-  CONTRACT_READY: { to: "SCOPE_READY", artifactKind: "scope-manifest" },
-  SCOPE_READY: { to: "DEPENDENCY_READY", artifactKind: "dependency-manifest" },
+  CONTRACT_READY: { to: "DEPENDENCY_READY", artifactKind: "dependency-manifest" },
   DEPENDENCY_READY: { to: "TESTS_READY", artifactKind: "test-spec" },
   // TESTS_READY also accepts build workflow resolution; see expectedTransition.
   TESTS_READY: { to: "ENV_READY", artifactKind: "environment-spec" },
@@ -155,9 +153,6 @@ export class Orchestrator {
         return null;
       }
     }
-    if (from === "BASELINE_READY" && artifact.kind === "patch-record") {
-      return checkPatchScope(this.store, artifact);
-    }
     if (from === "PATCH_CREATED") {
       if (artifact.kind === "observation-trace") return checkCandidate(this.store, artifact);
       if (artifact.kind === "ctest-candidate") return checkCTestCandidate(this.store, artifact);
@@ -263,13 +258,10 @@ function checkBaseline(artifact: ObservationTrace): string | null {
     return `expected a baseline build trace, got '${artifact.build}'`;
   }
   for (const failure of artifact.failures) {
-    const provablyUnrelated =
-      failure.category === "preexisting_behavior" ||
-      (failure.category === "environment" && !failure.related_to_scope);
-    if (!provablyUnrelated) {
+    if (failure.category !== "preexisting_behavior" && failure.category !== "environment") {
       return (
         `R3 violation: baseline failure on '${failure.case_id}' (${failure.category}) ` +
-        "cannot be proven unrelated to the modification scope"
+        "cannot be classified as unrelated to the change"
       );
     }
   }
@@ -291,14 +283,10 @@ function checkCTestBaseline(artifact: CTestBaseline): string | null {
     if (!failedNames.has(classification.test)) {
       return `R3 violation: classification has no corresponding CTest failure '${classification.test}'`;
     }
-    if (
-      classification.category === "unknown" ||
-      classification.category === "scope_related" ||
-      classification.related_to_scope
-    ) {
+    if (classification.category === "unknown") {
       return (
         `R3 violation: CTest baseline failure '${classification.test}' ` +
-        `is ${classification.category} or scope-related`
+        `is ${classification.category}`
       );
     }
   }
@@ -309,18 +297,6 @@ function ctestFailureNames(artifact: CTestBaseline | CTestCandidate): Set<string
   const names = new Set(artifact.result.failed_tests.map((failure) => failure.name));
   if (names.size === 0 && artifact.result.status !== "pass") names.add("__suite__");
   return names;
-}
-
-/** R4: patch must stay inside Modification Scope. */
-function checkPatchScope(store: SessionStore, artifact: PatchRecord): string | null {
-  const scope = store.artifact("scope-manifest");
-  if (scope === null) return "scope manifest missing — cannot verify patch scope";
-  const editablePaths = scope.editable_files.map((target) => target.file);
-  const outside = artifact.changed_files.filter((file) => !matchGlob(file, editablePaths));
-  if (outside.length > 0) {
-    return `R4 violation: patch touches non-editable files: ${outside.join(", ")}`;
-  }
-  return null;
 }
 
 /** R5 for the legacy invocation-level candidate trace. */

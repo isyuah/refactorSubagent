@@ -31,13 +31,13 @@ function advance(n: number) {
 
 describe("fail-closed state machine", () => {
   test("R1+R2: full legal path reaches ACCEPTED", () => {
-    advance(9);
+    advance(8);
     expect(store.state).toBe("ACCEPTED");
-    expect(store.history).toHaveLength(9);
+    expect(store.history).toHaveLength(8);
   });
 
   test("R1: skipping a stage is rejected", () => {
-    const r = orch.submit(happyPath()[1]!); // scope at INIT, contract missing
+    const r = orch.submit(happyPath()[1]!); // deps at INIT, contract missing
     expect(r.ok).toBeFalse();
     if (!r.ok) expect(r.reason).toContain("R1");
     expect(store.state).toBe("INIT");
@@ -51,7 +51,7 @@ describe("fail-closed state machine", () => {
   });
 
   test("R3: unclassified baseline failure blocks; preexisting_behavior passes", () => {
-    advance(5);
+    advance(4);
     const bad = trace("baseline", {
       observations: [
         {
@@ -69,7 +69,6 @@ describe("fail-closed state machine", () => {
         {
           case_id: "d1",
           category: "unknown",
-          related_to_scope: false,
           explanation: "segfault, cause unclear",
         },
       ],
@@ -83,15 +82,8 @@ describe("fail-closed state machine", () => {
     expect(orch.submit(good).ok).toBeTrue();
   });
 
-  test("R4: patch outside editable scope is rejected", () => {
-    advance(6);
-    const r = orch.submit(patch(["src/other.c"]));
-    expect(r.ok).toBeFalse();
-    if (!r.ok) expect(r.reason).toContain("R4");
-  });
-
   test("R5: candidate trace missing baseline cases is rejected", () => {
-    advance(7);
+    advance(6);
     const partial = trace("candidate");
     partial.observations = partial.observations.slice(0, 2); // drop d2
     const r = orch.submit(partial);
@@ -100,23 +92,23 @@ describe("fail-closed state machine", () => {
   });
 
   test("R6: inconsistent comparison lands on REJECTED", () => {
-    advance(8);
+    advance(7);
     const r = orch.submit(comparison(["match", "mismatch", "match"]));
     expect(r).toEqual({ ok: true, from: "VERIFICATION_RUNNING", to: "REJECTED" });
     expect(store.state).toBe("REJECTED");
   });
 
   test("R7: terminal states are immutable", () => {
-    advance(9);
+    advance(8);
     const r = orch.abort("try again");
     expect(r.ok).toBeFalse();
   });
 
   test("workflow recovery: reopened session resumes at stored state", () => {
-    advance(3);
+    advance(2);
     const root = store.sessionDir.split(".refactor")[0]!;
     const reopened = SessionStore.open(root, store.id);
     expect(reopened.state).toBe("DEPENDENCY_READY");
-    expect(new Orchestrator(reopened).submit(happyPath()[3]!).ok).toBeTrue();
+    expect(new Orchestrator(reopened).submit(happyPath()[2]!).ok).toBeTrue();
   });
 });

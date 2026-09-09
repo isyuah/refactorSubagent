@@ -40,18 +40,12 @@ export interface WorkflowSessionOptions {
   readonly timeoutMs?: number;
   /** Max agent turns. */
   readonly maxTurns?: number;
-  /** Repo-relative globs the test-writer may read. Defaults to source view. */
-  readonly readableGlobs?: readonly string[];
-  /** Repo-relative hard denials (defaults: repo internals/tests). */
-  readonly forbiddenGlobs?: readonly string[];
   /** Injected capabilities seam for tests; defaults to runAgent. */
   readonly runAgentFn?: (options: WorkflowSessionAgentOptions) => Promise<DriverRun>;
   /** Run-scoped logger for session-level events (mirrored to driver). */
   readonly logger?: Logger;
   /** Mirror the full AI session transcript to this store. */
   readonly sessionStore?: SessionStore;
-  /** When false, skip PreToolUse scope enforcement (free tool access). */
-  readonly enforceScope?: boolean;
 }
 
 /** Options handed to the underlying agent runner (narrowed for testability). */
@@ -61,9 +55,6 @@ export interface WorkflowSessionAgentOptions {
   readonly systemPrompt: string;
   readonly allowedTools: readonly string[];
   readonly extraAllowedTools: readonly string[];
-  readonly readableGlobs: readonly string[];
-  readonly forbiddenGlobs: readonly string[];
-  readonly editableFiles: readonly string[];
   readonly agents: Record<string, unknown>;
   readonly mcpServers: Record<string, unknown>;
   readonly skills: readonly string[];
@@ -73,16 +64,12 @@ export interface WorkflowSessionAgentOptions {
   readonly logger?: Logger;
   /** Mirror the full AI session transcript to this store. */
   readonly sessionStore?: SessionStore;
-  /** When false, skip PreToolUse scope enforcement (free tool access). */
-  readonly enforceScope?: boolean;
 }
 
 export interface WorkflowSessionResult {
   readonly ok: boolean;
   /** Final assistant text. */
   readonly summary: string;
-  /** Tool denials surfaced by the scope hook. */
-  readonly denials: readonly string[];
   /** Declared build workflow ids (final state of declareDependency). */
   readonly declaredBuilds: readonly string[];
   /** True when the produced test workflow source exists at testEntry. */
@@ -102,34 +89,9 @@ export const TEST_WRITER_AGENT_TOOLS = [
   "Task",
 ] as const;
 
-const DEFAULT_READABLE = [
-  "CMakeLists.txt",
-  "cmake/**",
-  "config/**",
-  "include/**",
-  "src/**",
-  // The test-writer and its build-writer subagent must read existing
-  // tests to author meaningful workflows (CMakeLists references test
-  // sources; the build must compile them).
-  "test/**",
-  "tests/**",
-  "*.c",
-  "*.h",
-] as const;
-
-// The test-writer must READ the project's existing tests to write meaningful
-// test workflows; only repo internals and its own run artifacts stay hidden.
-// Editable scope is still limited to the single test workflow file.
-const DEFAULT_FORBIDDEN = [
-  "baseline/**",
-  ".refactor/**",
-  "node_modules/**",
-] as const;
-
 const SESSION_PROMPT = (
   task: string,
   testEntry: string,
-  editableRel: string,
 ): string => `You are the TestWorkflow writer for a behavior-preserving C refactoring system.
 
 Task under test:
@@ -144,7 +106,7 @@ You must produce TWO deliverables before the session ends:
      malformed declarations fail the session.
   2. A self-driven TestWorkflow TypeScript module, written to exactly:
        ${testEntry}
-     (repo-relative editable path: ${editableRel})
+     (repo-relative path)
 
 Workflow of the session:
   1. Call inspectWorkflow (kind: "build") to see what build workflows exist:
@@ -207,7 +169,7 @@ export async function runWorkflowSession(
   const agents: Record<string, unknown> = {
     "build-writer": buildWriterDefinition(serverName),
   };
-  const prompt = SESSION_PROMPT(options.task, options.testEntry, relativeTestEntry);
+  const prompt = SESSION_PROMPT(options.task, options.testEntry);
 
   const runner = options.runAgentFn ?? defaultRunAgent;
   const run = await runner({
@@ -216,9 +178,6 @@ export async function runWorkflowSession(
     systemPrompt: TEST_WORKFLOW_SYSTEM,
     allowedTools: [...TEST_WRITER_AGENT_TOOLS],
     extraAllowedTools: mcpTools,
-    readableGlobs: [...(options.readableGlobs ?? DEFAULT_READABLE)],
-    forbiddenGlobs: [...(options.forbiddenGlobs ?? DEFAULT_FORBIDDEN)],
-    editableFiles: [relativeTestEntry],
     agents,
     mcpServers: { [serverName]: mcpServer },
     skills: ["workflow-spec:workflow-spec"],
@@ -226,7 +185,6 @@ export async function runWorkflowSession(
     timeoutMs: options.timeoutMs,
     logger: options.logger,
     sessionStore: options.sessionStore,
-    enforceScope: options.enforceScope,
   });
 
   const testEntryExists = existsSync(options.testEntry);
@@ -248,7 +206,6 @@ export async function runWorkflowSession(
   return {
     ok: failure === null,
     summary: run.result,
-    denials: run.denials,
     declaredBuilds,
     testEntryExists,
     timedOut: run.timedOut,
@@ -265,9 +222,6 @@ async function defaultRunAgent(
     systemPrompt: o.systemPrompt,
     allowedTools: [...o.allowedTools],
     extraAllowedTools: [...o.extraAllowedTools],
-    readableGlobs: [...o.readableGlobs],
-    forbiddenGlobs: [...o.forbiddenGlobs],
-    editableFiles: [...o.editableFiles],
     agents: o.agents as never,
     mcpServers: o.mcpServers as never,
     skills: [...o.skills],
@@ -275,6 +229,5 @@ async function defaultRunAgent(
     timeoutMs: o.timeoutMs,
     logger: o.logger,
     sessionStore: o.sessionStore,
-    enforceScope: o.enforceScope,
   });
 }

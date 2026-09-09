@@ -35,11 +35,7 @@ export interface AgentWorkflowPipelineRequest {
   /** Root under which the durable session is created. */
   readonly sessionRoot: string;
   readonly sessionId: string;
-  /** Optional project policy; declared editable scope must stay within this set. */
-  readonly allowedEditableFiles?: readonly string[];
   readonly workflowTimeoutMs?: number;
-  /** When false, skip PreToolUse scope enforcement for all agent sessions. */
-  readonly enforceScope?: boolean;
   readonly buildTimeoutMs?: number;
   readonly ctestTimeoutMs?: number;
   readonly knownEnvironmentPatterns?: readonly RegExp[];
@@ -61,7 +57,6 @@ export interface AgentWorkflowPipelineResult {
   readonly store: SessionStore;
   readonly state: string;
   readonly refactorSummary: string;
-  readonly scopeDenials: string[];
   readonly analysis: AnalysisResult | null;
   readonly declared: DeclaredAgentResolution | null;
   readonly verification: WorkflowVerificationOutcome | null;
@@ -92,7 +87,6 @@ export async function runAgentWorkflowVerification(
   let declared: DeclaredAgentResolution | null = null;
   let verification: WorkflowVerificationOutcome | null = null;
   let refactorSummary = "";
-  let scopeDenials: string[] = [];
   let worktrees: WorktreePair | null = null;
 
   try {
@@ -117,7 +111,7 @@ export async function runAgentWorkflowVerification(
     });
     if (project.status !== "ready") {
       abort(orch, logger, `project build detection blocked: ${project.reason}`);
-      return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
+      return result(store, logger, analysis, declared, verification, refactorSummary);
     }
 
     logger.phase("ANALYSIS");
@@ -127,13 +121,10 @@ export async function runAgentWorkflowVerification(
         taskContext: req.task,
         host,
         project,
-        allowedEditableFiles: req.allowedEditableFiles,
       }),
     );
     logger.artifact("analysis-report.txt", { report: analysis.report });
-    logger.info("project probed; modification scope derived from host policy", {
-      editable_files: analysis.scope.editable_files.map((target) => target.file),
-    });
+    logger.info("project probed; host-side report prepared", {});
 
     logger.phase("WORKFLOW_SESSION");
     logger.info("running test-writer session (declare build deps, author TestWorkflow)");
@@ -149,7 +140,6 @@ export async function runAgentWorkflowVerification(
         project,
         logger,
         sessionStore,
-        enforceScope: req.enforceScope,
         workflowTimeoutMs: req.workflowTimeoutMs,
       });
     } finally {
@@ -180,28 +170,22 @@ export async function runAgentWorkflowVerification(
     });
 
     logger.phase("REFACTOR");
-    const analysisNow = analysis;
-    const editable = analysisNow.scope.editable_files.map((target) => target.file);
     const refactor = await timedAsync(logger, "refactor agent session", () =>
-      runRefactor(worktrees!.candidateDir, req.task, analysisNow.scope, {
+      runRefactor(worktrees!.candidateDir, req.task, {
         logger,
         sessionStore,
       }),
     );
     refactorSummary = refactor.summary;
-    scopeDenials = refactor.denials;
     logger.artifact("refactor-summary.json", {
       summary: refactor.summary,
-      scope_denials: refactor.denials,
     });
-    logger.info("Claude refactor agent completed", {
-      scope_denial_count: refactor.denials.length,
-    });
+    logger.info("Claude refactor agent completed", {});
 
     const status = gitIn(worktrees.candidateDir, ["status", "--porcelain"]);
     if (status.trim().length === 0) {
       abort(orch, logger, "refactor agent made no changes");
-      return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
+      return result(store, logger, analysis, declared, verification, refactorSummary);
     }
     gitIn(worktrees.candidateDir, ["add", "-A"]);
     const summaryLine = firstSummaryLine(refactor.summary) ?? req.task;
@@ -225,7 +209,7 @@ export async function runAgentWorkflowVerification(
     logger.phase("VERIFICATION");
     if (declared === null || declared.buildResolutions.length === 0) {
       abort(orch, logger, "declared workflow resolution missing or empty build set");
-      return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
+      return result(store, logger, analysis, declared, verification, refactorSummary);
     }
     const firstBuild = declared.buildResolutions[0]!;
     logger.info("workflow verification started", { phase_detail: "all builds + ctest both sides" });
@@ -238,7 +222,6 @@ export async function runAgentWorkflowVerification(
       host,
       project,
       contract: defaultContract(),
-      scope: analysis.scope,
       deps: defaultDeps(),
       tests: defaultTests(),
       // Declared mode: DeclaredBuildSet artifact + declared test resolution
@@ -274,11 +257,11 @@ export async function runAgentWorkflowVerification(
       knownEnvironmentPatterns: req.knownEnvironmentPatterns,
     });
     logger.info("workflow verification completed", { duration_ms: Math.round(performance.now() - verificationStarted) });
-    return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
+    return result(store, logger, analysis, declared, verification, refactorSummary);
   } catch (error) {
     const reason = errorMessage(error);
     abort(orch, logger, reason);
-    return result(store, logger, analysis, declared, verification, refactorSummary, scopeDenials);
+    return result(store, logger, analysis, declared, verification, refactorSummary);
   } finally {
     timed(logger, "worktree cleanup", () => {
       worktrees?.cleanup();
@@ -290,21 +273,6 @@ export async function runAgentWorkflowVerification(
     else if (store.state === "REJECTED") logger.finish("rejected", "workflow verification rejected candidate");
     else if (store.state === "ABORTED") logger.finish("aborted", "workflow verification aborted");
     logger.close();
-  }
-}
-function enforceEditablePolicy(
-  analysis: AnalysisResult,
-  allowed: readonly string[] | undefined,
-): void {
-  if (allowed === undefined) return;
-  const declared = analysis.scope.editable_files.map((target) => target.file);
-  const outside = declared.filter((file) => !allowed.includes(file));
-  const missing = allowed.filter((file) => !declared.includes(file));
-  if (outside.length > 0 || missing.length > 0) {
-    throw new Error(
-      `analysis editable scope does not match host policy: ` +
-      `outside=[${outside.join(", ")}] missing=[${missing.join(", ")}]`,
-    );
   }
 }
 
@@ -320,13 +288,11 @@ function result(
   declared: DeclaredAgentResolution | null,
   verification: WorkflowVerificationOutcome | null,
   refactorSummary: string,
-  scopeDenials: string[],
 ): AgentWorkflowPipelineResult {
   return {
     store,
     state: store.state,
     refactorSummary,
-    scopeDenials,
     analysis,
     declared,
     verification,
@@ -391,7 +357,6 @@ async function runDeclaredResolution(options: {
   readonly project: ProjectDetection;
   readonly logger: E2ELogger;
   readonly sessionStore: FileSessionStore;
-  readonly enforceScope?: boolean;
   readonly workflowTimeoutMs?: number;
 }): Promise<DeclaredAgentResolution> {
   const testRelDir = join(".refactor", "runs", options.sessionId, "workflows", "test");
@@ -406,7 +371,6 @@ async function runDeclaredResolution(options: {
     project: options.project,
     logger: options.logger,
     sessionStore: options.sessionStore,
-    enforceScope: options.enforceScope,
     timeoutMs: options.workflowTimeoutMs,
   });
   if (!session.ok) {
@@ -548,7 +512,7 @@ function readDescriptionSidecar(entry: string): string {
  * behavior contract, dependency list and test spec are decided inside the AI
  * sessions (test workflow declares expectations; the build/test workflows
  * self-drive). The state machine still requires these artifacts to advance
- * INIT → CONTRACT_READY → SCOPE_READY → DEPENDENCY_READY → TESTS_READY, so the
+ * INIT → CONTRACT_READY → DEPENDENCY_READY → TESTS_READY, so the
  * host submits minimal, semantically-neutral placeholders that carry no
  * verification meaning — the real gate is the DeclaredBuildSet + expectation
  * diff that follows.

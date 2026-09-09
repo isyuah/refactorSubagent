@@ -9,7 +9,6 @@ import type {
   HostPreflight,
   PatchRecord,
   ProjectDetection,
-  ScopeManifest,
   TestSpec,
   WorkflowResolution,
 } from "../artifacts/index.js";
@@ -39,7 +38,6 @@ export interface WorkflowVerificationRequest {
   readonly host: HostPreflight;
   readonly project: ProjectDetection;
   readonly contract: BehaviorContract;
-  readonly scope: ScopeManifest;
   readonly deps: DependencyManifest;
   readonly tests: TestSpec;
   readonly buildResolution: WorkflowResolution;
@@ -98,7 +96,7 @@ export async function runWorkflowVerification(
   };
 
   if (!submit(request.contract) ||
-      !submit(request.scope) ||
+
       !submit(request.deps) ||
       !submit(request.tests)) {
     return emptyOutcome(request.store.state, results);
@@ -164,8 +162,6 @@ export async function runWorkflowVerification(
 
   const baselineResult = await runSuite(request, request.worktrees.baselineDir, suite, "baseline");
   const baseline = classifyCTestBaseline(baselineResult, {
-    scopeFiles: request.scope.editable_files.map((target) => target.file),
-    scopeSymbols: request.scope.editable_files.flatMap((target) => target.symbols),
     knownEnvironmentPatterns: request.knownEnvironmentPatterns,
   });
   request.store.saveArtifact(baseline);

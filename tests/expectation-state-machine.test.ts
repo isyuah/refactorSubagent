@@ -10,7 +10,6 @@ import {
   ExpectationComparisonResult,
 } from "../src/artifacts/index.js";
 import { BehaviorContract } from "../src/artifacts/behavior-contract.js";
-import { ScopeManifest } from "../src/artifacts/scope-manifest.js";
 import { DependencyManifest } from "../src/artifacts/dependency-manifest.js";
 import { TestSpec } from "../src/artifacts/test-spec.js";
 import { EnvironmentSpec } from "../src/artifacts/environment-spec.js";
@@ -31,12 +30,6 @@ function prefixArtifacts() {
       },
       allowed_change: { internal_structure: true, execution_time: true },
       notes: [],
-    }),
-    ScopeManifest.parse({
-      kind: "scope-manifest", version: 1,
-      editable_files: [{ file: "src/main.c", symbols: ["main"] }],
-      readable_globs: ["src/**"],
-      forbidden_globs: [],
     }),
     DependencyManifest.parse({
       kind: "dependency-manifest", version: 1,
@@ -156,7 +149,7 @@ describe("self-driven test (expectation) state machine", () => {
   });
 
   test("expectation-baseline is rejected at the wrong state", () => {
-    advance(6); // → TEST_WORKFLOW_READY, not ENV_READY yet
+    advance(5); // → TEST_WORKFLOW_READY, not ENV_READY yet
     const r = orch.submit(baseline());
     expect(r.ok).toBeFalse();
     if (!r.ok) expect(r.reason).toContain("R1");

@@ -1,10 +1,6 @@
 import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import {
-  ScopeManifest,
-  type HostPreflight,
-  type ProjectDetection,
-} from "../artifacts/index.js";
+import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 
 /**
  * analyze — host-side project probing for the subagent-driven flow.
@@ -19,95 +15,35 @@ import {
  *                                expectation diff absorbs environmental noise
  *
  * What remains host-side is a pure-text probe of measured facts (host +
- * project) plus a host-derived modification scope (from the task policy, not
- * from model guessing). The probe report is injected into the test-writer and
+ * project). The probe report is injected into the test-writer and
  * build-writer sessions as context; it is data, never instructions.
  */
 
 export interface AnalysisResult {
-  /** Programmatic modification scope derived from host policy + project facts. */
-  readonly scope: ScopeManifestOutput;
   /** Free-text project report injected into AI sessions (measured facts only). */
   readonly report: string;
 }
 
-export type ScopeManifestOutput = ReturnType<typeof ScopeManifest.parse>;
-
 export interface AnalyzeOptions {
   readonly repoDir: string;
-  /** Task text (used only to name the report, not parsed for scope). */
+  /** Task text (used only to name the report). */
   readonly taskContext?: string;
   readonly host?: HostPreflight;
   readonly project?: ProjectDetection;
-  /** Host policy: files the refactor is allowed to touch (repo-relative). */
-  readonly allowedEditableFiles?: readonly string[];
 }
 
 /**
- * Probe the project and derive a modification scope WITHOUT a model round
- * trip. Editable files come from the host policy (allowedEditableFiles); the
- * readable globs cover the project sources plus build files; forbidden globs
- * protect tests/baselines/repo internals by default.
+ * Probe the project WITHOUT a model round trip and without deriving any
+ * modification scope: refactor edits are deliberately unbounded — the agent
+ * decides what to change, and the behavior-preservation gate (workflow runs
+ * on baseline vs candidate) is what keeps the change honest.
  */
 export function analyzeRepo(options: AnalyzeOptions): AnalysisResult {
   const repoDir = resolve(options.repoDir);
   const project = options.project;
-  const sourceFiles = project?.source_files ?? [];
-
-  // Modification scope: host policy wins. Each editable file is a target with
-  // a conservative symbol list (the scope hook enforces file paths, not
-  // symbols, so "*" is a safe placeholder meaning "any symbol in the file").
-  const policyFiles = options.allowedEditableFiles ?? [];
-  const editable = policyFiles.length > 0
-    ? policyFiles.map((file) => ({ file, symbols: ["*"] }))
-    : sourceFiles.length > 0
-      ? sourceFiles.map((file) => ({ file, symbols: ["*"] }))
-      : [{ file: "src/main.c", symbols: ["*"] }];
-
-  const readable = buildReadableGlobs(sourceFiles);
-  const forbidden = [...DEFAULT_FORBIDDEN_GLOBS];
-
-  const scope = ScopeManifest.parse({
-    kind: "scope-manifest",
-    version: 1,
-    editable_files: editable,
-    readable_globs: readable,
-    forbidden_globs: forbidden,
-  });
-
   const report = buildProbeReport(repoDir, options.host, project, options.taskContext);
-  return { scope, report };
+  return { report };
 }
-
-/** Readable globs: default source view + every source file's directory + build files. */
-function buildReadableGlobs(sourceFiles: readonly string[]): string[] {
-  const globs = new Set<string>([...DEFAULT_READABLE_GLOBS]);
-  for (const file of sourceFiles) {
-    const parts = file.split("/");
-    if (parts.some((part) => ["test", "tests", "baseline", ".refactor", "node_modules"].includes(part))) continue;
-    if (parts.length > 1) globs.add(`${parts.slice(0, -1).join("/")}/**`);
-    globs.add(file);
-  }
-  return [...globs];
-}
-
-// NOTE: no bare "*.c"/"*.h" here — a root-level wildcard has an empty literal
-// prefix and would make every readable↔forbidden pair look overlapping.
-const DEFAULT_READABLE_GLOBS = [
-  "CMakeLists.txt",
-  "cmake/**",
-  "config/**",
-  "include/**",
-  "src/**",
-] as const;
-
-const DEFAULT_FORBIDDEN_GLOBS = [
-  "baseline/**",
-  ".refactor/**",
-  "node_modules/**",
-  "test/**",
-  "tests/**",
-] as const;
 
 /** Build the free-text probe report handed to AI sessions as measured facts. */
 function buildProbeReport(
