@@ -294,7 +294,7 @@ TESTS_READY
 - **test-writer** 通过 `dep-registry` MCP server 声明构建依赖，生成的 workflow 源必须通过 `workflow-spec` 技能约定的接口。
 - **build-writer** 是 test-writer 经 `Task` 派生的子 agent，唯一写路径是宿主的 `generateBuildWorkflow`（它没有 `Write`/`Edit`）——源码由程序校验后落盘。子 agent 的显式工具列表不继承父会话的 MCP 工具，因此需按名声明。
 - **refactor** 在候选 worktree 中运行，**重构范围不设限**——由 baseline/candidate 双跑 workflow 的行为门禁兜底；`git add` / `git commit` 由宿主执行。
-- **analyze** 现在是宿主侧的纯文本探测（`analyzeRepo`），**不产生模型调用**：它输出主机事实与项目探测报告，作为上下文注入其他会话。
+- **analyze** 现在是宿主侧的纯文本探测（`analyzeRepo`），**不产生模型调用**。其报告只写入运行目录（`analysis-report.txt`），**不注入任何会话**：模型在编写 workflow 时拿不到实测主机事实，只能通过 `inspectWorkflow` 的候选分类间接感知；实测事实在 workflow **执行期**经 `ctx.facts` 提供给生成的代码。该阶段当前存在冗余（报告与已单独保存的 `host-preflight.json` / `project-detection.json` 重复），去留见 §10。
 
 Windows 下 Driver 优先使用 `CLAUDE_CODE_EXECUTABLE`，否则查找 `%APPDATA%\npm\claude.cmd`。
 
@@ -402,6 +402,10 @@ Session state 支持 reopen；AI 会话本身、构建缓存与临时目录的�
 - 自研文件级权限边界（见 §1 的决策说明）；
 - 固定 libuv 任务作为主线（保留为回归 fixtures）；
 - Make / MSVC 的结构化 Adapter（改为探测阻断，视需要再议）。
+
+待决（尚未定稿）：
+
+- **Analyze 阶段的去留**。当前它是纯装饰：报告只落盘、无任何消费者，且与已单独保存的 `host-preflight.json` / `project-detection.json` 重复，其中 `scanSourceFiles` 兜底分支在管线中不可达（`status === "ready"` 已保证 `source_files` 非空）。三个选项：删除该阶段 / 把实测事实真正注入 test-writer 提示词 / 仅保留为审计产物。见 §6 的说明。
 
 ## 11. 结论
 
