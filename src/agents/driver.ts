@@ -11,6 +11,19 @@ import {
 
 /** Tool-owned plugin dir (workflow-spec skill). Relative to this source. */
 const TOOL_PLUGIN_DIR = resolve(import.meta.dir, "..", "..", ".claude", "plugins", "workflow-spec");
+
+/**
+ * Operations no agent session may perform, whatever its allowlist says.
+ * Sessions have a shell now, so the allowlist alone cannot express "you may run
+ * anything except this". Deny rules are evaluated before the allowlist, and
+ * these are the operations whose effects leave the machine (a push would publish
+ * a disposable branch to the real remote) — everything else the host recovers
+ * from by re-measuring the diff and re-running the authoritative workflows.
+ *
+ * This is accident prevention, not a sandbox: pattern matching on a command
+ * string is bypassable by a model that means to.
+ */
+const SESSION_DENY_RULES = ["Bash(git push:*)"] as const;
 import type { Logger } from "../runtime/log.js";
 
 const moduleRequire = createRequire(import.meta.url);
@@ -39,7 +52,12 @@ export interface DriverOptions {
   cwd: string;
   prompt: string;
   systemPrompt?: string;
-  allowedTools?: string[];
+  /**
+   * Tool allowlist. REQUIRED: the SDK treats an omitted list as "inherit every
+   * built-in tool" (Bash, WebFetch, EnterWorktree, ...), so a session that
+   * forgot to pass one would silently get far more than it needs.
+   */
+  allowedTools: string[];
   /** Max assistant turns. Omitted/null = SDK default (unbounded). */
   maxTurns?: number | null;
   /** Host deadline for the SDK query. Omitted means no deadline. */
@@ -76,7 +94,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
   const executable = o.executable ?? resolveClaudeExecutable();
   const abortController = new AbortController();
   const combinedAllowed = o.extraAllowedTools !== undefined && o.extraAllowedTools.length > 0
-    ? [...(o.allowedTools ?? []), ...o.extraAllowedTools]
+    ? [...o.allowedTools, ...o.extraAllowedTools]
     : o.allowedTools;
   const q = query({
     prompt: o.prompt,
@@ -87,7 +105,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       permissionMode: "acceptEdits",
       settingSources: ["user"],
       plugins: [{ type: "local", path: TOOL_PLUGIN_DIR }],
-      settings: { disableAllHooks: true },
+      settings: { disableAllHooks: true, permissions: { deny: [...SESSION_DENY_RULES] } },
       // The SDK requires local persistence when mirroring to a sessionStore.
       persistSession: o.sessionStore !== undefined,
       // eager: flush every transcript frame so an interrupted run (host kill,

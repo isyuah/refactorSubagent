@@ -9,14 +9,20 @@ describe("buildWriterDefinition", () => {
     expect(Array.isArray(def.tools)).toBe(true);
   });
 
-  test("allowlists only read tools (no Write/Edit/Bash)", () => {
+  test("allowlists read + shell + the registry tools, but no file writers", () => {
     const def = buildWriterDefinition();
     expect(def.tools).toContain("Read");
     expect(def.tools).toContain("Glob");
     expect(def.tools).toContain("Grep");
+    // Bash is granted so the writer can probe the real build instead of guessing.
+    expect(def.tools).toContain("Bash");
+    // The workflow source reaches the host through the registry tool only.
+    expect(def.tools).toContain("mcp__dep-registry__generateBuildWorkflow");
     expect(def.tools).not.toContain("Write");
     expect(def.tools).not.toContain("Edit");
-    expect(def.tools).not.toContain("Bash");
+    // The list is explicit: an omitted list would inherit every parent tool.
+    expect(Array.isArray(def.tools)).toBe(true);
+    expect(def.tools!.length).toBeGreaterThan(0);
   });
 
   test("prompt embeds the workflow-driven build system contract", () => {

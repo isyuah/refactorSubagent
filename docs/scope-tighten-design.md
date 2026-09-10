@@ -86,12 +86,13 @@ pattern 的字面前缀猜搜索根 —— 空前缀/复杂语法时无从判断
 > 绝对路径出 root —— 这些仍在 relativeAgentPath 精确拦截。root 即会话
 > cwd(repo 或 worktree),agent 永远出不去。
 
-> **Bash 不在 agent 工具集内(第一道防线)**:refactor / test-writer /
-> build-writer 的 allowedTools 均无 Bash(白名单:Read/Glob/Grep/Write/Edit,
-> build-writer 另无 Write/Edit)。SDK 级工具白名单意味着模型**根本无法调用**
-> 未列工具 —— scope hook 只是第二道防线。所有会执行命令的路径(构建/ctest)
-> 都在宿主进程,agent 只写 workflow 描述意图。若未来给 agent 加 Bash,
-> 那将击穿本模型,属于单独的设计决策,不是当前漏洞。
+> ~~**Bash 不在 agent 工具集内(第一道防线)**~~ —— **已被 2026-09-10 的决定取代**:
+> 三个会话现在都有 Bash(动机是自验:refactor 要能编译自己的改动,build-writer
+> 要能真跑一遍构建再据此写 workflow)。原判断"给 agent 加 Bash 会击穿本模型"
+> 是对的,所以本模型(读方向检查 + 按会话分配写目录)不再是主要防线;取而代之
+> 的是:逐条显式的工具白名单 + `Bash(git push:*)` deny 规则 + 一次性环境 +
+> **宿主不信任会话状态**(重新测量 diff、重跑权威 workflow、期望差分由程序
+> 裁决)。平台级隔离仍未解决,见 PROJECT_STATUS.md §9.1。
 
 ### 2.2 写:按会话分配写目录
 

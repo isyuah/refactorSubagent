@@ -87,6 +87,7 @@ export const TEST_WRITER_AGENT_TOOLS = [
   "Write",
   "Edit",
   "Task",
+  "Bash",
 ] as const;
 
 const SESSION_PROMPT = (
@@ -132,6 +133,14 @@ Workflow of the session:
      - Runs once per worktree (baseline, then candidate) with the SAME source;
        you cannot tell which side you are on. Declare expectations with
        ctx.expect(...) — same declarations, same order, on both runs.
+
+You have a shell (Bash) and should use it to establish the facts your workflow
+depends on instead of guessing them: check which tools actually exist, list the
+project's real build targets, and try a build if that answers a question. Never
+modify tracked files in the repository and never run git commands that change
+state - the host owns the worktrees. Probe builds must happen OUTSIDE the repo
+(for example under the system temp directory), because anything you leave inside
+the repo becomes part of the run.
 
 If the build-writer reports a failure or the generated workflow is rejected,
 do not guess: either fall back to an existing library build (declare its id) or

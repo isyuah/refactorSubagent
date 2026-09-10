@@ -53,6 +53,11 @@ const DECISION_RULES = `Before generating, inspect the repository enough to know
   - the primary build system (CMakeLists.txt / Makefile / configure),
   - the target(s) needed to produce test executables,
   - the expected artifact locations.
+You have a shell (Bash): establish those facts for real instead of inferring them.
+Run configure/build in a scratch directory OUTSIDE the repository (e.g. under the
+system temp directory) so you observe the actual toolchain, generator, target names
+and artifact paths without polluting the project. The workflow you emit must stay
+self-contained: it may not depend on anything your probe left behind.
 Drive the real build in the workflow (configure + build via context.process.run
 in the source), then assert every artifact with context.validator.assertFile.
 CMake --target accepts exactly ONE target per process.run call — run separate
@@ -78,10 +83,13 @@ export function buildWriterDefinition(
       "Read",
       "Glob",
       "Grep",
-      // The agent's only write path is the host-side registry: it must be
-      // able to call generateBuildWorkflow (and inspect existing builds).
-      // An explicit tools list does NOT inherit parent MCP tools, so name
-      // them here AND declare the server in mcpServers below.
+      // Probe the real project (run cmake, list targets, try the build) before
+      // encoding commands into the workflow — guessing the build is the main
+      // source of workflows that do not work.
+      "Bash",
+      // The workflow source reaches the host through generateBuildWorkflow;
+      // this agent has no Write/Edit. An explicit tools list does NOT inherit
+      // parent MCP tools, so name them here AND declare the server below.
       generateTool,
       inspectTool,
     ],

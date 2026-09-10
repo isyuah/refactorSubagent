@@ -37,13 +37,22 @@ Claude / LLM
 1. 宿主无法预声明"重构会改哪些文件"——真实重构会拆分文件，拆分结果只有模型知道；
 2. 读侧放开后 `Grep` 与 `Read` 的内容面等价，单独拦 `Grep` 无增益。
 
-取代它的边界是三条的组合：
+取代它的边界是四条的组合：
 
 ```text
-SDK 工具白名单（无 Bash）          限制能做什么
-一次性 worktree / session 目录     限制能破坏什么
-baseline/candidate 行为门禁         限制能蒙混过关什么
+SDK 工具白名单（每会话显式列出）    限制能做什么
+deny 规则（Bash(git push:*)）       挡住逃出本机、不可本地撤销的操作
+一次性 worktree / session 目录      限制能破坏什么（agent 有 shell 后这层变薄）
+baseline/candidate 行为门禁          限制能蒙混过关什么
 ```
+
+**关于 Bash（2026-09-10 决定）**：三个会话现在都有 shell。理由是**自验**——
+refactor agent 能在一次性 worktree 里编译自己的改动，build-writer 能真跑一遍
+configure/build 再据此写 workflow，而不是靠猜（"生成的 workflow 跑不起来"是
+这条链历史上最主要的失败模式）。代价是"无 Bash"这层保护消失：会话能触及宿主
+用户可达的任何路径。因此宿主不再信任会话留下的状态——它重新测量 diff（见
+§5.2）并重跑权威 workflow；真正的隔离仍待平台层（§9.1）。`git push` 通过
+deny 规则挡住（实测有效），其余破坏性命令靠"环境可弃 + 结果可重算"兜底。
 
 ## 2. 当前技术栈与验证环境
 
@@ -281,18 +290,34 @@ TESTS_READY
 
 `SessionStore.open` 支持中断后 reopen。它可以区分四类失败：文件不存在、JSON 不可读、schema 不匹配，以及**由更早版本写入（引用了已删除的状态）**——后者会点名具体状态而不是笼统报 corrupt。
 
+### 5.3 候选 patch 的测量
+
+refactor 阶段结束后，宿主**不读会话的自述**，而是自己测量改动（`commitCandidateChanges`）：
+
+1. `git add -A` 暂存工作区；
+2. `git diff --cached --name-only <baseSha>` —— 相对 **base commit** 的完整变更集，**为空才判定"没有改动"并中止**；
+3. 只有在相对 HEAD 仍有未提交内容时，才追加一个宿主 commit。
+
+第 2 步是关键：会话有 shell 之后，"工作区是否干净"不再等于"有没有改动"——agent
+可能自己 commit（旧逻辑会把这种情况误判成"没有改动"并中止整轮）。同理，agent
+留在 worktree 里的构建产物会进入这次测量，因此提示词要求探测性构建放在
+worktree 之外。
+
 ## 6. Agent 层
 
-三类模型会话，全部无 Bash；边界由 SDK `allowedTools` 白名单给出。
+三类模型会话，工具集**逐条显式列出**（SDK 中省略列表 = 继承全部内置工具，含
+Bash/WebFetch，因此 `DriverOptions.allowedTools` 是必填参数，漏传会编译失败）。
+三个会话都有 Bash（见 §1 的决策说明）；`Bash(git push:*)` 对所有会话 deny。
 
-| 会话 | 工具 | 产物 |
+| 会话 | 工具（常量名） | 产物 |
 |---|---|---|
-| test-writer | Read / Glob / Grep / Write / Edit / Task | TestWorkflow 源 + `declareDependency` 声明集 |
-| build-writer（经 Task 派生的子 agent） | Read / Glob / Grep + MCP `generateBuildWorkflow` / `inspectWorkflow` | BuildWorkflow 源（经宿主 registry 落盘） |
-| refactor | Read / Write / Edit / Glob / Grep | candidate worktree 内的改动 |
+| test-writer | `TEST_WRITER_AGENT_TOOLS`：Read / Glob / Grep / Write / Edit / Task / **Bash** | TestWorkflow 源 + `declareDependency` 声明集 |
+| build-writer（经 Task 派生的子 agent） | Read / Glob / Grep / **Bash** + MCP `generateBuildWorkflow` / `inspectWorkflow`（无 Write/Edit） | BuildWorkflow 源（经宿主 registry 落盘） |
+| refactor | `REFACTOR_AGENT_TOOLS`：Read / Write / Edit / Glob / Grep / **Bash** | candidate worktree 内的改动 |
 
 - **test-writer** 通过 `dep-registry` MCP server 声明构建依赖，生成的 workflow 源必须通过 `workflow-spec` 技能约定的接口。
-- **build-writer** 是 test-writer 经 `Task` 派生的子 agent，唯一写路径是宿主的 `generateBuildWorkflow`（它没有 `Write`/`Edit`）——源码由程序校验后落盘。子 agent 的显式工具列表不继承父会话的 MCP 工具，因此需按名声明。
+- **build-writer** 是 test-writer 经 `Task` 派生的子 agent，其 workflow 源码只能经宿主的 `generateBuildWorkflow` 落盘（它没有 `Write`/`Edit`）；Bash 让它能先在 scratch 目录真跑一遍构建，据实测结果而非推断来写 workflow。子 agent 的显式工具列表不继承父会话的 MCP 工具，因此需按名声明。
+- **有 shell 后的两条约定**（写进提示词）：探测性构建要放在仓库/worktree 之外，因为留在里面的东西会进入 patch；不要执行 git 变更命令——宿主拥有 staging/commit/branch，agent 自己 commit 虽然被宿主兼容（见 §5.2），但 reset/checkout 只会毁掉自己的工作。
 - **refactor** 在候选 worktree 中运行，**重构范围不设限**——由 baseline/candidate 双跑 workflow 的行为门禁兜底；`git add` / `git commit` 由宿主执行。
 - **analyze** 现在是宿主侧的纯文本探测（`analyzeRepo`），**不产生模型调用**。其报告只写入运行目录（`analysis-report.txt`），**不注入任何会话**：模型在编写 workflow 时拿不到实测主机事实，只能通过 `inspectWorkflow` 的候选分类间接感知；实测事实在 workflow **执行期**经 `ctx.facts` 提供给生成的代码。该阶段当前存在冗余（报告与已单独保存的 `host-preflight.json` / `project-detection.json` 重复），去留见 §10。
 
@@ -364,7 +389,13 @@ candidate build: pass
 
 ### 9.1 权限边界依赖宿主目录，不是 OS 沙箱
 
-删除自研 hook 后，`Write` / `Edit` 无路径约束：candidate worktree 位于 `<repo>/.refactor/runs/<id>/worktrees/candidate`，模型理论上可用相对路径向上访问仓库根与会话状态文件。当前靠三条兜底（无 Bash、一次性 worktree、行为门禁）。生产环境应叠加平台级隔离（Linux 上的 SDK sandbox / 容器、只读挂载、资源配额）。
+删除自研 hook 后 `Write` / `Edit` 无路径约束；2026-09-10 起三个会话还都有 Bash，
+因此"模型只能在其工作目录里动手"这一假设**不再成立**：test-writer 的 cwd 就是
+目标仓库本身，refactor 的 worktree 虽在 session 目录下，也能用相对路径或绝对路径
+抵达仓库与会话状态文件。当前靠的是：显式工具白名单、`git push` deny 规则、
+一次性环境，以及**宿主不信任会话状态**（重新测量 diff、重跑权威 workflow、
+期望差分由程序裁决）。生产环境必须叠加平台级隔离：Linux 上的 SDK sandbox /
+容器、只读挂载、网络禁用、资源配额。这一项在本轮改动后从"建议"升级为**前置条件**。
 
 ### 9.2 行为观测范围仍不完整
 

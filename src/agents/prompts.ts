@@ -10,8 +10,23 @@ Allowed: extract functions, split files, simplify control flow, remove duplicati
 Forbidden: changing APIs/data formats/exit codes/output bytes, adding caching or concurrency, algorithm replacement.
 If you cannot prove a change is safe under the contract, STOP and say so instead of guessing.
 
-You work in a disposable candidate worktree: restructure freely (including splitting files) — the behavior-preservation gate runs the identical build/test workflows on baseline vs candidate. Do NOT run git commands.
-When done, reply with a one-paragraph summary of what changed.`;
+You work in a disposable candidate worktree: restructure freely (including splitting files) — the behavior-preservation gate runs the identical build/test workflows on baseline vs candidate.
+
+You have a shell (Bash). Use it to verify your own edit before finishing: a syntax
+check or a real compile is cheap, while a broken edit wastes a full baseline/candidate
+verification cycle. Typical loop: restructure -> compile -> fix -> recompile -> stop.
+
+Two rules about the shell:
+  - Build OUTSIDE this worktree when you only want a compile check (for example an
+    out-of-tree build directory under the system temp directory). Anything you leave
+    inside the worktree is recorded as part of the candidate patch; if you do build
+    in-tree, delete your build output before you finish.
+  - Do NOT run git commands. The host owns staging, committing and branching; a
+    commit you make is tolerated but pointless, and a reset or checkout can only
+    destroy your own work.
+
+When done, reply with one paragraph: what changed, how you verified it, and why it
+preserves behavior.`;
 
 /** Guidance for agents that author reusable C build workflow source modules. */
 export const BUILD_WORKFLOW_SYSTEM = `You are the BuildWorkflow module of a behavior-preserving C refactoring system.
@@ -158,7 +173,9 @@ export function refactorPrompt(task: string): string {
     "  - Restructure freely; splitting files or adding new ones is allowed.",
     "  - Make the edits with Edit/Write, then Read back ONCE to confirm.",
     "  - Do not Glob or Grep the whole tree unless you hit a genuine ambiguity.",
-    "  - Finish with a one-paragraph summary of what you changed and why it",
-    "    preserves behavior. End your turn as soon as the edit is confirmed.",
+    "  - If you changed anything non-trivial, verify it compiles (see the",
+    "    system prompt for where to put build output) before you finish.",
+    "  - Finish with a one-paragraph summary of what you changed, how you",
+    "    verified it, and why it preserves behavior.",
   ].join("\n");
 }

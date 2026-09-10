@@ -13,7 +13,7 @@ import { SessionStore } from "../orchestrator/store.js";
 import { detectCProject } from "./project-detector.js";
 import { probeHost } from "./host-preflight.js";
 import { runWorkflowVerification, type WorkflowVerificationOutcome } from "./workflow-pipeline.js";
-import { createWorktrees, resolveHead, type WorktreePair } from "./worktree.js";
+import { commitCandidateChanges, createWorktrees, resolveHead, type WorktreePair } from "./worktree.js";
 import { runWorkflowSession } from "../agents/workflow-session.js";
 import { LocalDependencyRegistry } from "../agents/dep-registry.js";
 import { resolveDeclaredWorkflows } from "../workflow/resolve-declared.js";
@@ -201,22 +201,12 @@ export async function runAgentWorkflowVerification(
     });
     logger.info("Claude refactor agent completed", {});
 
-    const status = gitIn(worktrees.candidateDir, ["status", "--porcelain"]);
-    if (status.trim().length === 0) {
+    const summaryLine = firstSummaryLine(refactor.summary) ?? req.task;
+    const changedFiles = commitCandidateChanges(worktrees.candidateDir, baseSha, summaryLine);
+    if (changedFiles.length === 0) {
       abort(orch, logger, "refactor agent made no changes");
       return result(store, logger, analysis, declared, verification, refactorSummary);
     }
-    gitIn(worktrees.candidateDir, ["add", "-A"]);
-    const summaryLine = firstSummaryLine(refactor.summary) ?? req.task;
-    gitIn(worktrees.candidateDir, ["commit", "-m", summaryLine.slice(0, 200)]);
-    const changedFiles = gitIn(worktrees.candidateDir, [
-      "diff",
-      "--name-only",
-      `${baseSha}..HEAD`,
-    ])
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
     logger.artifact("patch-candidate.json", {
       branch,
       commit_sha: gitIn(worktrees.candidateDir, ["rev-parse", "HEAD"]),

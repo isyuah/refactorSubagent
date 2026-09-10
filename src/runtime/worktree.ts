@@ -27,6 +27,35 @@ function git(repo: string, args: string[], what: string): string {
   return r.stdout.trim();
 }
 
+/**
+ * Freeze the candidate session's work into one commit and report what changed
+ * relative to the base commit.
+ *
+ * The session has a shell, so two assumptions of the old one-liner no longer
+ * hold: a clean working tree does NOT mean "no changes" (the agent may have
+ * committed its own work), and an uncommitted tree is not the only shape the
+ * change can take. Stage everything, measure against the base commit, and add a
+ * host commit only when something is still uncommitted. Returns [] when the
+ * session changed nothing.
+ */
+export function commitCandidateChanges(
+  candidateDir: string,
+  baseSha: string,
+  message: string,
+): string[] {
+  git(candidateDir, ["add", "-A"], "stage candidate changes");
+  const changedFiles = git(candidateDir, ["diff", "--cached", "--name-only", baseSha], "candidate diff")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (changedFiles.length === 0) return [];
+  const uncommitted = git(candidateDir, ["diff", "--cached", "--name-only", "HEAD"], "uncommitted diff");
+  if (uncommitted.trim().length > 0) {
+    git(candidateDir, ["commit", "-m", message.slice(0, 200)], "commit candidate");
+  }
+  return changedFiles;
+}
+
 export function resolveHead(repo: string): string {
   return git(repo, ["rev-parse", "HEAD"], "rev-parse");
 }

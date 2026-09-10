@@ -5,6 +5,23 @@ import { REFACTOR_SYSTEM, refactorPrompt } from "./prompts.js";
 import { DEFAULT_LIMITS, type SessionLimits } from "../config/limits.js";
 
 /**
+ * Tools granted to the refactor session. Bash lets the agent verify its own
+ * work (syntax check, compile, run the test binary) inside the disposable
+ * candidate worktree instead of handing an unverified edit to the expensive
+ * baseline/candidate gate. It can also reach outside that worktree, which is
+ * why the host never trusts this session's state: it re-measures the diff and
+ * re-runs the authoritative workflows.
+ */
+export const REFACTOR_AGENT_TOOLS = [
+  "Read",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "Bash",
+] as const;
+
+/**
  * Refactor Agent — edits the candidate worktree. The refactor is deliberately
  * unbounded (no modification-scope manifest): the agent decides what to
  * change, and the behavior-preservation gate (identical workflows on baseline
@@ -25,7 +42,7 @@ export async function runRefactor(
     cwd: worktreeDir,
     prompt: refactorPrompt(task),
     systemPrompt: REFACTOR_SYSTEM,
-    allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
+    allowedTools: [...REFACTOR_AGENT_TOOLS],
     maxTurns: limits.maxTurns,
     timeoutMs: limits.deadlineMs ?? undefined,
     stallTimeoutMs: limits.stallMs,
