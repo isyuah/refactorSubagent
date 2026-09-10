@@ -57,7 +57,8 @@ logger.phase("RESUME_VERIFICATION");
 logger.info("resuming verification from persisted artifacts", { root: options.root });
 
 // 1. Host facts (cheap, no AI).
-const host = probeHost(repo);
+const limits = resolveLimits({ repoRoot: repo, overrides: limitOverrides }).limits;
+const host = probeHost(repo, { toolTimeoutMs: limits.probes.hostMs });
 const project = detectCProject(repo, host);
 logger.info("host + project probed", { status: project.status });
 
@@ -184,7 +185,7 @@ const verification = await runWorkflowVerification({
     changed_files: changedFiles,
     summary: summary.slice(0, 500),
   },
-  limits: resolveLimits({ repoRoot: repo, overrides: options.limitOverrides }).limits,
+  limits,
 });
 
 logger.finish(verification.state === "ACCEPTED" ? "accepted" : verification.state === "REJECTED" ? "rejected" : "aborted",

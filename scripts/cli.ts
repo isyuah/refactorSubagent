@@ -44,9 +44,9 @@ async function execute(command: CliCommand, overrides: LimitsLayers): Promise<nu
     console.log(CLI_HELP);
     return 0;
   }
-  if (command.kind === "preflight") return executePreflight(command);
+  if (command.kind === "preflight") return executePreflight(command, overrides);
   if (command.kind === "workflow-build") return executeWorkflowBuild(command, overrides);
-  if (command.kind === "workflow-list") return executeWorkflowList(command);
+  if (command.kind === "workflow-list") return executeWorkflowList(command, overrides);
   if (command.kind === "config") return executeConfig(command);
   if (command.kind === "limits") return executeLimits(command, overrides);
   if (command.kind !== "workflow-run") return 2;
@@ -84,9 +84,10 @@ function executeLimits(command: LimitsCommand, overrides: LimitsLayers): number 
   return 0;
 }
 
-function executePreflight(command: PreflightCommand): number {
+function executePreflight(command: PreflightCommand, overrides: LimitsLayers): number {
   const repo = resolve(command.repo);
-  const host = probeHost(repo);
+  const limits = resolveLimits({ repoRoot: repo, overrides }).limits;
+  const host = probeHost(repo, { toolTimeoutMs: limits.probes.hostMs });
   const project = detectCProject(repo, host);
   const value = { repo, host, project };
   if (command.format === "json") console.log(JSON.stringify(value, null, 2));
@@ -107,7 +108,7 @@ async function executeWorkflowBuild(
 ): Promise<number> {
   const cwd = resolve(command.cwd);
   const limits = resolveLimits({ repoRoot: cwd, overrides }).limits;
-  const host = probeHost(cwd);
+  const host = probeHost(cwd, { toolTimeoutMs: limits.probes.hostMs });
   const project = detectCProject(cwd, host);
   const resolution = await resolveBuildWorkflow({
     entry: command.entry,
@@ -181,9 +182,10 @@ function executeConfig(command: ConfigCommand): number {
   return 0;
 }
 
-function executeWorkflowList(command: WorkflowListCommand): number {
+function executeWorkflowList(command: WorkflowListCommand, overrides: LimitsLayers): number {
   const repo = resolve(command.cwd);
-  const host = probeHost(repo);
+  const limits = resolveLimits({ repoRoot: repo, overrides }).limits;
+  const host = probeHost(repo, { toolTimeoutMs: limits.probes.hostMs });
   const project = detectCProject(repo, host);
   const candidates = discoverBuildWorkflows(repo, host, project);
   if (command.format === "json") {
