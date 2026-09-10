@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
@@ -26,6 +26,13 @@ import type {
 } from "../artifacts/index.js";
 import type { TestWorkflowResolution } from "../workflow/test-workflow.js";
 import type { BuildWorkflowResolution } from "../workflow/build-workflow.js";
+import {
+  describeLimits,
+  resolveLimits,
+  type Limits,
+  type LimitsLayers,
+  type SessionLimits,
+} from "../config/limits.js";
 
 export interface AgentWorkflowPipelineRequest {
   /** Git repository containing the base C project. */
@@ -35,9 +42,8 @@ export interface AgentWorkflowPipelineRequest {
   /** Root under which the durable session is created. */
   readonly sessionRoot: string;
   readonly sessionId: string;
-  readonly workflowTimeoutMs?: number;
-  readonly buildTimeoutMs?: number;
-  readonly ctestTimeoutMs?: number;
+  /** CLI layers on top of the user/project config files (see config/limits). */
+  readonly limitOverrides?: LimitsLayers;
   readonly knownEnvironmentPatterns?: readonly RegExp[];
   readonly logger?: E2ELogger;
 }
@@ -74,10 +80,22 @@ export async function runAgentWorkflowVerification(
 ): Promise<AgentWorkflowPipelineResult> {
   const store = SessionStore.create(req.sessionRoot, req.sessionId);
   const orch = new Orchestrator(store);
+  const { limits, sources: limitSources, missing: missingLimitFiles } = resolveLimits({
+    repoRoot: req.repoPath,
+    overrides: req.limitOverrides,
+  });
+  writeFileSync(
+    join(store.sessionDir, "limits.json"),
+    JSON.stringify({ resolved: limits, sources: limitSources, missing: missingLimitFiles }, null, 2) + "\n",
+  );
   const logger = req.logger ?? new E2ELogger(
     join(req.sessionRoot, ".refactor", "e2e"),
     req.sessionId,
   );
+  logger.info(`limits resolved: ${describeLimits(limits)}`, {
+    sources: limitSources,
+    missing: missingLimitFiles,
+  });
   // Mirror every AI session transcript (tool calls, subagent text, results)
   // under the run dir so slow runs can be analyzed at full fidelity without
   // raising the run.jsonl log level. One adapter per run; the SDK key is
@@ -92,7 +110,7 @@ export async function runAgentWorkflowVerification(
   try {
     logger.phase("PREFLIGHT");
     const host = timed(logger, "host probe", () => {
-      const probed = probeHost(req.repoPath);
+      const probed = probeHost(req.repoPath, { toolTimeoutMs: limits.probes.hostMs });
       store.saveHostPreflight(probed);
       logger.artifact("host-preflight.json", probed);
       return probed;
@@ -140,7 +158,7 @@ export async function runAgentWorkflowVerification(
         project,
         logger,
         sessionStore,
-        workflowTimeoutMs: req.workflowTimeoutMs,
+        limits: limits.sessions.testWriter,
       });
     } finally {
       logger.stopHeartbeat();
@@ -174,6 +192,7 @@ export async function runAgentWorkflowVerification(
       runRefactor(worktrees!.candidateDir, req.task, {
         logger,
         sessionStore,
+        limits: limits.sessions.refactor,
       }),
     );
     refactorSummary = refactor.summary;
@@ -252,8 +271,7 @@ export async function runAgentWorkflowVerification(
         changed_files: changedFiles,
         summary: summaryLine.slice(0, 500),
       },
-      buildTimeoutMs: req.buildTimeoutMs,
-      ctestTimeoutMs: req.ctestTimeoutMs,
+      limits,
       knownEnvironmentPatterns: req.knownEnvironmentPatterns,
     });
     logger.info("workflow verification completed", { duration_ms: Math.round(performance.now() - verificationStarted) });
@@ -357,7 +375,7 @@ async function runDeclaredResolution(options: {
   readonly project: ProjectDetection;
   readonly logger: E2ELogger;
   readonly sessionStore: FileSessionStore;
-  readonly workflowTimeoutMs?: number;
+  readonly limits: SessionLimits;
 }): Promise<DeclaredAgentResolution> {
   const testRelDir = join(".refactor", "runs", options.sessionId, "workflows", "test");
   const testEntry = join(options.repoDir, testRelDir, "test-workflow.ts");
@@ -371,7 +389,7 @@ async function runDeclaredResolution(options: {
     project: options.project,
     logger: options.logger,
     sessionStore: options.sessionStore,
-    timeoutMs: options.workflowTimeoutMs,
+    limits: options.limits,
   });
   if (!session.ok) {
     throw new Error(

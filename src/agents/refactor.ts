@@ -2,6 +2,7 @@ import type { SessionStore } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../runtime/log.js";
 import { runAgent } from "./driver.js";
 import { REFACTOR_SYSTEM, refactorPrompt } from "./prompts.js";
+import { DEFAULT_LIMITS, type SessionLimits } from "../config/limits.js";
 
 /**
  * Refactor Agent — edits the candidate worktree. The refactor is deliberately
@@ -13,14 +14,21 @@ import { REFACTOR_SYSTEM, refactorPrompt } from "./prompts.js";
 export async function runRefactor(
   worktreeDir: string,
   task: string,
-  sessionHooks?: { readonly logger?: Logger; readonly sessionStore?: SessionStore },
+  sessionHooks?: {
+    readonly limits?: SessionLimits;
+    readonly logger?: Logger;
+    readonly sessionStore?: SessionStore;
+  },
 ): Promise<{ summary: string }> {
+  const limits = sessionHooks?.limits ?? DEFAULT_LIMITS.sessions.refactor;
   const run = await runAgent({
     cwd: worktreeDir,
     prompt: refactorPrompt(task),
     systemPrompt: REFACTOR_SYSTEM,
     allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
-    maxTurns: 80,
+    maxTurns: limits.maxTurns,
+    timeoutMs: limits.deadlineMs ?? undefined,
+    stallTimeoutMs: limits.stallMs,
     logger: sessionHooks?.logger,
     sessionStore: sessionHooks?.sessionStore,
   });

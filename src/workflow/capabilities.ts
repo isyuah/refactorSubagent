@@ -41,7 +41,6 @@ import type {
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_FILE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_PROCESSES = 16;
-const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
 const SYSTEM_ENV_KEYS = new Set([
   "PATH",
@@ -115,6 +114,8 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       maxProcesses: options.policy?.maxProcesses ?? DEFAULT_MAX_PROCESSES,
       maxOutputBytes: options.policy?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
       maxFileBytes: options.policy?.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
+      processTimeoutMs: options.policy?.processTimeoutMs ?? null,
+      readyTimeoutMs: options.policy?.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
     };
   }
 
@@ -423,7 +424,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
     if (this.running.size >= this.policy.maxProcesses) {
       throw new Error(`process limit exceeded: ${this.policy.maxProcesses}`);
     }
-    const normalized = normalizeProcessSpec(spec);
+    const normalized = normalizeProcessSpec(spec, this.policy.processTimeoutMs);
     const program = this.resolveProgram(normalized.program);
     const cwd = this.resolveReadable(normalized.cwd ?? ".");
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
@@ -462,10 +463,12 @@ export class LocalCapabilityBroker implements CapabilityBroker {
     this.running.set(id, running);
     child.stdout?.on("data", (chunk: Buffer) => appendOutput(running, running.stdout, chunk));
     child.stderr?.on("data", (chunk: Buffer) => appendOutput(running, running.stderr, chunk));
-    running.timeoutTimer = setTimeout(() => {
-      running.timedOut = true;
-      terminateTree(child.pid);
-    }, normalized.timeoutMs);
+    if (normalized.timeoutMs !== undefined) {
+      running.timeoutTimer = setTimeout(() => {
+        running.timedOut = true;
+        terminateTree(child.pid);
+      }, normalized.timeoutMs);
+    }
 
     if (normalized.stdinBase64 !== undefined) {
       child.stdin?.end(Buffer.from(normalized.stdinBase64, "base64"));
@@ -671,7 +674,7 @@ function waitReady(
   child: ChildProcess,
 ): Promise<void> {
   if (probe === undefined || probe.kind === "none") return Promise.resolve();
-  const timeoutMs = probe.timeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+  const timeoutMs = probe.timeoutMs ?? policy.readyTimeoutMs;
   const started = Date.now();
   if (probe.kind === "file") {
     const path = resolveInside(workspaceRoot, probe.path, "ready probe path");
@@ -824,11 +827,15 @@ function terminateTree(pid: number | undefined): void {
   }
 }
 
-function normalizeProcessSpec(spec: ProcessStartSpec): ProcessStartSpec {
+function normalizeProcessSpec(
+  spec: ProcessStartSpec,
+  defaultTimeoutMs: number | null,
+): ProcessStartSpec {
   return {
     ...spec,
     args: [...(spec.args ?? [])],
-    timeoutMs: positiveInt(spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, "timeoutMs"),
+    // null (no deadline) is carried as undefined: the process simply has no timer.
+    timeoutMs: spec.timeoutMs ?? defaultTimeoutMs ?? undefined,
     maxOutputBytes: positiveInt(spec.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, "maxOutputBytes"),
   };
 }

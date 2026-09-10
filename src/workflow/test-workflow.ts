@@ -68,7 +68,7 @@ export async function resolveTestWorkflow(
         build_workflow_revision: options.buildWorkflow.workflow_revision,
       },
       facts,
-      timeoutMs: options.timeoutMs ?? 60_000,
+      timeoutMs: options.timeoutMs,
     });
     if (result.status !== "pass") {
       throw new Error(`test workflow failed: ${result.failure ?? result.status}`);

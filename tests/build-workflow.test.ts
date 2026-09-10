@@ -73,7 +73,8 @@ describe("BuildWorkflow planning and registry", () => {
       cwd: process.cwd(),
       manifestOut: ".refactorsa/build.json",
       save: false,
-      timeoutMs: 60_000,
+      // null = fall back to the resolved limits (commands.processMs).
+      timeoutMs: null,
       format: "json",
     });
   });

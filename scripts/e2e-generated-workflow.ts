@@ -3,13 +3,16 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runAgentWorkflowVerification } from "../src/runtime/workflow-agent-pipeline.js";
+import { extractLimitArgs, type LimitsLayers } from "../src/config/limits.js";
 
 interface Options {
   readonly root: string;
   readonly sessionId: string;
+  readonly limitOverrides: LimitsLayers;
 }
 
-const options = parseOptions(Bun.argv.slice(2));
+const { overrides: limitOverrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
+const options = parseOptions(remaining);
 const repo = join(options.root, "repo");
 const sessionRoot = join(options.root, "session-root");
 const observabilityRoot = join(sessionRoot, ".refactor", "e2e");
@@ -36,9 +39,7 @@ const result = await runAgentWorkflowVerification({
     "保持返回指针、原地写入、前后空白处理、空字符串、全空白字符串和退出行为不变。" +
     "构建和测试流程必须由你根据项目事实写成可执行的 TypeScript BuildWorkflow 与 TestWorkflow 源文件；" +
     "如果某一步无法从事实证明，不要猜测。",
-  workflowTimeoutMs: 1_800_000,  // test-writer + build-writer subagent needs headroom
-  buildTimeoutMs: 120_000,
-  ctestTimeoutMs: 180_000,
+  ...(options.limitOverrides !== undefined ? { limitOverrides: options.limitOverrides } : {}),
 });
 
 const declared = result.declared;
@@ -84,7 +85,7 @@ function parseOptions(args: readonly string[]): Options {
   const root = rootArg === null
     ? mkdtempSync(join(tmpdir(), "refactor-generated-workflow-"))
     : resolve(rootArg);
-  return { root, sessionId };
+  return { root, sessionId, limitOverrides };
 }
 
 function valueAfter(args: readonly string[], name: string): string | null {

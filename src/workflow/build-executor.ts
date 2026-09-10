@@ -208,7 +208,7 @@ async function runDrivenWorkflow(
     cwd: options.cwd,
     facts: { host: options.host, project: options.project },
     policy: options.policy,
-    timeoutMs: options.timeoutMs ?? 60_000,
+    timeoutMs: options.timeoutMs,
   });
   events.push(...driven.events);
   if (driven.status !== "pass") {

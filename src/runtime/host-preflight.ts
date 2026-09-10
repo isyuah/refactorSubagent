@@ -39,6 +39,8 @@ export interface ProbeHostOptions {
    *  callers that only need tool availability, and avoids Windows file-lock
    *  flakiness in tests. */
   skipCMakeProbe?: boolean;
+  /** Per-probe-command timeout. Defaults to 30s (see limits.probes.hostMs). */
+  toolTimeoutMs?: number;
 }
 
 /** Measure host facts once at workflow start. No model/tool call is involved. */
@@ -46,12 +48,13 @@ export function probeHost(
   cwd = process.cwd(),
   options: ProbeHostOptions = {},
 ): HostPreflight {
+  const toolTimeoutMs = options.toolTimeoutMs ?? 30_000;
   const tools: Record<string, ToolProbe> = {};
   for (const name of TOOL_NAMES) tools[name] = probeTool(name);
 
   const shell = detectShell(tools);
   const cmake = !options.skipCMakeProbe && tools.cmake?.available && tools.cmake.path !== null
-    ? probeCMake(tools.cmake.path)
+    ? probeCMake(tools.cmake.path, toolTimeoutMs)
     : {
         version: null,
         generators: [],
@@ -76,7 +79,7 @@ export function probeHost(
     working_directory: cwd,
     tools,
     cmake,
-    sanitizers: options.probeSanitizers === true ? probeSanitizers(tools) : {},
+    sanitizers: options.probeSanitizers === true ? probeSanitizers(tools, toolTimeoutMs) : {},
   });
 }
 
@@ -111,12 +114,12 @@ function detectShell(tools: Record<string, ToolProbe>): "cmd.exe" | "powershell.
   return "cmd.exe";
 }
 
-function probeCMake(cmakePath: string): CMakePreflight {
-  const versionRun = spawnSync(cmakePath, ["--version"], nativeProbeOptions());
-  const capabilitiesRun = spawnSync(cmakePath, ["-E", "capabilities"], nativeProbeOptions());
+function probeCMake(cmakePath: string, timeoutMs: number): CMakePreflight {
+  const versionRun = spawnSync(cmakePath, ["--version"], nativeProbeOptions(timeoutMs));
+  const capabilitiesRun = spawnSync(cmakePath, ["-E", "capabilities"], nativeProbeOptions(timeoutMs));
   const version = outputText(versionRun).match(/^cmake version\s+([^\r\n]+)/im)?.[1]?.trim() ?? null;
   const generators = parseCMakeGenerators(outputText(capabilitiesRun));
-  const probe = runCMakeToolchainProbe(cmakePath);
+  const probe = runCMakeToolchainProbe(cmakePath, timeoutMs);
   const failures = [
     versionRun.status === 0 ? null : `cmake --version failed: ${probeOutput(versionRun)}`,
     capabilitiesRun.status === 0 ? null : `cmake -E capabilities failed: ${probeOutput(capabilitiesRun)}`,
@@ -136,7 +139,7 @@ function probeCMake(cmakePath: string): CMakePreflight {
   };
 }
 
-function runCMakeToolchainProbe(cmakePath: string): {
+function runCMakeToolchainProbe(cmakePath: string, timeoutMs: number): {
   configureStatus: "pass" | "fail";
   buildStatus: "pass" | "fail" | "not-run";
   defaultGenerator: string | null;
@@ -157,7 +160,7 @@ function runCMakeToolchainProbe(cmakePath: string): {
     const configure = spawnSync(
       cmakePath,
       ["-S", ".", "-B", "build"],
-      { ...nativeProbeOptions(), cwd: root },
+      { ...nativeProbeOptions(timeoutMs), cwd: root },
     );
     const configureOutput = outputText(configure);
     const cache = join(build, "CMakeCache.txt");
@@ -179,7 +182,7 @@ function runCMakeToolchainProbe(cmakePath: string): {
     const built = spawnSync(
       cmakePath,
       ["--build", "build", "--config", "Debug"],
-      { ...nativeProbeOptions(), cwd: root },
+      { ...nativeProbeOptions(timeoutMs), cwd: root },
     );
     if (built.status !== 0) {
       return {
@@ -234,13 +237,13 @@ function parseWorkingCCompiler(output: string): string | null {
   return compiler.length === 0 ? null : compiler;
 }
 
-function nativeProbeOptions(): {
+function nativeProbeOptions(timeoutMs: number): {
   encoding: "utf8";
   shell: false;
   windowsHide: boolean;
   timeout: number;
 } {
-  return { encoding: "utf8", shell: false, windowsHide: true, timeout: 30_000 };
+  return { encoding: "utf8", shell: false, windowsHide: true, timeout: timeoutMs };
 }
 
 function outputText(result: { stdout?: string | Buffer; stderr?: string | Buffer }): string {
@@ -257,7 +260,7 @@ function probeOutput(result: {
   return (output || result.error?.message || `exit code ${String(result.status)}`).slice(0, 400);
 }
 
-function probeSanitizers(tools: Record<string, ToolProbe>): Record<string, SanitizerCapability> {
+function probeSanitizers(tools: Record<string, ToolProbe>, timeoutMs: number): Record<string, SanitizerCapability> {
   const compiler = selectSanitizerCompiler(tools);
   const result: Record<string, SanitizerCapability> = {};
   for (const kind of SanitizerKind.options) {
@@ -268,7 +271,7 @@ function probeSanitizers(tools: Record<string, ToolProbe>): Record<string, Sanit
           flags: [SANITIZER_FLAGS[kind]],
           reason: "no gcc or clang compiler is available on PATH",
         }
-      : probeSanitizer(kind, compiler.name, compiler.path);
+      : probeSanitizer(kind, compiler.name, compiler.path, timeoutMs);
   }
   return result;
 }
@@ -287,6 +290,7 @@ function probeSanitizer(
   kind: SanitizerKind,
   compilerName: string,
   compilerPath: string,
+  timeoutMs: number,
 ): SanitizerCapability {
   const root = mkdtempSync(join(tmpdir(), "rfr-sanitizer-probe-"));
   const source = join(root, "probe.c");
@@ -306,6 +310,7 @@ function probeSanitizer(
       stdout: "pipe",
       stderr: "pipe",
       windowsHide: true,
+      timeout: timeoutMs,
     });
     const stdout = Buffer.from(result.stdout).toString("utf8").trim();
     const stderr = Buffer.from(result.stderr).toString("utf8").trim();

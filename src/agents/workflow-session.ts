@@ -8,6 +8,7 @@ import type { SessionStore } from "@anthropic-ai/claude-agent-sdk";
 import { runAgent, type DriverRun } from "./driver.js";
 import { TEST_WORKFLOW_SYSTEM } from "./prompts.js";
 import type { Logger } from "../runtime/log.js";
+import { DEFAULT_LIMITS, type SessionLimits } from "../config/limits.js";
 
 /**
  * workflow-session — orchestrates a test-writer Claude session that produces
@@ -36,10 +37,8 @@ export interface WorkflowSessionOptions {
   readonly testEntry: string;
   readonly host: HostPreflight;
   readonly project: ProjectDetection;
-  /** Host deadline for the whole session. */
-  readonly timeoutMs?: number;
-  /** Max agent turns. */
-  readonly maxTurns?: number;
+  /** Session budgets; defaults to DEFAULT_LIMITS.sessions.testWriter. */
+  readonly limits?: SessionLimits;
   /** Injected capabilities seam for tests; defaults to runAgent. */
   readonly runAgentFn?: (options: WorkflowSessionAgentOptions) => Promise<DriverRun>;
   /** Run-scoped logger for session-level events (mirrored to driver). */
@@ -58,8 +57,9 @@ export interface WorkflowSessionAgentOptions {
   readonly agents: Record<string, unknown>;
   readonly mcpServers: Record<string, unknown>;
   readonly skills: readonly string[];
-  readonly maxTurns: number;
+  readonly maxTurns: number | null;
   readonly timeoutMs?: number;
+  readonly stallTimeoutMs?: number | null;
   /** Run-scoped logger; session events are mirrored by the runner. */
   readonly logger?: Logger;
   /** Mirror the full AI session transcript to this store. */
@@ -148,6 +148,7 @@ session; both must be complete before you finish.`;
 export async function runWorkflowSession(
   options: WorkflowSessionOptions,
 ): Promise<WorkflowSessionResult> {
+  const limits = options.limits ?? DEFAULT_LIMITS.sessions.testWriter;
   const repoDir = options.repoDir;
   const relativeTestEntry = relative(repoDir, options.testEntry).split("\\").join("/");
   const registry = new LocalDependencyRegistry({
@@ -181,8 +182,9 @@ export async function runWorkflowSession(
     agents,
     mcpServers: { [serverName]: mcpServer },
     skills: ["workflow-spec:workflow-spec"],
-    maxTurns: options.maxTurns ?? 48,
-    timeoutMs: options.timeoutMs,
+    maxTurns: limits.maxTurns,
+    timeoutMs: limits.deadlineMs ?? undefined,
+    stallTimeoutMs: limits.stallMs,
     logger: options.logger,
     sessionStore: options.sessionStore,
   });
@@ -227,6 +229,7 @@ async function defaultRunAgent(
     skills: [...o.skills],
     maxTurns: o.maxTurns,
     timeoutMs: o.timeoutMs,
+    stallTimeoutMs: o.stallTimeoutMs,
     logger: o.logger,
     sessionStore: o.sessionStore,
   });

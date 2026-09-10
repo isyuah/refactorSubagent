@@ -19,10 +19,12 @@ import { createWorktrees, resolveHead } from "../src/runtime/worktree.js";
 import { runWorkflowVerification } from "../src/runtime/workflow-pipeline.js";
 import { LocalDependencyRegistry } from "../src/agents/dep-registry.js";
 import { resolveDeclaredWorkflows } from "../src/workflow/resolve-declared.js";
+import { extractLimitArgs, resolveLimits, type LimitsLayers } from "../src/config/limits.js";
 
 interface Options {
   readonly root: string;
   readonly sessionId: string;
+  readonly limitOverrides: LimitsLayers;
 }
 
 function parseOptions(args: readonly string[]): Options {
@@ -32,7 +34,7 @@ function parseOptions(args: readonly string[]): Options {
     console.error("用法: bun run scripts/resume-verification.ts --root <e2e-root> --session <id>");
     process.exit(2);
   }
-  return { root, sessionId };
+  return { root, sessionId, limitOverrides };
 }
 
 function valueAfter(args: readonly string[], name: string): string | null {
@@ -42,7 +44,8 @@ function valueAfter(args: readonly string[], name: string): string | null {
   return value;
 }
 
-const options = parseOptions(Bun.argv.slice(2));
+const { overrides: limitOverrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
+const options = parseOptions(remaining);
 const repo = join(options.root, "repo");
 const sessionRoot = join(options.root, "session-root");
 const e2eRunDir = join(sessionRoot, ".refactor", "e2e", options.sessionId);
@@ -181,8 +184,7 @@ const verification = await runWorkflowVerification({
     changed_files: changedFiles,
     summary: summary.slice(0, 500),
   },
-  buildTimeoutMs: 120_000,
-  ctestTimeoutMs: 180_000,
+  limits: resolveLimits({ repoRoot: repo, overrides: options.limitOverrides }).limits,
 });
 
 logger.finish(verification.state === "ACCEPTED" ? "accepted" : verification.state === "REJECTED" ? "rejected" : "aborted",

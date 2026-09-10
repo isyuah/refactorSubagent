@@ -18,7 +18,8 @@ export interface RunWorkflowOptions {
   input?: unknown;
   facts?: WorkflowFacts;
   policy?: WorkflowCapabilityPolicy;
-  timeoutMs: number;
+  /** Host deadline for the whole workflow run. undefined = no deadline. */
+  timeoutMs?: number;
 }
 
 /** Execute a source-checked workflow with brokered filesystem/process capabilities. */
@@ -85,15 +86,17 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
     policy: options.policy,
   } satisfies WorkerPayload)}\n`);
 
-  const timer = setTimeout(() => {
-    timedOut = true;
-    terminateTree(child.pid);
-  }, options.timeoutMs);
+  const timer = options.timeoutMs === undefined
+    ? null
+    : setTimeout(() => {
+        timedOut = true;
+        terminateTree(child.pid);
+      }, options.timeoutMs);
   const exit = await new Promise<{ code: number | null; signal: string | null; error: Error | null }>((resolveExit) => {
     child.once("error", (error) => resolveExit({ code: null, signal: null, error }));
     child.once("close", (code, signal) => resolveExit({ code, signal, error: null }));
   });
-  clearTimeout(timer);
+  if (timer !== null) clearTimeout(timer);
   const completedEnvelope = finalEnvelope as WorkerEnvelope | null;
   const out = Buffer.concat(protocolNoise).toString("utf8");
   const err = Buffer.concat(stderr).toString("utf8");

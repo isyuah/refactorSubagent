@@ -72,7 +72,7 @@ export async function resolveBuildWorkflow(
       input: { kind: "build-workflow-input", version: 1 },
       facts,
       policy: options.policy,
-      timeoutMs: options.timeoutMs ?? 60_000,
+      timeoutMs: options.timeoutMs,
     });
     if (result.status !== "pass") {
       throw new Error(`build workflow failed: ${result.failure ?? result.status}`);

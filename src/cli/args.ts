@@ -12,7 +12,8 @@ export interface WorkflowRunCommand {
   cwd: string;
   inputJson: string | null;
   inputFile: string | null;
-  timeoutMs: number;
+  /** null = fall back to the resolved limits (commands.processMs). */
+  timeoutMs: number | null;
   format: CliFormat;
 }
 
@@ -24,7 +25,15 @@ export interface WorkflowBuildCommand {
   cwd: string;
   manifestOut: string | null;
   save: boolean;
-  timeoutMs: number;
+  /** null = fall back to the resolved limits (commands.processMs). */
+  timeoutMs: number | null;
+  format: CliFormat;
+}
+
+export interface LimitsCommand {
+  kind: "limits";
+  /** Repository whose .refactor/limits.json participates in the merge. */
+  repo: string;
   format: CliFormat;
 }
 
@@ -46,7 +55,8 @@ export type CliCommand =
   | WorkflowRunCommand
   | WorkflowBuildCommand
   | WorkflowListCommand
-  | ConfigCommand;
+  | ConfigCommand
+  | LimitsCommand;
 
 export class CliUsageError extends Error {
   constructor(message: string) {
@@ -64,6 +74,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
   if (command === "preflight") return parsePreflight(args);
   if (command === "workflow") return parseWorkflow(args);
   if (command === "config") return parseConfig(args);
+  if (command === "limits") return parseLimits(args);
   throw new CliUsageError(`unknown command '${command}'`);
 }
 
@@ -83,6 +94,24 @@ function parseConfig(args: string[]): ConfigCommand {
     throw new CliUsageError(`config accepts no positional arguments, got '${arg}'`);
   }
   return { kind: "config", scope };
+}
+
+function parseLimits(args: string[]): LimitsCommand {
+  let repo = process.cwd();
+  let format: CliFormat = "human";
+  let sawRepo = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--format") {
+      format = parseFormat(nextValue(args, ++index, "--format"));
+      continue;
+    }
+    if (arg.startsWith("--")) throw new CliUsageError(`unknown limits option '${arg}'`);
+    if (sawRepo) throw new CliUsageError("limits accepts at most one repository path");
+    repo = arg;
+    sawRepo = true;
+  }
+  return { kind: "limits", repo, format };
 }
 
 function parsePreflight(args: string[]): PreflightCommand {
@@ -116,7 +145,7 @@ function parseWorkflowRun(args: string[]): WorkflowRunCommand {
   let cwd = process.cwd();
   let inputJson: string | null = null;
   let inputFile: string | null = null;
-  let timeoutMs = 60_000;
+  let timeoutMs: number | null = null;
   let format: CliFormat = "human";
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
@@ -154,7 +183,7 @@ function parseWorkflowBuild(args: string[]): WorkflowBuildCommand {
   let cwd = process.cwd();
   let manifestOut: string | null = null;
   let save = false;
-  let timeoutMs = 60_000;
+  let timeoutMs: number | null = null;
   let format: CliFormat = "human";
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
@@ -242,6 +271,7 @@ export const CLI_HELP = `Usage:
   refactor-subagent workflow build <entry.ts> --id <id> --revision <n> [options]
   refactor-subagent workflow list [--cwd <dir>] [--format human|json]
   refactor-subagent config [--project | --user]
+  refactor-subagent limits [repo] [--format human|json]
 
 Config options:
   --project                   Install workflow-spec skill into ./claude/skills (default)
@@ -251,11 +281,25 @@ The config command installs the tool's workflow-spec skill (exact API/schema
 for workflow generation). The skill is force-injected by the host; it cannot
 be triggered manually or by the model.
 
+Limits (timeouts and resource caps), accepted by every command:
+  --limits-file <path>        Extra limits layer, merged in order (repeatable)
+  --limit <key.path>=<value>  Override one limit; "null" lifts it (repeatable)
+
+Resolution order, later wins:
+  built-in defaults < ~/.refactor/limits.json < <repo>/.refactor/limits.json
+  < --limits-file < --limit
+
+Time budgets default to null (no deadline); resource caps keep their defaults.
+"refactor-subagent limits" prints the effective values and their layers.
+Examples:
+  --limit stages.buildMs=900000 --limit stages.ctestMs=null
+  --limit resources.build.maxProcesses=16
+
 Workflow run options:
   --cwd <dir>                 Working directory for the workflow process
   --input-json <json>         JSON input passed to the workflow
   --input-file <file>         Read JSON input from a file
-  --timeout-ms <n>            Maximum workflow duration (default: 60000)
+  --timeout-ms <n>            Maximum workflow duration (default: limits.commands.processMs)
   --format human|json         Output format (default: human)
 
 Workflow build options:
@@ -264,7 +308,7 @@ Workflow build options:
   --cwd <dir>                 Project working directory
   --manifest-out <path>       Save the generated manifest as JSON
   --save                      Persist source, output, and manifest under .refactorsa
-  --timeout-ms <n>            Maximum workflow duration (default: 60000)
+  --timeout-ms <n>            Maximum workflow duration (default: limits.commands.processMs)
   --format human|json         Output format (default: human)
 
 The workflow host currently provides process-level execution and source-policy

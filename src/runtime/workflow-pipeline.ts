@@ -29,6 +29,7 @@ import {
 } from "../artifacts/index.js";
 import type { WorktreePair } from "./worktree.js";
 import type { E2ELogger } from "./e2e-log.js";
+import type { Limits } from "../config/limits.js";
 
 export interface WorkflowVerificationRequest {
   readonly repoPath: string;
@@ -49,8 +50,8 @@ export interface WorkflowVerificationRequest {
   /** Declared build resolutions, in declaration order (executed each side). */
   readonly declaredBuilds?: readonly BuildWorkflowResolution[];
   readonly patch: Omit<PatchRecord, "kind" | "version" | "base_commit_sha">;
-  readonly buildTimeoutMs?: number;
-  readonly ctestTimeoutMs?: number;
+  /** Resolved host limits; every stage budget and resource cap comes from here. */
+  readonly limits: Limits;
   readonly knownEnvironmentPatterns?: readonly RegExp[];
 }
 
@@ -141,7 +142,7 @@ export async function runWorkflowVerification(
   }
 
   const suite = materializeTestWorkflow(request.test, {
-    timeout_ms: request.ctestTimeoutMs ?? 1_200_000,
+    timeout_ms: request.limits.stages.ctestMs,
     parallelism: 1,
   });
   if (suite === null) {
@@ -272,7 +273,7 @@ async function runSelfDrivenCore(
       build_workflow_id: request.build.manifest.id,
       build_workflow_revision: request.build.manifest.revision,
     },
-    timeoutMs: request.ctestTimeoutMs ?? 1_200_000,
+    timeoutMs: request.limits.stages.testWorkflowMs ?? undefined,
   });
   if (baselineRun.status !== "pass") {
     results.push(orch.abort(`baseline test workflow failed: ${baselineRun.failure ?? baselineRun.status}`));
@@ -313,7 +314,7 @@ async function runSelfDrivenCore(
       build_workflow_id: request.build.manifest.id,
       build_workflow_revision: request.build.manifest.revision,
     },
-    timeoutMs: request.ctestTimeoutMs ?? 1_200_000,
+    timeoutMs: request.limits.stages.testWorkflowMs ?? undefined,
   });
   if (candidateRun.status !== "pass") {
     results.push(orch.abort(`candidate test workflow failed: ${candidateRun.failure ?? candidateRun.status}`));
@@ -375,6 +376,7 @@ async function runSelfDrivenCore(
 }
 
 function testWorkflowPolicy(request: WorkflowVerificationRequest) {
+  const caps = request.limits.resources.test;
   return {
     readableGlobs: ["**"],
     writableGlobs: ["**"],
@@ -383,9 +385,11 @@ function testWorkflowPolicy(request: WorkflowVerificationRequest) {
     // the build tree only — never arbitrary programs.
     executableGlobs: ["build/**"],
     allowedTools: [],
-    maxProcesses: 4,
-    maxOutputBytes: 32 * 1024 * 1024,
-    maxFileBytes: 64 * 1024 * 1024,
+    maxProcesses: caps.maxProcesses,
+    maxOutputBytes: caps.maxOutputBytes,
+    maxFileBytes: caps.maxFileBytes,
+    processTimeoutMs: request.limits.commands.processMs,
+    readyTimeoutMs: request.limits.commands.readyMs,
   };
 }
 
@@ -465,11 +469,13 @@ async function executeBuildFor(
       allowedTools: resolution.output === null
         ? []
         : requiredBuildTools(resolution.output),
-      maxProcesses: 4,
-      maxOutputBytes: 16 * 1024 * 1024,
-      maxFileBytes: 64 * 1024 * 1024,
+      maxProcesses: request.limits.resources.build.maxProcesses,
+      maxOutputBytes: request.limits.resources.build.maxOutputBytes,
+      maxFileBytes: request.limits.resources.build.maxFileBytes,
+      processTimeoutMs: request.limits.commands.processMs,
+      readyTimeoutMs: request.limits.commands.readyMs,
     },
-    timeoutMs: request.buildTimeoutMs ?? 1_200_000,
+    timeoutMs: request.limits.stages.buildMs ?? undefined,
   });
   request.logger?.artifact(`${artifactName}.json`, result);
   for (const step of result.steps) {

@@ -63,16 +63,18 @@ export async function runCTest(
   });
 
   let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    terminateTree(child.pid);
-  }, options.spec.timeout_ms);
+  const timer = options.spec.timeout_ms === null
+    ? null
+    : setTimeout(() => {
+        timedOut = true;
+        terminateTree(child.pid);
+      }, options.spec.timeout_ms);
 
   const exit = await new Promise<{ code: number | null; error: Error | null }>((resolve) => {
     child.once("error", (error) => resolve({ code: null, error }));
     child.once("close", (code) => resolve({ code, error: null }));
   });
-  clearTimeout(timer);
+  if (timer !== null) clearTimeout(timer);
 
   const out = Buffer.concat(stdout).toString("utf8");
   const err = Buffer.concat(stderr).toString("utf8");

@@ -40,11 +40,12 @@ export interface DriverOptions {
   prompt: string;
   systemPrompt?: string;
   allowedTools?: string[];
-  maxTurns?: number;
+  /** Max assistant turns. Omitted/null = SDK default (unbounded). */
+  maxTurns?: number | null;
   /** Host deadline for the SDK query. Omitted means no deadline. */
   timeoutMs?: number;
-  /** Treat N ms without any SDK message as a dead stream and abort (default 180s). */
-  stallTimeoutMs?: number;
+  /** Treat N ms without any SDK message as a dead stream and abort. null disables the watchdog. */
+  stallTimeoutMs?: number | null;
   /** Run-scoped logger; session events are mirrored at trace/debug level. */
   logger?: Logger;
   /**
@@ -97,7 +98,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       ...(o.agents !== undefined ? { agents: o.agents } : {}),
       ...(o.mcpServers !== undefined ? { mcpServers: o.mcpServers } : {}),
       systemPrompt: o.systemPrompt,
-      maxTurns: o.maxTurns ?? 32,
+      ...(o.maxTurns !== undefined && o.maxTurns !== null ? { maxTurns: o.maxTurns } : {}),
       abortController,
       ...(o.outputFormat ? { outputFormat: o.outputFormat } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
@@ -120,7 +121,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
   // Stall guard: the SDK can hang with no message when its CLI subprocess dies
   // (observed under a model proxy). Treat N seconds without ANY message as a
   // dead stream, abort, and report a stall instead of waiting for timeoutMs.
-  const stallMs = o.stallTimeoutMs ?? 180_000;
+  const stallMs = o.stallTimeoutMs === undefined ? 180_000 : o.stallTimeoutMs;
   let stalled = false;
   // Stall watchdog: a single timer, reset on every message. If it ever fires,
   // the stream produced nothing for stallMs — abort instead of hanging until
@@ -129,12 +130,16 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
   let stallTimer: ReturnType<typeof setTimeout> | undefined;
   let stallReject: ((error: Error) => void) | null = null;
   const armStall = (): void => {
+    if (stallMs === null) return;
     clearTimeout(stallTimer);
     stallTimer = setTimeout(() => {
       stallReject?.(new Error(`Claude agent stream stalled: no message for ${stallMs}ms`));
     }, stallMs);
   };
-  const stallPromise = new Promise<never>((_, reject) => { stallReject = reject; });
+  // A disabled watchdog never rejects; the race below then just awaits the stream.
+  const stallPromise = stallMs === null
+    ? new Promise<never>(() => {})
+    : new Promise<never>((_, reject) => { stallReject = reject; });
   try {
     const iterator = q[Symbol.asyncIterator]();
     armStall();

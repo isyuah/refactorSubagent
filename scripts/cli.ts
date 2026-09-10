@@ -7,6 +7,7 @@ import {
   parseCliArgs,
   type CliCommand,
   type ConfigCommand,
+  type LimitsCommand,
   type PreflightCommand,
   type WorkflowBuildCommand,
   type WorkflowListCommand,
@@ -21,10 +22,12 @@ import {
 } from "../src/workflow/registry.js";
 import { readJsonInput, runWorkflow } from "../src/workflow/runner.js";
 import type { WorkflowRunResult } from "../src/workflow/types.js";
+import { extractLimitArgs, resolveLimits, type LimitsLayers } from "../src/config/limits.js";
 
 try {
-  const command = parseCliArgs(Bun.argv.slice(2));
-  const exitCode = await execute(command);
+  const { overrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
+  const command = parseCliArgs(remaining);
+  const exitCode = await execute(command, overrides);
   if (exitCode !== 0) process.exitCode = exitCode;
 } catch (cause) {
   if (cause instanceof CliUsageError) {
@@ -36,16 +39,19 @@ try {
   }
 }
 
-async function execute(command: CliCommand): Promise<number> {
+async function execute(command: CliCommand, overrides: LimitsLayers): Promise<number> {
   if (command.kind === "help") {
     console.log(CLI_HELP);
     return 0;
   }
   if (command.kind === "preflight") return executePreflight(command);
-  if (command.kind === "workflow-build") return executeWorkflowBuild(command);
+  if (command.kind === "workflow-build") return executeWorkflowBuild(command, overrides);
   if (command.kind === "workflow-list") return executeWorkflowList(command);
   if (command.kind === "config") return executeConfig(command);
+  if (command.kind === "limits") return executeLimits(command, overrides);
+  if (command.kind !== "workflow-run") return 2;
 
+  const limits = resolveLimits({ repoRoot: resolve(command.cwd), overrides }).limits;
   const input = command.inputFile === null
     ? command.inputJson === null
       ? null
@@ -55,11 +61,27 @@ async function execute(command: CliCommand): Promise<number> {
     entry: command.entry,
     cwd: command.cwd,
     input,
-    timeoutMs: command.timeoutMs,
+    timeoutMs: command.timeoutMs ?? limits.commands.processMs ?? undefined,
   });
   if (command.format === "json") console.log(JSON.stringify(result, null, 2));
   else printWorkflowResult(result);
   return result.status === "pass" ? 0 : 1;
+}
+
+/** Print the limits that would apply to this repo, with their sources. */
+function executeLimits(command: LimitsCommand, overrides: LimitsLayers): number {
+  const repo = resolve(command.repo);
+  const resolved = resolveLimits({ repoRoot: repo, overrides });
+  if (command.format === "json") {
+    console.log(JSON.stringify({ repo, ...resolved }, null, 2));
+    return 0;
+  }
+  console.log(`repo: ${repo}`);
+  for (const source of resolved.sources) console.log(`layer: ${source}`);
+  for (const path of resolved.missing) console.log(`absent: ${path}`);
+  if (resolved.sources.length === 0) console.log("layer: (built-in defaults only)");
+  console.log(JSON.stringify(resolved.limits, null, 2));
+  return 0;
 }
 
 function executePreflight(command: PreflightCommand): number {
@@ -79,8 +101,12 @@ function executePreflight(command: PreflightCommand): number {
   return project.status === "ready" ? 0 : 1;
 }
 
-async function executeWorkflowBuild(command: WorkflowBuildCommand): Promise<number> {
+async function executeWorkflowBuild(
+  command: WorkflowBuildCommand,
+  overrides: LimitsLayers,
+): Promise<number> {
   const cwd = resolve(command.cwd);
+  const limits = resolveLimits({ repoRoot: cwd, overrides }).limits;
   const host = probeHost(cwd);
   const project = detectCProject(cwd, host);
   const resolution = await resolveBuildWorkflow({
@@ -90,7 +116,7 @@ async function executeWorkflowBuild(command: WorkflowBuildCommand): Promise<numb
     cwd,
     host,
     project,
-    timeoutMs: command.timeoutMs,
+    timeoutMs: command.timeoutMs ?? limits.commands.processMs ?? undefined,
   });
 
   let saved: ReturnType<typeof saveBuildWorkflow> | null = null;

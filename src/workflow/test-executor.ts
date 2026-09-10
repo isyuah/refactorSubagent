@@ -117,7 +117,7 @@ export async function runTestSide(
     input: options.input ?? { kind: "test-workflow-input", version: 1 },
     facts: { host: options.host, project: options.project },
     policy: options.policy,
-    timeoutMs: options.timeoutMs ?? 120_000,
+    timeoutMs: options.timeoutMs,
   });
   return {
     status: result.status,

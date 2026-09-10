@@ -6,7 +6,8 @@ export const CTestSuiteSpec = z.object({
   version: z.literal(1),
   build_dir: RelPath,
   configuration: z.string().min(1).default("Debug"),
-  timeout_ms: z.number().int().positive().default(600_000),
+  /** Whole-suite budget. null = no deadline (CTest itself never times out a case). */
+  timeout_ms: z.number().int().positive().nullable().default(null),
   parallelism: z.number().int().positive().nullable().default(null),
   extra_args: z.array(z.string()).default([]),
   environment: z.record(z.string()).default({}),

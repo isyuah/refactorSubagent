@@ -194,6 +194,10 @@ export interface WorkflowCapabilityPolicy {
   readonly maxProcesses?: number;
   readonly maxOutputBytes?: number;
   readonly maxFileBytes?: number;
+  /** Default budget for `ctx.process.run` calls that omit timeoutMs. null = no deadline. */
+  readonly processTimeoutMs?: number | null;
+  /** Cap for file/TCP ready probes. */
+  readonly readyTimeoutMs?: number;
 }
 
 export type WorkflowFunction = (

@@ -64,7 +64,8 @@ export type TestWorkflowManifest = z.infer<typeof TestWorkflowManifest>;
 
 /** Final CTest execution settings materialized by the program, not by Claude. */
 export const CTestMaterializationPolicy = z.object({
-  timeout_ms: z.number().int().positive().default(1_200_000),
+  /** Whole-suite budget. null = no deadline (the host decides; see limits.stages.ctestMs). */
+  timeout_ms: z.number().int().positive().nullable().default(null),
   parallelism: z.number().int().positive().default(1),
 });
 export type CTestMaterializationPolicy = z.infer<typeof CTestMaterializationPolicy>;
