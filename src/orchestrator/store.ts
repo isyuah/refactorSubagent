@@ -75,18 +75,38 @@ export class SessionStore {
 
   /** Reopen an existing session (workflow recovery). */
   static open(root: string, sessionId: string): SessionStore {
-    const path = join(
-      root,
-      ".refactor",
-      "sessions",
-      sessionId,
-      "state.json",
-    );
-    const parsed = SessionFile.safeParse(
-      JSON.parse(readFileSync(path, "utf8")),
-    );
-    if (!parsed.success) throw new Error(`corrupt state.json: ${sessionId}`);
-    return new SessionStore(join(root, ".refactor", "sessions", sessionId), parsed.data);
+    const sessionDir = join(root, ".refactor", "sessions", sessionId);
+    const path = join(sessionDir, "state.json");
+    if (!existsSync(path)) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(path, "utf8"));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`unreadable state.json in session ${sessionId}: ${detail}`);
+    }
+
+    const parsed = SessionFile.safeParse(raw);
+    if (!parsed.success) {
+      // A state this build does not define means the file was written by an
+      // older build (states are removed, never renamed): report that instead
+      // of calling the file corrupt. Resume still fails — fail closed.
+      const removed = removedStates(parsed.error);
+      if (removed.length > 0) {
+        throw new Error(
+          `session ${sessionId} was written by an older build and cannot be resumed: ` +
+            `state.json references removed state(s) ${removed.join(", ")}`,
+        );
+      }
+      const issue = parsed.error.issues[0];
+      throw new Error(
+        `corrupt state.json in session ${sessionId}: ${issue?.message ?? "schema mismatch"}`,
+      );
+    }
+    return new SessionStore(sessionDir, parsed.data);
   }
 
   get id(): string {
@@ -225,4 +245,17 @@ export class SessionStore {
     );
     return this;
   }
+}
+
+/**
+ * Session states referenced by state.json that this build does not define.
+ * Every enum field in the file is a session state, so an invalid enum value
+ * always means a state removed by a newer build, not corruption.
+ */
+function removedStates(error: z.ZodError): string[] {
+  const names = new Set<string>();
+  for (const issue of error.issues) {
+    if (issue.code === "invalid_enum_value") names.add(String(issue.received));
+  }
+  return [...names].sort();
 }
