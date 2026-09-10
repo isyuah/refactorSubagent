@@ -69,8 +69,8 @@ logger.info("worktrees recreated", { baseline: worktrees.baselineDir, candidate:
 // declared-build-set.json artifact saved after the session.
 const declaredArtifactPath = join(e2eRunDir, "artifacts", "declared-build-set.json");
 const declaredArtifact = JSON.parse(await Bun.file(declaredArtifactPath).text()) as {
-  source_hash?: string;
-  builds: { id: string; entry: string; run_local: boolean; source_hash?: string }[];
+  source_hash: string;
+  builds: { id: string; entry: string; run_local: boolean; source_hash: string }[];
 };
 if (declaredArtifact.builds.length === 0) {
   console.error("no declared builds in artifact");
@@ -171,8 +171,8 @@ const verification = await runWorkflowVerification({
     version: 1,
     test_workflow_id: `test-${options.sessionId}`,
     test_workflow_revision: 1,
-    builds: declaredArtifact.builds.map((b) => ({ id: b.id, entry: b.entry, source_hash: b.source_hash ?? "", run_local: b.run_local })),
-    source_hash: (declaredArtifact as { source_hash?: string }).source_hash ?? "",
+    builds: declaredArtifact.builds.map((b) => ({ id: b.id, entry: b.entry, source_hash: b.source_hash, run_local: b.run_local })),
+    source_hash: declaredArtifact.source_hash,
   } as never,
   declaredBuilds: resolved.builds.map((b) => b.resolution),
   patch: {

@@ -28,7 +28,7 @@ export const CaseObservation = z.object({
  */
 export const FailureClassification = z.object({
   category: z.enum([
-    "environment", // infra problem unrelated to scope (missing lib, …)
+    "environment", // infra problem unrelated to the change (missing lib, …)
     "preexisting_behavior", // old code genuinely fails this case
     "unknown",
   ]),

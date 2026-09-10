@@ -39,7 +39,7 @@ export const DEFAULT_STRATEGY: Record<
 
 /**
  * Dependency Manifest — direct/transitive/ambient dependencies of the
- * modification scope and how each will be controlled during observation runs.
+ * refactored code and how each will be controlled during observation runs.
  */
 export const DependencyManifest = z.object({
   kind: z.literal("dependency-manifest"),

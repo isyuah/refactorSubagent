@@ -268,7 +268,7 @@ function checkBaseline(artifact: ObservationTrace): string | null {
   return null;
 }
 
-/** R3 for a complete CTest suite. Unknown and scope-related failures stop. */
+/** R3 for a complete CTest suite: all failures classified, 'unknown' stops the run. */
 function checkCTestBaseline(artifact: CTestBaseline): string | null {
   const failedNames = ctestFailureNames(artifact);
   const classifiedNames = new Set(

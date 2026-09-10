@@ -124,7 +124,7 @@ export async function runAgentWorkflowVerification(
       }),
     );
     logger.artifact("analysis-report.txt", { report: analysis.report });
-    logger.info("project probed; host-side report prepared", {});
+    logger.info("project probed; host-side report prepared");
 
     logger.phase("WORKFLOW_SESSION");
     logger.info("running test-writer session (declare build deps, author TestWorkflow)");

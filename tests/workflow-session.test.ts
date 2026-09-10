@@ -78,7 +78,6 @@ function makeSessionHarness(behavior: RunnerBehavior) {
     result: string;
     isError: boolean;
     timedOut: boolean;
-    denials: string[];
   }> => {
     capturedOptions = o;
     if (behavior.writeTestEntry) {
@@ -89,7 +88,6 @@ function makeSessionHarness(behavior: RunnerBehavior) {
       result: behavior.result ?? "session done",
       isError: behavior.isError ?? false,
       timedOut: behavior.timedOut ?? false,
-      denials: [],
     };
   };
 

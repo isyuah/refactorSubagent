@@ -26,7 +26,7 @@ export interface AnalysisResult {
 
 export interface AnalyzeOptions {
   readonly repoDir: string;
-  /** Task text (used only to name the report). */
+  /** Task text (included verbatim in the probe report). */
   readonly taskContext?: string;
   readonly host?: HostPreflight;
   readonly project?: ProjectDetection;

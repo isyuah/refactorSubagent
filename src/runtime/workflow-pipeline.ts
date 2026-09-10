@@ -96,7 +96,6 @@ export async function runWorkflowVerification(
   };
 
   if (!submit(request.contract) ||
-
       !submit(request.deps) ||
       !submit(request.tests)) {
     return emptyOutcome(request.store.state, results);
