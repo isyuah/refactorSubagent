@@ -103,7 +103,7 @@ export class SessionStore {
 
   /** Storage file stem: build/test resolutions and build-scoped artifacts stay distinct. */
   private static storageStem(a: AnyArtifact): string {
-    if (a.kind === "observation-trace" || a.kind === "sanitizer-result") {
+    if (a.kind === "observation-trace") {
       return `${a.kind}.${a.build}`;
     }
     if (a.kind === "workflow-resolution") {
@@ -117,9 +117,7 @@ export class SessionStore {
     kind: K,
   ): Extract<AnyArtifact, { kind: K }> | null {
     if (kind === "workflow-resolution") return null;
-    const stem = kind === "observation-trace" || kind === "sanitizer-result"
-      ? `${kind}.baseline`
-      : kind;
+    const stem = kind === "observation-trace" ? `${kind}.baseline` : kind;
     const path = join(this.sessionDir, "artifacts", `${stem}.json`);
     if (!existsSync(path)) return null;
     return Artifact.parse(JSON.parse(readFileSync(path, "utf8"))) as Extract<
@@ -153,19 +151,6 @@ export class SessionStore {
     );
     if (!existsSync(path)) return null;
     return ObservationTrace.parse(JSON.parse(readFileSync(path, "utf8")));
-  }
-  /** Load the stored sanitizer result for one build; null if absent. */
-  sanitizer(build: "baseline" | "candidate") {
-    const path = join(
-      this.sessionDir,
-      "artifacts",
-      `sanitizer-result.${build}.json`,
-    );
-    if (!existsSync(path)) return null;
-    return Artifact.parse(JSON.parse(readFileSync(path, "utf8"))) as Extract<
-      AnyArtifact,
-      { kind: "sanitizer-result" }
-    >;
   }
 
   /** Persist measured host facts outside the Artifact state transition union. */

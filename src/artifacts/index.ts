@@ -6,7 +6,6 @@ import { TestSpec } from "./test-spec.js";
 import { ObservationTrace } from "./observation-trace.js";
 import { PatchRecord } from "./patch-record.js";
 import { ComparisonResult } from "./comparison-result.js";
-import { SanitizerResult } from "./sanitizer.js";
 import { BuildWorkflowManifest, BuildWorkflowOutput } from "./build-workflow.js";
 import { RefactorTestTask } from "./refactor-task.js";
 import { WorkflowResolution } from "./workflow-resolution.js";
@@ -45,7 +44,6 @@ export const Artifact = z.union([
   ObservationTrace,
   PatchRecord,
   ComparisonResult,
-  SanitizerResult,
   RefactorTestTask,
   WorkflowResolution,
   DeclaredBuildSet,

@@ -215,7 +215,6 @@ export function createLibuvRefactorTask(evidence: LibuvTaskEvidence): RefactorTe
         "rerun the pinned CMake BuildWorkflow and verify every declared artifact",
         "rerun the complete CTest suite and preserve explicit baseline failure classifications",
         "run all candidate-specific cases for both baseline and candidate builds",
-        "run sanitizer verification when HostPreflight reports a supported sanitizer",
       ],
     },
   });
