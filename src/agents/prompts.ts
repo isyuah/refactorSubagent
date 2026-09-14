@@ -300,6 +300,22 @@ Build artifacts ALREADY EXIST when your function runs — the host built every d
 worktree before invoking you. NEVER rebuild (no configure/compile/new build dir); run the existing executables
 and assert their paths with context.validator.assertFile first.
 
+Designing expectations (this defines "behavior preserved" for the whole task):
+- Cover every channel the verification cares about (exit code and the stdout
+  lines that prove behavior) — not just the one that is easiest to observe.
+- Prefer small, stable observations over whole-output equality: exit codes,
+  specific summary lines, counters, return values, file existence, file content
+  at known paths. Avoid comparing entire verbose output containing paths,
+  timestamps, addresses, or locale-dependent text.
+- Exercise the target through boundary inputs: empty, minimal (n=0/n=1),
+  maximal, truncated, invalid, and overlapping/aliasing cases where
+  applicable. Normal-path-only expectations give the verification almost no power.
+- Every ctx.expect must execute in BOTH runs: no branching on
+  environment-dependent values before the last expectation, no early return
+  after a failure, no expectations inside loops over unordered data. If a
+  probe itself fails, still emit the expectation (e.g. expect the sentinel or
+  exit code) so both sides stay paired.
+
 Run the actual tests with injected capabilities:
 - context.process.run({ program, args, cwd, timeoutMs }) runs a measured tool or workspace-relative executable.
   The result exposes plain text stdout/stderr strings plus exitCode and status.
