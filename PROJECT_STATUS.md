@@ -96,7 +96,9 @@ deny 规则挡住（实测有效），其余破坏性命令靠"环境可弃 + �
 ```text
 src/
 ├─ config/
-│  └─ limits.ts                  超时/资源阈值：分层配置、合并、CLI 覆盖
+│  ├─ layers.ts                  多源配置引擎（默认 < 用户 < 项目 < 显式文件 < 标量覆盖）
+│  ├─ limits.ts                  超时/资源阈值（基于 layers.ts）
+│  └─ pipeline.ts                阶段来源配置：把配置翻译成阶段函数
 │
 ├─ artifacts/                    Artifact Schema（Zod）
 │  ├─ behavior-contract.ts       行为契约
@@ -130,7 +132,8 @@ src/
 │  ├─ ctest-runner.ts            CTest 执行与输出解析
 │  ├─ ctest-comparator.ts        套件失败分类与差分比较
 │  ├─ workflow-pipeline.ts       验证阶段：build → test → compare
-│  ├─ workflow-agent-pipeline.ts 全流程编排（会话 → 重构 → 验证）
+│  ├─ stage-flow.ts              阶段契约 + 组合器（AI 与预置阶段共用）
+│  ├─ stage-presets.ts           无 AI 预置阶段（预置 workflow / 补丁 / 既有分支）
 │  ├─ e2e-log.ts                 结构化运行日志（JSONL + state.json）
 │  ├─ e2e-dashboard.ts           运行观测 WebUI + SSE
 │  ├─ session-store.ts           AI 会话转录镜像
@@ -180,7 +183,7 @@ tests/                           22 个测试文件（详见 §8）
 examples/trim-app/               C 基线项目 + safe/broken 变体
 ```
 
-Workflow 层遵循 core / app 分离：`registry` / `build-workflow` / `test-workflow` / `runner` / `capabilities` 等是无 AI、可独立单测的模块；`workflow-agent-pipeline.ts` 只做编排。
+Workflow 层遵循 core / app 分离：`registry` / `build-workflow` / `test-workflow` / `runner` / `capabilities` 等是无 AI、可独立单测的模块；`stage-flow.ts` 只做编排（阶段契约 + 组合器），阶段实现可替换（AI 会话 / 预置文件），配置到阶段的翻译在 `config/pipeline.ts`。
 
 ## 4. Artifact 数据骨架
 
@@ -325,6 +328,29 @@ Windows 下 Driver 优先使用 `CLAUDE_CODE_EXECUTABLE`，否则查找 `%APPDAT
 
 会话预算（deadline / stall / maxTurns）由 §7 的配置系统统一给出。
 
+### 6.1 阶段化管线（stage-flow）
+
+流程固定六段：`preflight → analyze → workflows → prepare → refactor → verify`。
+每段是一个**可替换的类型化函数槽**；不替换就是上面那套 AI/宿主实现：
+
+| 槽 | 默认实现 | 无 AI 预置（`stage-presets.ts`） |
+|---|---|---|
+| `preflight` / `analyze` | 主机探测 + 项目探测 | — |
+| `workflows` | test-writer 会话声明构建/测试 | `presetWorkflowsStage`（用仓库里的 workflow 源） |
+| `prepare` | 新建候选分支 + 双 worktree | `existingBranchPrepareStage`（复用既有候选分支） |
+| `refactor` | refactor 会话改候选区 | `patchRefactorStage` / `fixedRefactorStage` |
+| `verify` | 差分构建 + 跑测试 + 判定 | 允许替换，但记 `verification_authoritative: false` |
+
+- **宿主不变量**（阶段拿不到）：状态转移（`Orchestrator`）、候选改动集测量（阶段只返回 summary）、
+  门禁顺序（探测是否 ready / 改动非空 / 声明集非空）、worktree 清理与 run-local 提升。
+- 阶段可 `halt(reason)` 叫停，由组合器统一 `abort`；槽位无法自行推进状态机。
+- 注入痕迹落 `stage-provenance.json`（artifact）并进返回值，一次 ACCEPT 永远可回答"真判还是演的"。
+- **应用层**把配置翻译成槽函数（core 不接受配置文件）：`.refactor/pipeline.json` +
+  `--pipeline-file` / `--stage`，与 §7 同一套多源引擎（`config/layers.ts`）；
+  入口 `refactor-subagent run <repo> --task <text>`。没配的阶段保持 AI 默认。
+- 用途：按阶段测能力（只测重构 / 只测 workflow 编写 / 离线判据自测），见
+  [`docs/stage-flow.md`](docs/stage-flow.md)。
+
 ## 7. 超时与资源阈值配置
 
 阈值集中在 `src/config/limits.ts`，按层合并：
@@ -342,6 +368,10 @@ Windows 下 Driver 优先使用 `CLAUDE_CODE_EXECUTABLE`，否则查找 `%APPDAT
 - `refactor-subagent limits <repo>` 可查看生效值与来源层。
 
 完整用法见 [`docs/limits.md`](docs/limits.md)。
+
+同一套多源引擎（`src/config/layers.ts`）也承载阶段来源配置（§6.1）：
+`~/.refactor/pipeline.json` < `<repo>/.refactor/pipeline.json` < `--pipeline-file` < `--stage`，
+合并顺序与阈值完全一致；`limits` 是引擎的第一个域，`pipeline` 是第二个。
 
 ## 8. 已执行验证
 
@@ -385,6 +415,36 @@ candidate build: pass
 
 排查该 e2e 早期极慢问题的过程与结论见 [`docs/e2e-slow-investigation.md`](docs/e2e-slow-investigation.md)。
 
+### 8.4 阶段化管线与来源配置（2026-09-14）
+
+```text
+bunx tsc --noEmit     → pass
+bun test              → 137 pass / 0 fail（25 files，377 expect）
+```
+
+新增离线端到端测试 `tests/stage-flow.test.ts`（真 gcc、真 git、**无模型调用**）：
+
+```text
+预置 workflow + 行为保持补丁   → ACCEPTED（比较 consistent，两侧 build pass）
+预置 workflow + 改行为补丁     → REJECTED（比较 inconsistent）
+预置源缺失                     → 阶段 halt → ABORTED（run.jsonl 含原因）
+注入 verify                    → provenance.injected=["workflows","refactor","verify"]，authoritative=false
+```
+
+应用层实测（`refactor-subagent run` + `--pipeline-file`）：
+
+```text
+state=ACCEPTED   comparison=consistent   exit 0
+state=REJECTED   comparison=inconsistent exit 1
+injected_stages=["workflows","refactor"] verification_authoritative=true
+```
+
+同批修掉一个 fail-open 缺陷：`ctx.expect(name, value)` 的**字符串值**被类型嗅探吞掉
+（`src/workflow/client.ts` 把第二个字符串参数当 relation，value 变 `undefined`，两侧
+`undefined` 恒等 ⇒ 行为不同也判 consistent）。改为按**参数个数**判定，`tests/stage-flow.test.ts`
+的 REJECTED 用例即回归证据（修复前该用例为 ACCEPTED）。同时给自驱动路径的
+`WorkflowVerificationOutcome` 补上 `expectationComparison`，判定结果不再只存在于 artifact 里。
+
 ## 9. 已知限制与风险
 
 ### 9.1 权限边界依赖宿主目录，不是 OS 沙箱
@@ -427,6 +487,7 @@ Session state 支持 reopen；AI 会话本身、构建缓存与临时目录的�
 4. **程序化测试输入生成**：边界整数、空/超长字符串、控制字符、非 UTF-8 字节、缺失文件与环境变量；Agent 负责领域输入，程序负责边界补齐与去重。
 5. **恢复与审批**：模型轮次/构建过程的无损恢复；workflow 危险能力的审批通道（见 [`docs/roadmap-approval-mode.md`](docs/roadmap-approval-mode.md)，已记录未实现）。
 6. **再考虑多语言**：需先稳定 `LanguageAdapter` / `BuildAdapter` / `ObservationAdapter` / `Comparator` / `DependencyController` 抽象。第一批可考虑 C++。
+7. **按阶段的能力评估**：阶段槽已经可替换（§6.1），下一步是在此之上加"裁判"环节（对 workflow 编写能力打分并给理由）与固定测试集（离线判据自测），用于长期比较模型与配置。注意：`verify` 槽可注入，但注入的运行一律记为**非权威**。
 
 已放弃的方向（不再推进）：
 

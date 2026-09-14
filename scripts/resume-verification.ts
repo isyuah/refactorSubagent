@@ -19,12 +19,13 @@ import { createWorktrees, resolveHead } from "../src/runtime/worktree.js";
 import { runWorkflowVerification } from "../src/runtime/workflow-pipeline.js";
 import { LocalDependencyRegistry } from "../src/agents/dep-registry.js";
 import { resolveDeclaredWorkflows } from "../src/workflow/resolve-declared.js";
-import { extractLimitArgs, resolveLimits, type LimitsLayers } from "../src/config/limits.js";
+import { extractLimitArgs, resolveLimits } from "../src/config/limits.js";
+import type { LayerOverrides } from "../src/config/layers.js";
 
 interface Options {
   readonly root: string;
   readonly sessionId: string;
-  readonly limitOverrides: LimitsLayers;
+  readonly limitOverrides: LayerOverrides;
 }
 
 function parseOptions(args: readonly string[]): Options {

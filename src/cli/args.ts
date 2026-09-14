@@ -49,6 +49,19 @@ export interface ConfigCommand {
   scope: "project" | "user";
 }
 
+export interface RunCommand {
+  kind: "run";
+  /** Git repository containing the base C project. */
+  repo: string;
+  /** Natural-language refactoring task handed to the sessions. */
+  task: string;
+  /** Durable session id; generated when omitted. */
+  session: string | null;
+  /** Root of `.refactor/`; defaults to the repository itself. */
+  sessionRoot: string | null;
+  format: CliFormat;
+}
+
 export type CliCommand =
   | { kind: "help" }
   | PreflightCommand
@@ -56,7 +69,8 @@ export type CliCommand =
   | WorkflowBuildCommand
   | WorkflowListCommand
   | ConfigCommand
-  | LimitsCommand;
+  | LimitsCommand
+  | RunCommand;
 
 export class CliUsageError extends Error {
   constructor(message: string) {
@@ -72,6 +86,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     return { kind: "help" };
   }
   if (command === "preflight") return parsePreflight(args);
+  if (command === "run") return parseRun(args);
   if (command === "workflow") return parseWorkflow(args);
   if (command === "config") return parseConfig(args);
   if (command === "limits") return parseLimits(args);
@@ -112,6 +127,40 @@ function parseLimits(args: string[]): LimitsCommand {
     sawRepo = true;
   }
   return { kind: "limits", repo, format };
+}
+
+function parseRun(args: string[]): RunCommand {
+  let repo = ".";
+  let task: string | null = null;
+  let session: string | null = null;
+  let sessionRoot: string | null = null;
+  let format: CliFormat = "human";
+  let sawRepo = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--task") {
+      task = nextValue(args, ++index, "--task");
+      continue;
+    }
+    if (arg === "--session") {
+      session = nextValue(args, ++index, "--session");
+      continue;
+    }
+    if (arg === "--session-root") {
+      sessionRoot = nextValue(args, ++index, "--session-root");
+      continue;
+    }
+    if (arg === "--format") {
+      format = parseFormat(nextValue(args, ++index, "--format"));
+      continue;
+    }
+    if (arg.startsWith("--")) throw new CliUsageError(`unknown run option '${arg}'`);
+    if (sawRepo) throw new CliUsageError("run accepts at most one repository path");
+    repo = arg;
+    sawRepo = true;
+  }
+  if (task === null) throw new CliUsageError("run requires --task <text>");
+  return { kind: "run", repo, task, session, sessionRoot, format };
 }
 
 function parsePreflight(args: string[]): PreflightCommand {
@@ -267,11 +316,30 @@ function parseFormat(value: string): CliFormat {
 
 export const CLI_HELP = `Usage:
   refactor-subagent preflight [repo] [--format human|json]
+  refactor-subagent run [repo] --task <text> [--session <id>] [--session-root <dir>]
   refactor-subagent workflow run <entry.ts> [options]
   refactor-subagent workflow build <entry.ts> --id <id> --revision <n> [options]
   refactor-subagent workflow list [--cwd <dir>] [--format human|json]
   refactor-subagent config [--project | --user]
   refactor-subagent limits [repo] [--format human|json]
+
+The run command executes the whole pipeline: preflight and analysis on the
+host, the test-writer session, the candidate worktrees, the refactor session,
+then differential build + test execution and the verdict. Where each stage's
+INPUT comes from is configuration (see "Stage sources" below); by default every
+stage is AI-driven.
+
+Stage sources (accepted by "run"), later wins:
+  --pipeline-file <path>      Extra pipeline layer, merged in order (repeatable)
+  --stage <key.path>=<value>  Override one stage source (repeatable)
+
+Resolution order:
+  built-in defaults < ~/.refactor/pipeline.json < <repo>/.refactor/pipeline.json
+  < --pipeline-file < --stage
+
+Anything not configured keeps its AI implementation. Examples:
+  --stage stages.refactor.mode=ai                 back to the refactor session
+  --stage stages.prepare.mode=create              fresh candidate branch
 
 Config options:
   --project                   Install workflow-spec skill into ./claude/skills (default)

@@ -174,8 +174,10 @@ bun run scripts/e2e-generated-workflow.ts --root R --session redis-1 \
 
 | 文件 | 角色 |
 |---|---|
-| `src/config/limits.ts` | schema、默认值、分层合并、`--limit` 解析、`extractLimitArgs` |
-| `src/runtime/workflow-agent-pipeline.ts` | 运行开始时解析并写入 `limits.json` + 日志 |
+| `src/config/layers.ts` | 多源引擎：层路径、深合并、`key.path=value` 覆盖、来源记账 |
+| `src/config/limits.ts` | limits 域：schema、默认值、`--limit` 值解析、`extractLimitArgs` |
+| `src/config/pipeline.ts` | 阶段来源域（同引擎的第二域），见 [`stage-flow.md`](stage-flow.md) |
+| `src/runtime/stage-flow.ts` | 运行开始时解析并写入 `limits.json` + 日志 |
 | `src/runtime/workflow-pipeline.ts` | stages 预算与两份 policy 的资源上限来源 |
 | `src/workflow/capabilities.ts` | `processTimeoutMs` / `readyTimeoutMs` 落到子进程与探测 |
 | `src/agents/{driver,refactor,workflow-session}.ts` | 会话预算（deadline / stall / maxTurns） |
