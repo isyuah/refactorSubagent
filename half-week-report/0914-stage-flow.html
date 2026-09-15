@@ -169,10 +169,11 @@
     </p>
     <div class="meta">
       <span class="chip ok">tsc --noEmit pass</span>
-      <span class="chip ok">153 pass / 0 fail（27 files · 419 expect）</span>
+      <span class="chip ok">156 pass / 0 fail（28 files · 432 expect）</span>
       <span class="chip ok">T1–T6 六个目标全部 ACCEPTED</span>
       <span class="chip ok">25 用例 / 5 类被测对象 / 并行套件</span>
       <span class="chip ok">e2e 端到端实测 ACCEPTED（9 条自写判据 · 0 失配）</span>
+      <span class="chip ok">测试集连同文档已进仓库（提交 3238c1e）</span>
       <span class="chip warn">2 个判据缺陷在演练中被抓到并修复</span>
     </div>
   </div>
@@ -184,7 +185,7 @@
         <p class="eyebrow">一页总结</p>
         <h2>四个关键结果</h2>
       </div>
-      <span class="section-num">01 / 08</span>
+      <span class="section-num">01 / 09</span>
     </div>
     <div class="grid k4">
       <div class="card">
@@ -251,7 +252,7 @@
         <p>原来的分层配置只服务"阈值"这一件事：层路径、合并、覆盖值解析、报错文案全是 limit 专用。
            现在引擎被抽出来复用，新增一个配置域只需要提供四样东西。</p>
       </div>
-      <span class="section-num">02 / 08</span>
+      <span class="section-num">02 / 09</span>
     </div>
 
     <pre><code>内置默认  &lt;  ~/.refactor/&lt;域&gt;.json  &lt;  &lt;repo&gt;/.refactor/&lt;域&gt;.json
@@ -309,7 +310,7 @@
         <p>流程顺序与状态机固定；每个阶段的"产出者"可替换。这样可以用<b>真实管线</b>测某一段能力，
            而不是写单元测试去复刻管线逻辑。</p>
       </div>
-      <span class="section-num">03 / 08</span>
+      <span class="section-num">03 / 09</span>
     </div>
 
     <div class="flow">
@@ -376,7 +377,7 @@ result.provenance;  // { injected: ["workflows","refactor"], verification_author
         <p>core 只接受函数（对外自由度）；配置文件只描述"来源"，不定义函数。这样脚本、CI、人工都能用同一套流程，
            而无需改代码。</p>
       </div>
-      <span class="section-num">04 / 08</span>
+      <span class="section-num">04 / 09</span>
     </div>
 
     <div class="grid k2">
@@ -440,7 +441,7 @@ result.provenance;  // { injected: ["workflows","refactor"], verification_author
         <p>测试集是独立项目（<code>E:/Proj/libuv-refactor-tasks</code>）：钉死版本的 libuv + 自带用例清单 + 自研 oracle
            + 判据 workflow。测试集与 harness 通过配置文件与命令行衔接，不互相依赖内部实现。</p>
       </div>
-      <span class="section-num">05 / 08</span>
+      <span class="section-num">05 / 09</span>
     </div>
 
     <div class="grid k3">
@@ -551,7 +552,7 @@ T3 候选做的（src/inet.c，抽了 4 个 static 辅助）
            每个用例一份独立 clone 与独立 session root（真并行、互不干扰），期望值分实测冻结与推断两类，
            改期望之后可以用已存结果重判（<code>--reevaluate</code>，不重跑模型）。</p>
       </div>
-      <span class="section-num">06 / 08</span>
+      <span class="section-num">06 / 09</span>
     </div>
 
     <table>
@@ -632,13 +633,68 @@ bun testset/run.ts --self-test                     # runner 自检（合成用�
     </p>
   </section>
 
+  <section id="repo">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">测试集进仓库（2026-09-15 收尾）</p>
+        <h2>把工具、期望与基线材料放进版本，把大件留在盘上</h2>
+        <p>测试集此前住在一个**根本不是 git 仓库**的目录里：runner、套件期望、判据材料全都没有历史，
+           一次误删就是终局。现在它住在 harness 仓库里——但仍然只用 CLI 调用 harness（<code>bun scripts/cli.ts run …</code>），
+           不 import 应用源码，所以同仓不会把两者耦合。</p>
+      </div>
+      <span class="section-num">07 / 09</span>
+    </div>
+
+    <table>
+      <thead><tr><th>进版本</th><th>内容</th><th>规模</th></tr></thead>
+      <tbody>
+        <tr><td><code>testset/</code></td><td>套件定义、执行器、任务简报、语料、oracle 作者副本</td><td>~1 MB 文本</td></tr>
+        <tr><td><code>testset/baseline/overlay/</code></td><td><b>钉死的基线材料</b>：<code>refactor-task/**</code> + 根 <code>.gitattributes</code>，
+            出处写清（上游 <code>1cfa32f</code> = v1.52.1，overlay 提交 <code>c6154e7</code>，目录树 sha <code>368d6254</code>）</td><td>25 文件 / 100 KB</td></tr>
+        <tr><td><code>docs/testset/</code></td><td>测试集五份文档（用法、期望模型、执行器手册、裁判、覆盖缺口）</td><td>72 KB</td></tr>
+        <tr><td><code>README.md</code> · <code>testset/README.md</code> · <code>baseline/README.md</code></td>
+            <td>三层入口：仓库 → 测试集 → 基线怎么物化。<b>此前仓库根连 README 都没有</b>，文档存在但没人找得到</td><td>新增</td></tr>
+      </tbody>
+    </table>
+
+    <table>
+      <thead><tr><th>不进版本（<code>.gitignore</code>）</th><th>为什么</th><th>怎么回来</th></tr></thead>
+      <tbody>
+        <tr><td><code>libuv/</code>（7 MB）</td><td>嵌套 git 检出，git 不支持把仓库塞进仓库；而材料只有 100 KB</td>
+            <td>上游 v1.52.1 + <code>baseline/overlay/</code>（命令写在 baseline/README）</td></tr>
+        <tr><td><code>runs/</code>（139 MB）</td><td>每次运行的证据，可重跑生成</td><td>跑一次就有；历史批次是当时的记录</td></tr>
+        <tr><td><code>testset/.cache/</code>（133 MB）</td><td>热构建槽位，随时可删</td><td>删掉后第一批重新冷构建（6m18s vs 3m55s）</td></tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <b>重建的检出 sha 必然不同，判定依赖的是内容摘要</b>
+      按 overlay 重建的基线提交哈希与 <code>c6154e7</code> 不同（提交时间/作者不同），所以 runner 新增
+      <code>--baseline-commit &lt;ref&gt;</code> 让重建检出顶替钉死的 sha；真正决定判据成立与否的是
+      <code>PINS.json</code> 与 inventory 里的逐文件 sha256——<code>--list</code> 与自检会校验它们。
+    </div>
+
+    <div class="note">
+      <b>搬迁顺带逼出的一个健壮性修复</b>
+      槽位被移动后，里面 worktree 的 <code>.git</code> 仍指向旧路径，复用路径会对每条 git 命令报错。
+      现在自愈：丢掉坏目录、prune、重建（<code>tests/worktree-reuse.test.ts</code> 3 条，含"注册丢失后重建"）。
+      也是这次搬迁第一次让 <code>state.json.abort_reason</code> 派上用场——一行就点明了失败原因。
+    </div>
+
+    <p class="muted" style="margin-top:14px; font-size:13px">
+      验证：<code>--list</code> 25 用例 · <code>--self-test</code> PASS · 新布局真跑一例
+      <code>judgement-accept-comment</code> <b>ACCEPTED</b>（0 失配）· harness 156 pass / 0 fail。
+      提交 <code>3238c1e</code>（70 files / +7898）。
+    </p>
+  </section>
+
   <section id="risk">
     <div class="section-head">
       <div>
         <p class="eyebrow">风险与边界</p>
         <h2>现在不能保证什么</h2>
       </div>
-      <span class="section-num">07 / 08</span>
+      <span class="section-num">08 / 09</span>
     </div>
     <div class="tablewrap"><table>
       <thead><tr><th>风险</th><th>现状</th><th>缓解 / 下一步</th></tr></thead>
@@ -679,7 +735,7 @@ bun testset/run.ts --self-test                     # runner 自检（合成用�
         <p class="eyebrow">下一步</p>
         <h2>继续加压，但先把已经能用的固化了</h2>
       </div>
-      <span class="section-num">08 / 08</span>
+      <span class="section-num">09 / 09</span>
     </div>
     <ol>
       <li><b>把缓存写进日常流程</b>：离线批次默认带 <code>--build-cache</code>（槽位跨批次存活），
@@ -703,12 +759,39 @@ bun testset/run.ts --self-test                     # runner 自检（合成用�
     <div class="tablewrap"><table>
       <thead><tr><th>内容</th><th>位置</th></tr></thead>
       <tbody>
-        <tr><td>harness 变更（阶段化 + 配置引擎 + CLI + 修复）</td><td><code>refactorSubagent</code> 分支 <code>feat/stage-flow</code>，提交 <code>3a4ac69</code>（17 文件，+2202 / −746）</td></tr>
-        <tr><td>阶段契约与配置说明</td><td><code>refactorSubagent/docs/stage-flow.md</code>、<code>PROJECT_STATUS.md</code> §6.1 / §7 / §8.4</td></tr>
-        <tr><td>离线管线测试</td><td><code>tests/stage-flow.test.ts</code>（ACCEPT / REJECT / halt / provenance）、<code>tests/pipeline-config.test.ts</code></td></tr>
-        <tr><td>libuv 测试集与判据</td><td><code>libuv-refactor-tasks/</code>：<code>docs/02-testset-requirements.md</code> §12、<code>libuv/refactor-task/workflows/</code>、<code>PINS.json</code></td></tr>
-        <tr><td>运行记录</td><td><code>libuv-refactor-tasks/runs/{m1a-accept,m1a-reject,m1b-strtok,m1b2-inet}/.refactor/</code>（比较结果、run.jsonl、两侧构建记录）</td></tr>
-        <tr><td>任务基线</td><td>libuv 检出分支 <code>task-baseline</code> @ <code>c0f65f3</code>（v1.52.1 + <code>refactor-task/</code> + 根 <code>.gitattributes</code>）</td></tr>
+        <tr>
+          <td>harness 变更（阶段化 + 配置引擎 + 源策略修复 + worktree 复用）</td>
+          <td><code>refactorSubagent</code> 分支 <code>feat/stage-flow</code>：
+              提交 <code>3a4ac69</code>（阶段槽）、<code>8dc2156</code>（源策略 / 打回重写 / abort 原因）、
+              <code>9618dd2</code>（worktree 复用）、<code>3238c1e</code>（测试集进仓库）</td>
+        </tr>
+        <tr>
+          <td>阶段契约、源策略与 worktree 生命周期</td>
+          <td><code>docs/stage-flow.md</code> §5 / §5.1、<code>docs/limits.md</code>（<code>stages.policyRepairs</code>）、
+              <code>PROJECT_STATUS.md</code> §6.1 / §7 / §8.4</td>
+        </tr>
+        <tr>
+          <td>离线管线测试</td>
+          <td><code>tests/stage-flow.test.ts</code>、<code>tests/pipeline-config.test.ts</code>、
+              <code>tests/source-policy.test.ts</code>（12）、<code>tests/resolve-with-repairs.test.ts</code>（4）、
+              <code>tests/worktree-reuse.test.ts</code>（3）</td>
+        </tr>
+        <tr>
+          <td>测试集与判据</td>
+          <td><code>testset/</code>（套件 + 执行器）、<code>testset/baseline/overlay/</code>（钉死的基线材料 100 KB + 出处）、
+              <code>docs/testset/02-testset-requirements.md</code>、<code>docs/testset/03-suite-and-runner.md</code> §10</td>
+        </tr>
+        <tr>
+          <td>运行记录（全部在 <code>runs/</code>，不进版本）</td>
+          <td><code>verify-judgement</code>（判据 10/10）、<code>capability-t2-t6</code>、<code>capability-writer-r2</code>、
+              <code>e2e-t1-fixed</code>（e2e ACCEPTED）、<code>cache-b1</code>/<code>cache-b2</code>（缓存与并发）、
+              <code>relocation-check3</code>（搬迁后 ACCEPTED）</td>
+        </tr>
+        <tr>
+          <td>任务基线</td>
+          <td>libuv 检出分支 <code>task-baseline</code> @ <code>c6154e7</code>（v1.52.1 + <code>refactor-task/</code> + 根 <code>.gitattributes</code>）；
+              材料副本与其出处见 <code>testset/baseline/README.md</code></td>
+        </tr>
       </tbody>
     </table></div>
   </section>
