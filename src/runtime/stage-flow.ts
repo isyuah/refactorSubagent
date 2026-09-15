@@ -21,7 +21,13 @@ import { FileSessionStore } from "./session-store.js";
 import { detectCProject } from "./project-detector.js";
 import { probeHost } from "./host-preflight.js";
 import { runWorkflowVerification, type WorkflowVerificationOutcome } from "./workflow-pipeline.js";
-import { commitCandidateChanges, createWorktrees, resolveHead, type WorktreePair } from "./worktree.js";
+import {
+  commitCandidateChanges,
+  createWorktrees,
+  releaseWorktree,
+  resolveHead,
+  type WorktreePair,
+} from "./worktree.js";
 import type {
   BehaviorContract,
   DeclaredBuildSet as DeclaredBuildSetValue,
@@ -99,6 +105,13 @@ export interface StageFlowRequest {
   readonly task: string;
   /** Root under which the durable session is created. */
   readonly sessionRoot: string;
+  /**
+   * Caller-owned root for the baseline/candidate worktrees. When set, the pair
+   * is reused across runs (reset in place, warm build outputs kept) and never
+   * deleted by this run — the caller owns its lifetime. Omitted: the pair lives
+   * under the session directory and is deleted when the run ends.
+   */
+  readonly worktreeRoot?: string;
   readonly sessionId: string;
   /** CLI layers on top of the user/project config files (see config/limits). */
   readonly limitOverrides?: LayerOverrides;
@@ -142,6 +155,8 @@ export interface StageContext {
   readonly repoPath: string;
   readonly task: string;
   readonly sessionRoot: string;
+  /** Caller-owned worktree root, when the run must reuse a persistent pair. */
+  readonly worktreeRoot?: string;
   readonly sessionId: string;
   /** Durable session: artifact submission and state transitions. */
   readonly store: SessionStore;
@@ -269,6 +284,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
     repoPath: req.repoPath,
     task: req.task,
     sessionRoot: req.sessionRoot,
+    ...(req.worktreeRoot !== undefined ? { worktreeRoot: req.worktreeRoot } : {}),
     sessionId: req.sessionId,
     store,
     logger,
@@ -491,15 +507,24 @@ export const defaultWorkflowsStage: WorkflowsStage = async (ctx, input) => {
 export const defaultPrepareStage: PrepareStage = async (ctx) => {
   const baseSha = resolveHead(ctx.repoPath);
   const branch = `refactor/agent-${ctx.sessionId}`;
+  const root = ctx.worktreeRoot ?? ctx.store.sessionDir;
+  const reuse = ctx.worktreeRoot !== undefined;
   const worktrees = timed(ctx.logger, "branch + worktree creation", () => {
-    gitIn(ctx.repoPath, ["branch", branch, baseSha]);
-    return createWorktrees(ctx.repoPath, ctx.store.sessionDir, branch, baseSha);
+    if (reuse) {
+      // A persistent root may still have the candidate worktree attached to a
+      // branch from an earlier run; free it before (re)creating this one.
+      releaseWorktree(join(root, "worktrees", "candidate"));
+    }
+    // `-f`: a rerun in a reused root recreates the same branch name.
+    gitIn(ctx.repoPath, ["branch", "-f", branch, baseSha]);
+    return createWorktrees(ctx.repoPath, root, branch, baseSha, { reuse, keep: reuse });
   });
   ctx.logger.info("isolated baseline and candidate worktrees created", {
     base_sha: baseSha,
     branch,
     baseline_dir: worktrees.baselineDir,
     candidate_dir: worktrees.candidateDir,
+    reused: reuse,
   });
   return { branch, baseSha, worktrees };
 };

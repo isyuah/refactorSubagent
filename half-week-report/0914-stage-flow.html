@@ -616,6 +616,16 @@ bun testset/run.ts --self-test                     # runner 自检（合成用�
       重测结果：<b>ACCEPTED</b>，0 失配，两侧构建 pass，10m10s；同一条产物（含被判违规的那句注释）现在校验通过。
     </div>
 
+    <div class="note">
+      <b>吞吐：把 worktree 留着，而不是重建</b>
+      单例 2m38s 里 113s 是"两侧各编译一遍"。编译树里钉的是绝对路径（cmake 缓存/`build.ninja`），
+      所以只能原地复用：给宿主一个调用方拥有的 worktree 根（`--worktree-root`），用例之间就地重置
+      （丢弃跟踪改动、保留 `build/`）。缓存跨批次存活，实测：无缓存 13m07s → 第一批 6m18s →
+      <b>之后每批 3m55s</b>；单例 2m38s → <b>46s</b>，而失配集合逐条不变（10/10，3/6/3/3/3/3/2/3/5）。
+      另一个反直觉结论：`--concurrency 4` 反而更慢（6m36s）——每个冷构建内部已经 `-j 8`，
+      四条冷例同时开跑把 16 线程挤满，建议 2 个槽位。
+    </div>
+
     <p class="muted" style="margin-top:14px; font-size:13px">
       单例判定耗时构成（实测 2m38s）：两次 C 构建 113 s（72%）+ 两侧跑判据 33 s（21%）+ 探测与准备 10 s；
       <b>判定本身 0 s</b>。成本来自"必须做差分"（两侧各构建、各跑一遍），不是来自判定方式。
@@ -672,8 +682,8 @@ bun testset/run.ts --self-test                     # runner 自检（合成用�
       <span class="section-num">08 / 08</span>
     </div>
     <ol>
-      <li><b>吞吐缓存（待定实现方式）</b>：实测同一路径下的热构建 <b>182ms</b>（冷构建 31.9s，产物逐字节一致），
-          但复用要求 worktree 跨运行保留（现在每次跑完就删）——是否让宿主接管 worktree 生命周期，需要你点头。</li>
+      <li><b>把缓存写进日常流程</b>：离线批次默认带 <code>--build-cache</code>（槽位跨批次存活），
+          并发保持 2——4 个槽位实测更慢。</li>
       <li><b>测试工具的一处缺口</b>：裁判拿到的"候选 build workflow"一直是 <code>(none persisted)</code>（找错了落盘目录），
           所以 writer/e2e 的裁判分建立在不完整材料上；已修，需要用 <code>--reevaluate</code> 重判（零管线成本）。</li>
       <li><b>覆盖缺口</b>：T7 <code>idna.c</code> 仍无 oracle（行为依赖 <code>assert</code>，Debug/Release 不同），

@@ -133,6 +133,7 @@ async function executeRun(
     task: command.task,
     sessionRoot,
     sessionId,
+    ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
     limitOverrides: overrides,
     flow,
   });

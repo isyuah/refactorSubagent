@@ -59,6 +59,11 @@ export interface RunCommand {
   session: string | null;
   /** Root of `.refactor/`; defaults to the repository itself. */
   sessionRoot: string | null;
+  /**
+   * Caller-owned worktree root: reuse the baseline/candidate pair across runs
+   * (warm build outputs survive) instead of creating and deleting it per run.
+   */
+  worktreeRoot: string | null;
   format: CliFormat;
 }
 
@@ -134,6 +139,7 @@ function parseRun(args: string[]): RunCommand {
   let task: string | null = null;
   let session: string | null = null;
   let sessionRoot: string | null = null;
+  let worktreeRoot: string | null = null;
   let format: CliFormat = "human";
   let sawRepo = false;
   for (let index = 0; index < args.length; index++) {
@@ -150,6 +156,10 @@ function parseRun(args: string[]): RunCommand {
       sessionRoot = nextValue(args, ++index, "--session-root");
       continue;
     }
+    if (arg === "--worktree-root") {
+      worktreeRoot = nextValue(args, ++index, "--worktree-root");
+      continue;
+    }
     if (arg === "--format") {
       format = parseFormat(nextValue(args, ++index, "--format"));
       continue;
@@ -160,7 +170,7 @@ function parseRun(args: string[]): RunCommand {
     sawRepo = true;
   }
   if (task === null) throw new CliUsageError("run requires --task <text>");
-  return { kind: "run", repo, task, session, sessionRoot, format };
+  return { kind: "run", repo, task, session, sessionRoot, worktreeRoot, format };
 }
 
 function parsePreflight(args: string[]): PreflightCommand {
@@ -317,6 +327,7 @@ function parseFormat(value: string): CliFormat {
 export const CLI_HELP = `Usage:
   refactor-subagent preflight [repo] [--format human|json]
   refactor-subagent run [repo] --task <text> [--session <id>] [--session-root <dir>]
+                            [--worktree-root <dir>]
   refactor-subagent workflow run <entry.ts> [options]
   refactor-subagent workflow build <entry.ts> --id <id> --revision <n> [options]
   refactor-subagent workflow list [--cwd <dir>] [--format human|json]

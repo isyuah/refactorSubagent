@@ -143,6 +143,16 @@ bun run scripts/cli.ts run ./repo --task "..." \
 两条判定规则（宿主 import、宿主全局）与旧版一致，但位置准确、且两条路径（`checkWorkflowSource` 与
 dep-registry 的源码字符串校验）现在共用同一份实现。
 
+## 5.1 worktree 的生命周期（`--worktree-root`）
+
+默认：baseline/candidate 两棵 worktree 建在会话目录下，运行结束由 `finally` 删除——**每跑一次都是全新树**。
+
+给 `run` 传 `--worktree-root <dir>`（`StageFlowRequest.worktreeRoot`）时改成**调用方拥有**：
+同一对目录被复用（`git reset --hard` + `git clean -fd -e build` 就地重置，被跟踪的改动丢弃、`build/` 这类忽略产物保留），
+运行结束不删除。构建树里钉的是绝对路径（`CMakeCache.txt`/`build.ninja`），所以只能原地复用——
+这正是"同一用例第二轮从 2m38s 降到 33s"的来源（冷构建 31.9s → 热构建 182ms，产物逐字节一致）。
+重置语义由 `tests/worktree-reuse.test.ts` 钉住：跟踪改动与游离文件必须消失，`build/` 必须还在，候选树必须仍在自己的分支上。
+
 ## 6. 测试模式 → 配置映射
 
 | 想测什么 | `workflows` | `prepare` | `refactor` | `verify` |
