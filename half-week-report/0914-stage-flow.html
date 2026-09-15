@@ -579,7 +579,7 @@ T3 候选做的（src/inet.c，抽了 4 个 static 辅助）
         <tr><td>refactor</td><td class="ok">T1–T6 全部 ACCEPTED</td>
             <td>0 失配、各只改目标文件；单例 3–6 分钟，其中约 2 分钟固定是编译两次</td></tr>
         <tr><td>writer</td><td class="ok">4 / 4</td>
-            <td>最难档（隐藏参考实现与 oracle）里模型自建 oracle 覆盖 IPv6 单零组 first/middle/last，抓到变异共 <b>14 条失配</b>；裁判 0.78–0.91</td></tr>
+            <td>最难档（隐藏参考实现与 oracle）里模型自建 oracle 覆盖 IPv6 单零组 first/middle/last，抓到变异共 <b>14 条失配</b>；裁判 0.77–0.96（补全材料后重判）</td></tr>
         <tr><td>e2e</td><td class="ok">ACCEPTED</td>
             <td>首次 ABORTED 查明是宿主校验器误判注释（已修）；重测：模型自写 build+test workflow、9 条声明，两侧构建 pass，0 失配</td></tr>
         <tr><td>corpus</td><td class="ok">65 / 65 stable-ok</td>
@@ -600,7 +600,9 @@ bun testset/run.ts --self-test                     # runner 自检（合成用�
       ① <b>"上游失明、oracle 兜住"从单点实验变成批量实测</b>：5 个变异体里 4 个上游全绿、只有 oracle 抓到。
       ② <b>校准抓到我一个错误判断</b>：原以为 <code>strscpy</code> 的 <code>n==0</code> 也是上游盲区，实测上游也抓——
            没有校准的话，这条用例会一直挂着错误结论。
-      ③ <b>裁判分是抖的</b>：同一份产物两次调用 0.94 / 0.78。所以分数默认只记录、不判死活，要当门槛必须显式指定。
+      ③ <b>裁判分是抖的，而且材料错了会更低</b>：同一份产物两次调用 0.94 / 0.78；更糟的是裁判一直没收到候选的
+           build workflow（找错目录），四个 writer 用例的分数因此被压低——补全材料重判后是 0.77 / 0.95 / 0.94 / 0.96。
+           所以分数默认只记录、不判死活，要当门槛必须显式指定。
     </div>
 
     <div class="note warn">
