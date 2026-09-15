@@ -169,9 +169,10 @@
     </p>
     <div class="meta">
       <span class="chip ok">tsc --noEmit pass</span>
-      <span class="chip ok">137 pass / 0 fail（25 files · 377 expect）</span>
+      <span class="chip ok">153 pass / 0 fail（27 files · 419 expect）</span>
       <span class="chip ok">T1–T6 六个目标全部 ACCEPTED</span>
       <span class="chip ok">25 用例 / 5 类被测对象 / 并行套件</span>
+      <span class="chip ok">e2e 端到端实测 ACCEPTED（9 条自写判据 · 0 失配）</span>
       <span class="chip warn">2 个判据缺陷在演练中被抓到并修复</span>
     </div>
   </div>
@@ -579,8 +580,8 @@ T3 候选做的（src/inet.c，抽了 4 个 static 辅助）
             <td>0 失配、各只改目标文件；单例 3–6 分钟，其中约 2 分钟固定是编译两次</td></tr>
         <tr><td>writer</td><td class="ok">4 / 4</td>
             <td>最难档（隐藏参考实现与 oracle）里模型自建 oracle 覆盖 IPv6 单零组 first/middle/last，抓到变异共 <b>14 条失配</b>；裁判 0.78–0.91</td></tr>
-        <tr><td>e2e</td><td class="bad">ABORTED</td>
-            <td>模型写的判据直接 import 宿主 API，被 source policy 拒绝——能力发现，不是流程问题</td></tr>
+        <tr><td>e2e</td><td class="ok">ACCEPTED</td>
+            <td>首次 ABORTED 查明是宿主校验器误判注释（已修）；重测：模型自写 build+test workflow、9 条声明，两侧构建 pass，0 失配</td></tr>
         <tr><td>corpus</td><td class="ok">65 / 65 stable-ok</td>
             <td>loop 19 / thread 22 / util 10 / pure 14；候选部分每条重复 3 次，exit 与输出逐字节一致</td></tr>
       </tbody>
@@ -603,10 +604,14 @@ bun testset/run.ts --self-test                     # runner 自检（合成用�
     </div>
 
     <div class="note warn">
-      <b>唯一失败：e2e 的能力边界不在测试设计</b>
-      模型从零写整套判据时写出了质量不错的测试（裁判 0.88），但源码里直接 <code>import</code> 了宿主 API，
-      被 harness 的 source policy 拒绝，运行在构建之前就 abort。也就是说这条链上最容易翻车的是
-      <b>遵守 workflow 规范的硬规则</b>（只能用注入能力），不是设计测试。
+      <b>e2e 那次 ABORTED 是宿主误判，不是模型的问题——已修并重测通过</b>
+      复盘现场后确认：源策略正则把注释里的句子 <code>// Layer C — the behaviour oracles, per process.</code>
+      当成 <code>process.</code> 访问，拒绝了一份本来合法的 test workflow——那份产物全文没有一行 <code>import</code>。
+      三处修复（<code>8dc2156</code>）：<b>①</b> 校验前做词法遮蔽（注释/字符串/正则正文遮成等长空白，模板插值仍按代码查），
+      import 判定要求说明符落在词法看到的字面量上，并报出行/列/片段；<b>②</b> 违规不再终局——宿主带着位置开一次修复会话
+      （<code>stages.policyRepairs</code>，默认 1），改完重新校验，重写解决不了的失败照样直接失败；
+      <b>③</b> abort 的原因一定落盘（<code>run.jsonl</code> 的 <code>abort</code> 事件 + <code>state.json.abort_reason</code>）。
+      重测结果：<b>ACCEPTED</b>，0 失配，两侧构建 pass，10m10s；同一条产物（含被判违规的那句注释）现在校验通过。
     </div>
 
     <p class="muted" style="margin-top:14px; font-size:13px">
@@ -665,12 +670,10 @@ bun testset/run.ts --self-test                     # runner 自检（合成用�
       <span class="section-num">08 / 08</span>
     </div>
     <ol>
-      <li><b>e2e 的规范违规</b>：模型写判据时会 <code>import</code> 宿主 API —— 是改 workflow 规范/提示词（harness 侧），
-          还是把这条用例的期望改宽（程序化只要求"产出判定"，判据质量交裁判）。</li>
-      <li><b>harness 诊断缺失</b>：<code>orch.abort(reason)</code> 的原因不落盘，abort 现场只剩一句无原因的话
-          —— 本轮为它排查了两次（一次靠复现、一次靠翻 phase 字段）。</li>
-      <li><b>吞吐</b>：baseline 侧构建在所有用例里是同一份，加缓存可把 57 s 压到几秒；
-          权衡是"干净构建"变成"增量构建"，需要按 commit + flags 做缓存键。</li>
+      <li><b>吞吐缓存（待定实现方式）</b>：实测同一路径下的热构建 <b>182ms</b>（冷构建 31.9s，产物逐字节一致），
+          但复用要求 worktree 跨运行保留（现在每次跑完就删）——是否让宿主接管 worktree 生命周期，需要你点头。</li>
+      <li><b>测试工具的一处缺口</b>：裁判拿到的"候选 build workflow"一直是 <code>(none persisted)</code>（找错了落盘目录），
+          所以 writer/e2e 的裁判分建立在不完整材料上；已修，需要用 <code>--reevaluate</code> 重判（零管线成本）。</li>
       <li><b>覆盖缺口</b>：T7 <code>idna.c</code> 仍无 oracle（行为依赖 <code>assert</code>，Debug/Release 不同），
           要做该目标得先补 oracle。</li>
     </ol>
