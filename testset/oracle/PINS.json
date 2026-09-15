@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "note": "oracle 源码的 sha256（基线内容）。TestWorkflow 应在编译前用 ctx.fs.snapshot('refactor-task/oracle') 取哈希、并用 both-matches 与本表逐项比对，使候选侧篡改 oracle 判为 REJECT。",
+  "algorithm": "sha256",
+  "files": {
+    "oracle_common.h": "248fd65783b637720934818acb25f72d13465bc45cc6847409c4dc0866e1e951",
+    "oracle_errstr.c": "d8763d48d227c4c2038d3fc8a9851f32caeb5b4ad88e10109da70b23cae3e0c2",
+    "oracle_getters.c": "412777db8b958f6757bbfc06ac7b734b15fb36c3366a744e8fa86d76aa3fc093",
+    "oracle_inet.c": "e7ce49e41c7f1d29e2a381aa1ae6afacb720a4e70adfc06c6a7be7474bbcb5c7",
+    "oracle_strscpy.c": "bbc7e16eddb71da526530f0c831b164b32879dbc693bd260d8ebe27b084cd639",
+    "oracle_strtok.c": "b781ef0b6fbb18b36195936ab98f5298479312b828a4668859bef118200561e8",
+    "oracle_version.c": "65540f59f9eb6451d1f964c9807f29eccfd1da2a090bc59dcd934bc036141732"
+  },
+  "upstream_judgement_files_note": "自带用例的判据本体：候选若改动它们（例如弱化 ASSERT 宏或删断言），判据即失效——摘要失配必须判 REJECT。测源码改动由摘要兜住（TAP 行不会变），CMakeLists 删除用例由 <case> 返回 255 兜住。",
+  "upstream_judgement_files": {
+    "test/task.h": "dbf43e9145ac7a982b72072e708bc92fb0e81f47ae17d02a9658bb6bedab3918",
+    "test/runner.c": "9e35092b262fd8da070630efa312402ab654ec286c9f88bcd6be1be7fc5efa83",
+    "test/runner-win.c": "a9c79d01128456cbb37534d48f6dc7765d0056158459767409a5e6038c42c50b",
+    "test/run-tests.c": "eebcc63a221e66747a410835842516ff09c2f642bdb59a9c70348146943bbffd",
+    "test/test-list.h": "8a1ce75dbf4729f66c88f9dd334c007fef87aa4755060b605fd3659a05b57ed3",
+    "test/test-strscpy.c": "e3710c8d2e89dbc2db9e952fb1216ecc95a7b5cf2113c9059ff90bcf42a99bcf",
+    "test/test-strtok.c": "57e8784ccf5a632dce13fde15596979e6de30bc8adfd41fdfd969271523addb7",
+    "test/test-idna.c": "265b3cae4527a2bdc7e45be573228eb3a9650bad898c02c34a6c075bddcbf2d5",
+    "test/test-ip4-addr.c": "d5b5793d923d565b13ed202a5c676d49f1506d68e56b5525e45efe8c3baf5565",
+    "test/test-ip6-addr.c": "5f1ae1f86d66efa4b700093465757988a99198dd106f545aed2db590ba310b67",
+    "test/test-ip-name.c": "700b4253b938c257148331e3ed407cfd82e05b8abb4586f951f37826f69443c6",
+    "test/test-uname.c": "a18827aff29e916a21d965cc4c70ad894314ff82abd81ba15486f6c4bb6d055f",
+    "test/test-gethostname.c": "7dcd895f0bc09d19ee7b5d6ac95a0c7c6adb2f9c20dccab42b689142fc556a6f",
+    "test/test-getters-setters.c": "7f8ec5b5d636a05f197e06f43f6dd6757ca76e760ce62975fe0bd4f6d2e08f53",
+    "test/test-queue-foreach-delete.c": "54ed3347e599b885181ecf47f3dcf995665422aa6a802f0e18d5b594046ee511"
+  }
+}

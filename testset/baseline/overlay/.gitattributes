@@ -1,0 +1,6 @@
+test/fixtures/lorem_ipsum.txt text eol=lf
+
+# Pinned task baseline: keep the exact bytes every digest pin and candidate
+# patch was computed against. EOL conversion (core.autocrlf) would change the
+# sha256 of src/** and test/** depending on the client checkout settings.
+* -text

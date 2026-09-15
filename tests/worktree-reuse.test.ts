@@ -51,6 +51,23 @@ describe("createWorktrees with a caller-owned root", () => {
     expect(readdirSync(join(root, "worktrees")).sort()).toEqual(["baseline", "candidate"]);
   }, 120_000);
 
+  test("rebuilds a worktree whose registration was left behind", () => {
+    const { repo, baseSha } = createRepo();
+    const root = mkdtempSync(join(tmpdir(), "rfr-reuse-root-"));
+    const branch = "refactor/agent-sess-3";
+    gitIn(repo, ["branch", branch, baseSha]);
+
+    const first = createWorktrees(repo, root, branch, baseSha, { reuse: true, keep: true });
+    // Simulate a root that was moved: the worktree's .git still points at the
+    // old clone path, so every git command inside it fails.
+    writeFileSync(join(first.baselineDir, ".git"), "gitdir: E:/gone/elsewhere/.git/worktrees/baseline\n", "utf8");
+
+    const second = createWorktrees(repo, root, branch, baseSha, { reuse: true, keep: true });
+    expect(existsSync(join(second.baselineDir, "a.c"))).toBe(true);
+    expect(gitIn(second.baselineDir, ["rev-parse", "HEAD"])).toBe(baseSha);
+    expect(gitIn(second.candidateDir, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(branch);
+  }, 120_000);
+
   test("deletes the pair when the root is not caller-owned", () => {
     const { repo, baseSha } = createRepo();
     const root = mkdtempSync(join(tmpdir(), "rfr-reuse-root-"));

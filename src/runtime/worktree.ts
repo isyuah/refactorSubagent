@@ -102,8 +102,15 @@ export function createWorktrees(
     }
     git(repo, ["worktree", "add", "--detach", baselineDir, baseBranch], "add baseline");
   } else if (reuse.reuse === true) {
-    git(baselineDir, ["checkout", "--force", "--detach", baseSha], "detach reused baseline");
-    resetToBase(baselineDir, baseSha, "baseline");
+    try {
+      git(baselineDir, ["checkout", "--force", "--detach", baseSha], "detach reused baseline");
+      resetToBase(baselineDir, baseSha, "baseline");
+    } catch {
+      // A directory left by a clone that has since moved or been deleted is not
+      // a worktree any more (its .git still points at the old registration).
+      // Drop it and rebuild: the warm outputs are lost, the run stays correct.
+      recreateWorktree(repo, baselineDir, ["--detach"], baseSha);
+    }
   }
   if (!hasBranch(repo, candidateBranch)) {
     throw new Error(`candidate branch not found: ${candidateBranch}`);
@@ -111,10 +118,15 @@ export function createWorktrees(
   if (!existsSync(candidateDir)) {
     git(repo, ["worktree", "add", candidateDir, candidateBranch], "add candidate");
   } else if (reuse.reuse === true) {
-    // Stay ON the branch: the refactor agent commits here, and a dangling
-    // detached commit would leave `refactor/agent-<session>` pointing at baseSha.
-    git(candidateDir, ["checkout", "--force", candidateBranch], "checkout reused candidate");
-    resetToBase(candidateDir, baseSha, "candidate");
+    try {
+      // Stay ON the branch: the refactor agent commits here, and a dangling
+      // detached commit would leave `refactor/agent-<session>` pointing at baseSha.
+      git(candidateDir, ["checkout", "--force", candidateBranch], "checkout reused candidate");
+      resetToBase(candidateDir, baseSha, "candidate");
+    } catch {
+      recreateWorktree(repo, candidateDir, [], candidateBranch);
+      resetToBase(candidateDir, baseSha, "candidate");
+    }
   }
 
   return {
@@ -143,6 +155,22 @@ export function releaseWorktree(dir: string): void {
     // A directory that is no longer a valid worktree is handled by the caller's
     // next `worktree add`; nothing to release.
   }
+}
+
+/**
+ * Drop a directory whose worktree registration is gone and create it again.
+ * Used when a reused root was moved or its clone replaced underneath it.
+ */
+function recreateWorktree(
+  repo: string,
+  dir: string,
+  options: readonly string[],
+  commitish: string,
+): void {
+  rmSync(dir, { recursive: true, force: true });
+  git(repo, ["worktree", "prune"], "prune stale worktree");
+  // `git worktree add [<options>] <path> <commit-ish>`: the path comes first.
+  git(repo, ["worktree", "add", ...options, dir, commitish], "recreate worktree");
 }
 
 /**

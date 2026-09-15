@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "loop",
+  "title": "事件循环语义（无 I/O，无网络）",
+  "why": "覆盖 uv_loop_t 的生命周期与调度语义——重构 src/unix|win 下的 loop 代码时最先被破坏的行为。全部用例不碰网络/文件，理论上确定性，但本机尚未实测，因此先按 calibrate 分类。",
+  "policy": {
+    "kind": "calibrate",
+    "repeats": 3,
+    "expectExit": 0,
+    "expectTap": "ok 1 - {case}",
+    "onFail": "classify"
+  },
+  "status": "measured-stable",
+  "cases": [
+    "close_order",
+    "run_once",
+    "run_nowait",
+    "loop_alive",
+    "loop_close",
+    "loop_instant_close",
+    "loop_stop",
+    "loop_stop_before_run",
+    "loop_update_time",
+    "loop_backend_timeout",
+    "loop_configure",
+    "default_loop_close",
+    "loop_handles",
+    "walk_handles",
+    "idle_check",
+    "timer_run_once",
+    "timer_no_run_on_unref",
+    "ref",
+    "unref_in_prepare_cb"
+  ],
+  "calibration": {
+    "date": "2026-09-15",
+    "run": "runs/calib-corpus",
+    "result": "19/19 stable-ok, 3 repeats each",
+    "case_run_seconds": 37,
+    "note": "本机无抖动；每条重复 3 次的 exit 与 stdout 逐字节一致，且命中期望 TAP 行"
+  }
+}

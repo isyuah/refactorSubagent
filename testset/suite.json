@@ -1,0 +1,945 @@
+{
+  "version": 1,
+  "generatedFor": "libuv v1.52.1 refactor test set",
+  "baseline": {
+    "repo": "../libuv",
+    "branch": "task-baseline",
+    "commit": "c6154e79c3f4669e603fd287cdb89e5795d62235",
+    "note": "所有 pipeline 用例都从这个 commit 克隆；确定性语料用例（corpus）共用一份临时检出"
+  },
+  "harness": {
+    "dir": "..",
+    "runtime": "bun",
+    "cli": "scripts/cli.ts"
+  },
+  "presets": {
+    "judgement": {
+      "mode": "preset",
+      "builds": [
+        {
+          "id": "libuv-static-runner",
+          "entry": "refactor-task/workflows/build-workflow.ts"
+        }
+      ],
+      "testEntry": "refactor-task/workflows/test-workflow.ts",
+      "workflowId": "libuv-v1.52.1-judgement",
+      "revision": 1
+    }
+  },
+  "subjects": {
+    "judgement": "判据本体：离线、不调模型，验证「判据会不会判卷」（程序化判定 + 失配声明归因）",
+    "refactor": "重构能力：判据冻结，只让 AI 改代码",
+    "writer": "判据编写能力：AI 自己写 build/test workflow（程序化 + 裁判 rubric）",
+    "e2e": "端到端：AI 写判据 + AI 重构",
+    "corpus": "测试语料本身：上游用例各部分能不能稳定运行"
+  },
+  "cases": [
+    {
+      "id": "judgement-accept-comment",
+      "subject": "judgement",
+      "title": "行为保持补丁（仅加注释）必须是 ACCEPTED",
+      "tags": [
+        "offline",
+        "no-ai",
+        "t1",
+        "control"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/m1a-accept.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "failuresForbidden": [
+          "oracle_strtok.exit"
+        ],
+        "provisional": false,
+        "note": "已实测（README §M1a，98/98）",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true
+      }
+    },
+    {
+      "id": "judgement-reject-strtok",
+      "subject": "judgement",
+      "title": "破坏性补丁（丢弃空 token）必须 REJECTED，且失配点命中 oracle_strtok",
+      "tags": [
+        "offline",
+        "no-ai",
+        "t1",
+        "attribution"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/m1a-reject.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "oracle_strtok.exit",
+          "oracle_strtok.summary",
+          "oracle_strtok.stdout"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，3 条失配） — 原预测：已实测（docs/02 §12.1：95/98，失配仅 oracle_strtok 三条）",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "oracle_strtok.exit",
+          "oracle_strtok.stdout",
+          "oracle_strtok.summary"
+        ]
+      }
+    },
+    {
+      "id": "judgement-mutant-strscpy",
+      "subject": "judgement",
+      "title": "行为变异（n==0 的返回值被改成 UV_E2BIG）必须 REJECTED",
+      "tags": [
+        "offline",
+        "no-ai",
+        "attribution",
+        "mutation"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/mutant-strscpy-n0.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "oracle_strscpy.exit",
+          "oracle_strscpy.summary",
+          "oracle_strscpy.stdout"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，6 条失配） — 原预测：期望失配集为预测值（按 oracle 覆盖推断），首次跑用 --calibrate 冻结精确集",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "oracle_strscpy.exit",
+          "oracle_strscpy.stdout",
+          "oracle_strscpy.summary",
+          "strscpy.exit",
+          "strscpy.stdout",
+          "strscpy.tap"
+        ]
+      }
+    },
+    {
+      "id": "judgement-mutant-inet",
+      "subject": "judgement",
+      "title": "行为变异（单个零组也被压缩（best.len < 1））必须 REJECTED",
+      "tags": [
+        "offline",
+        "no-ai",
+        "attribution",
+        "mutation"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/mutant-inet-zero.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "oracle_inet.exit",
+          "oracle_inet.summary",
+          "oracle_inet.stdout"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，3 条失配） — 原预测：期望失配集为预测值（按 oracle 覆盖推断），首次跑用 --calibrate 冻结精确集",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "oracle_inet.exit",
+          "oracle_inet.stdout",
+          "oracle_inet.summary"
+        ]
+      }
+    },
+    {
+      "id": "judgement-mutant-getters",
+      "subject": "judgement",
+      "title": "行为变异（两个 UDP 队列访问器互换字段）必须 REJECTED",
+      "tags": [
+        "offline",
+        "no-ai",
+        "attribution",
+        "mutation"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/mutant-getters-udp.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "oracle_getters.exit",
+          "oracle_getters.summary",
+          "oracle_getters.stdout"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，3 条失配） — 原预测：期望失配集为预测值（按 oracle 覆盖推断），首次跑用 --calibrate 冻结精确集",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "oracle_getters.exit",
+          "oracle_getters.stdout",
+          "oracle_getters.summary"
+        ]
+      }
+    },
+    {
+      "id": "judgement-mutant-version",
+      "subject": "judgement",
+      "title": "行为变异（uv_version() 常量被改）必须 REJECTED",
+      "tags": [
+        "offline",
+        "no-ai",
+        "attribution",
+        "mutation"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/mutant-version-hex.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "oracle_version.exit",
+          "oracle_version.summary",
+          "oracle_version.stdout"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，3 条失配） — 原预测：期望失配集为预测值（按 oracle 覆盖推断），首次跑用 --calibrate 冻结精确集",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "oracle_version.exit",
+          "oracle_version.stdout",
+          "oracle_version.summary"
+        ]
+      }
+    },
+    {
+      "id": "judgement-mutant-errstr",
+      "subject": "judgement",
+      "title": "行为变异（未知错误码措辞被改）必须 REJECTED",
+      "tags": [
+        "offline",
+        "no-ai",
+        "attribution",
+        "mutation"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/mutant-errstr-unknown.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "oracle_errstr.exit",
+          "oracle_errstr.summary",
+          "oracle_errstr.stdout"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，3 条失配） — 原预测：期望失配集为预测值（按 oracle 覆盖推断），首次跑用 --calibrate 冻结精确集",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "oracle_errstr.exit",
+          "oracle_errstr.stdout",
+          "oracle_errstr.summary"
+        ]
+      }
+    },
+    {
+      "id": "judgement-tamper-tests",
+      "subject": "judgement",
+      "title": "候选弱化自带用例断言 → 必须靠 test/** 摘要 REJECTED",
+      "tags": [
+        "offline",
+        "no-ai",
+        "attribution",
+        "tamper"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/tamper-weaken-tests.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "test/test-strtok.c.digest",
+          "test/test-strtok.c.snapshot"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，2 条失配） — 原预测：失配集确定：两条都在 UPSTREAM_PINS 里",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "test/test-strtok.c.digest",
+          "test/test-strtok.c.snapshot"
+        ]
+      }
+    },
+    {
+      "id": "judgement-tamper-oracle",
+      "subject": "judgement",
+      "title": "候选改动 oracle 源码 → 必须靠 oracle 目录摘要 REJECTED",
+      "tags": [
+        "offline",
+        "no-ai",
+        "attribution",
+        "tamper"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/tamper-edit-oracle.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "oracle.sources.digest",
+          "oracle.sources.snapshot"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，3 条失配） — 原预测：oracle 目录整体快照，两条必然失配",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "oracle.sources.digest",
+          "oracle.sources.snapshot",
+          "oracle_strtok.stdout"
+        ]
+      }
+    },
+    {
+      "id": "judgement-tamper-drop-case",
+      "subject": "judgement",
+      "title": "候选从 test-list.h 删掉用例 → 摘要 + 用例缺跑双命中",
+      "tags": [
+        "offline",
+        "no-ai",
+        "attribution",
+        "tamper"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/tamper-drop-case.patch"
+        }
+      },
+      "expect": {
+        "method": "verdict+attribution",
+        "state": "REJECTED",
+        "failuresRequired": [
+          "test/test-list.h.digest",
+          "strtok.exit"
+        ],
+        "provisional": false,
+        "note": "实测冻结（2026-09-15，5 条失配） — 原预测：预测：test-list.h 两条摘要 + strtok.{exit,tap,stdout}（未知用例返回 255）",
+        "injectedStages": [
+          "workflows",
+          "refactor"
+        ],
+        "authoritative": true,
+        "failuresExact": [
+          "strtok.exit",
+          "strtok.stdout",
+          "strtok.tap",
+          "test/test-list.h.digest",
+          "test/test-list.h.snapshot"
+        ]
+      }
+    },
+    {
+      "id": "refactor-t1-strtok",
+      "subject": "refactor",
+      "title": "AI 重构 strtok（判据冻结，只换 refactor 槽）",
+      "tags": [
+        "ai",
+        "refactor",
+        "t1",
+        "measured"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "ai"
+        }
+      },
+      "expect": {
+        "method": "verdict",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "workflows"
+        ],
+        "authoritative": true,
+        "provisional": false,
+        "note": "已实测 ACCEPTED（98/98，会话 56.7 s）"
+      },
+      "limits": {
+        "sessions.refactor.deadlineMs": 2400000,
+        "sessions.refactor.maxTurns": 60
+      },
+      "timeoutMs": 3600000
+    },
+    {
+      "id": "refactor-t2-strscpy",
+      "subject": "refactor",
+      "title": "AI 重构 strscpy（判据冻结，只换 refactor 槽）",
+      "tags": [
+        "ai",
+        "refactor",
+        "t2",
+        "measured"
+      ],
+      "task": "tasks/t2-strscpy.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "ai"
+        }
+      },
+      "expect": {
+        "method": "verdict",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "workflows"
+        ],
+        "authoritative": true,
+        "provisional": false,
+        "note": "实测（2026-09-15，runs/capability-t2-t6）：ACCEPTED，0 失配，两侧构建 pass，只改 src/strscpy.c；墙钟 3m20s。抽出 static 辅助 uv__strscpy_truncated(d, n)，合并 n==0 早退与截断收尾"
+      },
+      "limits": {
+        "sessions.refactor.deadlineMs": 2400000,
+        "sessions.refactor.maxTurns": 60
+      },
+      "timeoutMs": 3600000
+    },
+    {
+      "id": "refactor-t3-inet",
+      "subject": "refactor",
+      "title": "AI 重构 inet（判据冻结，只换 refactor 槽）",
+      "tags": [
+        "ai",
+        "refactor",
+        "t3",
+        "measured"
+      ],
+      "task": "tasks/t3-inet.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "ai"
+        }
+      },
+      "expect": {
+        "method": "verdict",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "workflows"
+        ],
+        "authoritative": true,
+        "provisional": false,
+        "note": "已实测 ACCEPTED（98/98，会话 134.5 s，124+/56-）"
+      },
+      "limits": {
+        "sessions.refactor.deadlineMs": 2400000,
+        "sessions.refactor.maxTurns": 60
+      },
+      "timeoutMs": 3600000
+    },
+    {
+      "id": "refactor-t4-errstr",
+      "subject": "refactor",
+      "title": "AI 重构 errstr（判据冻结，只换 refactor 槽）",
+      "tags": [
+        "ai",
+        "refactor",
+        "t4",
+        "measured"
+      ],
+      "task": "tasks/t4-errstr.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "ai"
+        }
+      },
+      "expect": {
+        "method": "verdict",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "workflows"
+        ],
+        "authoritative": true,
+        "provisional": false,
+        "note": "实测（2026-09-15，runs/capability-t2-t6）：ACCEPTED，0 失配，两侧构建 pass，只改 src/uv-common.c；墙钟 5m05s。合并四个近似重复的宏展开为一个查找辅助 + snprintf 兜底"
+      },
+      "limits": {
+        "sessions.refactor.deadlineMs": 2400000,
+        "sessions.refactor.maxTurns": 60
+      },
+      "timeoutMs": 3600000
+    },
+    {
+      "id": "refactor-t5-getters",
+      "subject": "refactor",
+      "title": "AI 重构 getters（判据冻结，只换 refactor 槽）",
+      "tags": [
+        "ai",
+        "refactor",
+        "t5",
+        "measured"
+      ],
+      "task": "tasks/t5-getters.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "ai"
+        }
+      },
+      "expect": {
+        "method": "verdict",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "workflows"
+        ],
+        "authoritative": true,
+        "provisional": false,
+        "note": "实测（2026-09-15，runs/capability-t2-t6）：ACCEPTED，0 失配，两侧构建 pass，只改 src/uv-data-getter-setters.c；墙钟 6m12s。类型名 switch 改表驱动，保留 24 个 UV_EXTERN 访问器"
+      },
+      "limits": {
+        "sessions.refactor.deadlineMs": 2400000,
+        "sessions.refactor.maxTurns": 60
+      },
+      "timeoutMs": 3600000
+    },
+    {
+      "id": "refactor-t6-version",
+      "subject": "refactor",
+      "title": "AI 重构 version（判据冻结，只换 refactor 槽）",
+      "tags": [
+        "ai",
+        "refactor",
+        "t6",
+        "measured"
+      ],
+      "task": "tasks/t6-version.task.txt",
+      "stages": {
+        "workflows": "judgement",
+        "refactor": {
+          "mode": "ai"
+        }
+      },
+      "expect": {
+        "method": "verdict",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "workflows"
+        ],
+        "authoritative": true,
+        "provisional": false,
+        "note": "实测（2026-09-15，runs/capability-t2-t6）：ACCEPTED，0 失配，两侧构建 pass，只改 src/version.c；墙钟 3m32s。重排 UV_STRINGIFY 辅助宏，版本常量未动"
+      },
+      "limits": {
+        "sessions.refactor.deadlineMs": 2400000,
+        "sessions.refactor.maxTurns": 60
+      },
+      "timeoutMs": 3600000
+    },
+    {
+      "id": "writer-good-material",
+      "subject": "writer",
+      "title": "writer 写判据 + 行为保持补丁 → 必须 ACCEPTED（参考答案可见）",
+      "tags": [
+        "ai",
+        "writer",
+        "material-visible",
+        "rubric"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": {
+          "mode": "ai"
+        },
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/m1a-accept.patch"
+        }
+      },
+      "clone": {
+        "remove": [],
+        "commit": false
+      },
+      "expect": {
+        "method": "verdict+rubric",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "refactor"
+        ],
+        "authoritative": true,
+        "requireFiles": [
+          ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+        ],
+        "provisional": false,
+        "note": "实测（2026-09-15，runs/capability-writer-r2）：ACCEPTED，0 失配；裁判 0.78（同产物另一次调用 0.94，方差 ~0.16）",
+        "rubric": {
+          "rubric": "../docs/testset/04-rubric.md",
+          "reference": "../libuv/refactor-task/workflows"
+        }
+      },
+      "limits": {
+        "sessions.testWriter.deadlineMs": 3600000,
+        "sessions.testWriter.maxTurns": 140
+      },
+      "timeoutMs": 5400000
+    },
+    {
+      "id": "writer-evil-material",
+      "subject": "writer",
+      "title": "writer 写判据 + 破坏性补丁 → 必须 REJECTED（参考答案可见）",
+      "tags": [
+        "ai",
+        "writer",
+        "material-visible",
+        "rubric"
+      ],
+      "task": "tasks/t3-inet.task.txt",
+      "stages": {
+        "workflows": {
+          "mode": "ai"
+        },
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/mutant-inet-zero.patch"
+        }
+      },
+      "clone": {
+        "remove": [],
+        "commit": false
+      },
+      "expect": {
+        "method": "verdict+rubric",
+        "state": "REJECTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "refactor"
+        ],
+        "authoritative": true,
+        "requireFiles": [
+          ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+        ],
+        "provisional": false,
+        "note": "实测：REJECTED，失配 oracle_inet.{exit,summary,transcript}；裁判 0.88 —— 判据抓住了 inet 单零组压缩（第一版用例把简报错配成 strtok，测量无效，已修）",
+        "rubric": {
+          "rubric": "../docs/testset/04-rubric.md",
+          "reference": "../libuv/refactor-task/workflows"
+        }
+      },
+      "limits": {
+        "sessions.testWriter.deadlineMs": 3600000,
+        "sessions.testWriter.maxTurns": 140
+      },
+      "timeoutMs": 5400000
+    },
+    {
+      "id": "writer-good-hidden",
+      "subject": "writer",
+      "title": "writer 写判据（隐藏参考 workflow 与 oracle）+ 行为保持补丁 → ACCEPTED",
+      "tags": [
+        "ai",
+        "writer",
+        "hidden",
+        "rubric"
+      ],
+      "task": "tasks/writer-hidden.task.txt",
+      "stages": {
+        "workflows": {
+          "mode": "ai"
+        },
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/accept-inet-comment.patch"
+        }
+      },
+      "clone": {
+        "remove": [
+          "refactor-task/workflows",
+          "refactor-task/oracle"
+        ],
+        "commit": true
+      },
+      "expect": {
+        "method": "verdict+rubric",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "refactor"
+        ],
+        "authoritative": true,
+        "requireFiles": [
+          ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+        ],
+        "provisional": false,
+        "note": "实测：ACCEPTED，0 失配；裁判 0.91 —— 看不见参考实现与 oracle 也不误杀（补丁是同一文件上的注释级改动）",
+        "rubric": {
+          "rubric": "../docs/testset/04-rubric.md",
+          "reference": "../libuv/refactor-task/workflows"
+        }
+      },
+      "limits": {
+        "sessions.testWriter.deadlineMs": 3600000,
+        "sessions.testWriter.maxTurns": 140
+      },
+      "timeoutMs": 5400000
+    },
+    {
+      "id": "writer-evil-hidden",
+      "subject": "writer",
+      "title": "writer 写判据（隐藏参考 workflow 与 oracle）+ 破坏性补丁 → REJECTED",
+      "tags": [
+        "ai",
+        "writer",
+        "hidden",
+        "rubric"
+      ],
+      "task": "tasks/writer-hidden.task.txt",
+      "stages": {
+        "workflows": {
+          "mode": "ai"
+        },
+        "refactor": {
+          "mode": "patch",
+          "patchFile": "refactor-task/patches/mutant-inet-zero.patch"
+        }
+      },
+      "clone": {
+        "remove": [
+          "refactor-task/workflows",
+          "refactor-task/oracle"
+        ],
+        "commit": true
+      },
+      "expect": {
+        "method": "verdict+rubric",
+        "state": "REJECTED",
+        "failuresRequired": [],
+        "injectedStages": [
+          "refactor"
+        ],
+        "authoritative": true,
+        "requireFiles": [
+          ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+        ],
+        "provisional": false,
+        "note": "实测：REJECTED，14 条失配 —— 模型自建 oracle 覆盖 ntop6 单零组 first/middle/last、exact-size、size-20-rejected，并给每条加了 .stable 稳定性声明；裁判 0.86",
+        "rubric": {
+          "rubric": "../docs/testset/04-rubric.md",
+          "reference": "../libuv/refactor-task/workflows"
+        }
+      },
+      "limits": {
+        "sessions.testWriter.deadlineMs": 3600000,
+        "sessions.testWriter.maxTurns": 140
+      },
+      "timeoutMs": 5400000
+    },
+    {
+      "id": "e2e-t1-full",
+      "subject": "e2e",
+      "title": "端到端：AI 写判据 + AI 重构，全流程由 AI 驱动",
+      "tags": [
+        "ai",
+        "e2e",
+        "finding",
+        "noisy",
+        "t1"
+      ],
+      "task": "tasks/t1-strtok.task.txt",
+      "stages": {
+        "workflows": {
+          "mode": "ai"
+        },
+        "refactor": {
+          "mode": "ai"
+        }
+      },
+      "expect": {
+        "method": "verdict+rubric",
+        "state": "ACCEPTED",
+        "failuresRequired": [],
+        "authoritative": true,
+        "provisional": false,
+        "note": "实测（2026-09-15 重测，runs/e2e-t1-fixed）：ACCEPTED —— 模型自写 build+test workflow、自写 9 条声明，两侧构建 pass/pass，0 失配，comparison.overall=consistent，管线 10m10s（含 rubric 11m44s）。首次实测的 ABORTED 已查明是宿主策略正则误判注释（非模型问题），修复后重测通过",
+        "requireFiles": [
+          ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+        ],
+        "injectedStages": []
+      },
+      "limits": {
+        "sessions.testWriter.deadlineMs": 2700000,
+        "sessions.refactor.deadlineMs": 2400000
+      },
+      "timeoutMs": 7200000
+    },
+    {
+      "id": "corpus-pure",
+      "subject": "corpus",
+      "title": "自带纯函数用例（14 条，已在判据中使用）",
+      "tags": [
+        "corpus",
+        "offline",
+        "pinned"
+      ],
+      "kind": "upstream-part",
+      "part": "parts/pure.json",
+      "expect": {
+        "method": "part",
+        "provisional": false,
+        "note": "strict：每条必须 exit 0 且 TAP ok"
+      },
+      "timeoutMs": 1800000
+    },
+    {
+      "id": "corpus-loop",
+      "subject": "corpus",
+      "title": "事件循环语义 19 条（校准：重复 3 次分类）",
+      "tags": [
+        "corpus",
+        "offline",
+        "candidate"
+      ],
+      "kind": "upstream-part",
+      "part": "parts/loop.json",
+      "expect": {
+        "method": "part",
+        "provisional": true,
+        "note": "calibrate：重复 N 次给出稳定分类（stable-ok / stable-fail / flaky），不预判通过"
+      },
+      "timeoutMs": 1800000
+    },
+    {
+      "id": "corpus-thread",
+      "subject": "corpus",
+      "title": "线程/同步原语 22 条（校准）",
+      "tags": [
+        "corpus",
+        "offline",
+        "candidate"
+      ],
+      "kind": "upstream-part",
+      "part": "parts/thread.json",
+      "expect": {
+        "method": "part",
+        "provisional": true,
+        "note": "calibrate：重复 N 次给出稳定分类（stable-ok / stable-fail / flaky），不预判通过"
+      },
+      "timeoutMs": 1800000
+    },
+    {
+      "id": "corpus-util",
+      "subject": "corpus",
+      "title": "OS/工具函数 10 条（校准）",
+      "tags": [
+        "corpus",
+        "offline",
+        "candidate"
+      ],
+      "kind": "upstream-part",
+      "part": "parts/util.json",
+      "expect": {
+        "method": "part",
+        "provisional": true,
+        "note": "calibrate：重复 N 次给出稳定分类（stable-ok / stable-fail / flaky），不预判通过"
+      },
+      "timeoutMs": 1800000
+    }
+  ]
+}

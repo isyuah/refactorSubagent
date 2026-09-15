@@ -1,0 +1,13 @@
+diff --git a/refactor-task/oracle/oracle_strtok.c b/refactor-task/oracle/oracle_strtok.c
+index d3802f1..88c5eef 100644
+--- a/refactor-task/oracle/oracle_strtok.c
++++ b/refactor-task/oracle/oracle_strtok.c
+@@ -93,8 +93,6 @@ int main(void) {
+     /* Once the iterator is NULL, further calls keep returning NULL. */
+     check_int(ORACLE, "null-iterator-returns-null", 1,
+               uv__strtok(NULL, ".", &itr) == NULL);
+-    check_int(ORACLE, "null-iterator-stays-null", 1,
+-              uv__strtok(NULL, ".", &itr) == NULL);
+   }
+ 
+   /* A NULL iterator with a non-NULL string is a fresh scan. */

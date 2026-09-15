@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "util",
+  "title": "OS/工具函数（含错误字符串族）",
+  "why": "error_message / env_vars 等直接对应 T4（uv_err_name / uv_strerror）与主机工具函数；只涉及进程内状态与本机环境，无网络。个别用例依赖主机环境（homedir/cwd），用 calibrate 区分「本机不支持」与「行为被改坏」。",
+  "policy": {
+    "kind": "calibrate",
+    "repeats": 3,
+    "expectExit": 0,
+    "expectTap": "ok 1 - {case}",
+    "onFail": "classify"
+  },
+  "status": "measured-stable",
+  "cases": [
+    "error_message",
+    "env_vars",
+    "environment_creation",
+    "get_currentexe",
+    "cwd_and_chdir",
+    "homedir",
+    "gettimeofday",
+    "clock_gettime",
+    "random_async",
+    "random_sync"
+  ],
+  "calibration": {
+    "date": "2026-09-15",
+    "run": "runs/calib-corpus",
+    "result": "10/10 stable-ok, 3 repeats each",
+    "case_run_seconds": 14,
+    "note": "本机无抖动；每条重复 3 次的 exit 与 stdout 逐字节一致，且命中期望 TAP 行"
+  }
+}

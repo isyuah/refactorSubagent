@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "builds": [
+        {
+          "id": "libuv-static-runner",
+          "entry": "refactor-task/workflows/build-workflow.ts"
+        }
+      ],
+      "testEntry": "refactor-task/workflows/test-workflow.ts",
+      "workflowId": "libuv-v1.52.1-judgement",
+      "revision": 1
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "refactor-task/patches/m1a-accept.patch"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+diff --git a/src/uv-common.c b/src/uv-common.c
+index e5a7632..f435e09 100644
+--- a/src/uv-common.c
++++ b/src/uv-common.c
+@@ -199,7 +199,7 @@ static const char* uv__unknown_err_code(int err) {
+   char buf[32];
+   char* copy;
+ 
+-  snprintf(buf, sizeof(buf), "Unknown system error %d", err);
++  snprintf(buf, sizeof(buf), "Unknown error %d", err);
+   copy = uv__strdup(buf);
+ 
+   return copy != NULL ? copy : "Unknown system error";

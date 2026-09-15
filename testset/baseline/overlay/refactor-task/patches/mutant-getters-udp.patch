@@ -1,0 +1,18 @@
+diff --git a/src/uv-data-getter-setters.c b/src/uv-data-getter-setters.c
+index 0bd0448..da5aaf2 100644
+--- a/src/uv-data-getter-setters.c
++++ b/src/uv-data-getter-setters.c
+@@ -79,11 +79,11 @@ size_t uv_stream_get_write_queue_size(const uv_stream_t* stream) {
+ }
+ 
+ size_t uv_udp_get_send_queue_size(const uv_udp_t* handle) {
+-  return handle->send_queue_size;
++  return handle->send_queue_count;
+ }
+ 
+ size_t uv_udp_get_send_queue_count(const uv_udp_t* handle) {
+-  return handle->send_queue_count;
++  return handle->send_queue_size;
+ }
+ 
+ uv_pid_t uv_process_get_pid(const uv_process_t* proc) {

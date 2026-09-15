@@ -1,0 +1,12 @@
+diff --git a/src/inet.c b/src/inet.c
+index 620be5a..49494f0 100644
+--- a/src/inet.c
++++ b/src/inet.c
+@@ -102,6 +102,7 @@ static int inet_ntop6(const unsigned char *src, char *dst, size_t size) {
+     if (best.base == -1 || cur.len > best.len)
+       best = cur;
+   }
++  /* A single zero group is printed as ":0:", not as "::". */
+   if (best.base != -1 && best.len < 2)
+     best.base = -1;
+ 

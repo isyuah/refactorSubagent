@@ -1,0 +1,13 @@
+diff --git a/src/strscpy.c b/src/strscpy.c
+index 20df6fc..099f6d1 100644
+--- a/src/strscpy.c
++++ b/src/strscpy.c
+@@ -30,7 +30,7 @@ ssize_t uv__strscpy(char* d, const char* s, size_t n) {
+       return i > SSIZE_MAX ? UV_E2BIG : (ssize_t) i;
+ 
+   if (i == 0)
+-    return 0;
++    return UV_E2BIG;
+ 
+   d[--i] = '\0';
+ 

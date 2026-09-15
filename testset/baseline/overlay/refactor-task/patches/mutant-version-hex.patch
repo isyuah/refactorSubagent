@@ -1,0 +1,13 @@
+diff --git a/src/version.c b/src/version.c
+index 686dedd..9e7dbb2 100644
+--- a/src/version.c
++++ b/src/version.c
+@@ -36,7 +36,7 @@
+ 
+ 
+ unsigned int uv_version(void) {
+-  return UV_VERSION_HEX;
++  return UV_VERSION_HEX + 1;
+ }
+ 
+ 
