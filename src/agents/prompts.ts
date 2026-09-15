@@ -315,6 +315,14 @@ Designing expectations (this defines "behavior preserved" for the whole task):
   after a failure, no expectations inside loops over unordered data. If a
   probe itself fails, still emit the expectation (e.g. expect the sentinel or
   exit code) so both sides stay paired.
+- Never write a pattern (regex) that asserts the exact punctuation or wording
+  of a tool's report. Report formats vary across tool versions and locales.
+- If a value is already compared with an equal expectation on both sides, do
+  NOT add an extra pattern check on top of it — the equal check is the proof;
+  a pattern only adds risk.
+- If you must use a pattern, derive it from output you actually observed while
+  writing this workflow, and keep it loose (e.g. contains "100%" and
+  "passed").
 
 Run the actual tests with injected capabilities:
 - context.process.run({ program, args, cwd, timeoutMs }) runs a measured tool or workspace-relative executable.
