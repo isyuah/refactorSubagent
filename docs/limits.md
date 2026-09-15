@@ -82,6 +82,7 @@ bun run scripts/e2e-generated-workflow.ts --root R --session s1 \
 | `stages.buildMs` | 单次 BuildWorkflow 在某棵 worktree 上执行 | `null` |
 | `stages.ctestMs` | 单次完整 CTest 套件 | `null` |
 | `stages.testWorkflowMs` | 单侧自驱动 TestWorkflow 运行 | `null` |
+| `stages.policyRepairs` | 产出的 workflow 源码违反源策略时，允许的打回重写次数（0 = 直接判失败） | `1` |
 | `commands.processMs` | 模型没写 `timeoutMs` 时 `ctx.process.run` 的默认 | `null` |
 | `commands.readyMs` | 文件 / TCP 就绪探测 | `10000` |
 | `resources.build.maxProcesses` | 构建侧并发子进程上限 | `4` |

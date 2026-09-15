@@ -16,7 +16,7 @@ import {
   type HostPreflight,
   type ProjectDetection,
 } from "../artifacts/index.js";
-import { checkWorkflowSource } from "./source-policy.js";
+import { checkWorkflowSource, throwWorkflowSourceError } from "./source-policy.js";
 import type { BuildWorkflowResolution } from "./build-workflow.js";
 
 const REGISTRY_DIR = ".refactorsa";
@@ -108,7 +108,7 @@ export function loadBuildWorkflow(
   );
   const entry = resolveInside(root, manifest.entry, "workflow entry");
   const checked = checkWorkflowSource(entry);
-  if (!checked.ok) throw new Error(checked.reason ?? `workflow source rejected: ${entry}`);
+  if (!checked.ok) throwWorkflowSourceError(entry, checked);
   const actualHash = sha256(checked.source);
   if (actualHash !== manifest.source_hash) {
     throw new Error(

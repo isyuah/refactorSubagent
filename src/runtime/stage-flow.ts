@@ -10,10 +10,12 @@ import { runWorkflowSession } from "../agents/workflow-session.js";
 import { LocalDependencyRegistry } from "../agents/dep-registry.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { SessionStore } from "../orchestrator/store.js";
+import type { ResolvedDeclaredWorkflows } from "../workflow/resolve-declared.js";
 import {
-  resolveDeclaredWorkflows,
-  type ResolvedDeclaredWorkflows,
-} from "../workflow/resolve-declared.js";
+  resolveWithRepairs as resolveWithRepairSessions,
+  type WorkflowRepairAttempt,
+} from "../workflow/resolve-with-repairs.js";
+import { runWorkflowRepairSession } from "../agents/workflow-repair.js";
 import { E2ELogger } from "./e2e-log.js";
 import { FileSessionStore } from "./session-store.js";
 import { detectCProject } from "./project-detector.js";
@@ -295,18 +297,18 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
     }
     const preflight = await (flow.preflight ?? defaultPreflightStage)(ctx);
     if (isHalt(preflight)) {
-      abort(orch, logger, preflight.reason);
+      abort(orch, preflight.reason);
       return done();
     }
     if (preflight.project.status !== "ready") {
-      abort(orch, logger, `project build detection blocked: ${preflight.project.reason}`);
+      abort(orch, `project build detection blocked: ${preflight.project.reason}`);
       return done();
     }
 
     logger.phase("ANALYSIS");
     const analyzed = await (flow.analyze ?? defaultAnalyzeStage)(ctx, { preflight });
     if (isHalt(analyzed)) {
-      abort(orch, logger, analyzed.reason);
+      abort(orch, analyzed.reason);
       return done();
     }
     analysis = analyzed.analysis;
@@ -317,14 +319,14 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       analysis: analyzed,
     });
     if (isHalt(workflows)) {
-      abort(orch, logger, workflows.reason);
+      abort(orch, workflows.reason);
       return done();
     }
     declared = workflows.declared;
 
     const prepared = await (flow.prepare ?? defaultPrepareStage)(ctx, { preflight, workflows });
     if (isHalt(prepared)) {
-      abort(orch, logger, prepared.reason);
+      abort(orch, prepared.reason);
       return done();
     }
     worktrees = prepared.worktrees;
@@ -337,7 +339,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       candidate: prepared,
     });
     if (isHalt(refactored)) {
-      abort(orch, logger, refactored.reason);
+      abort(orch, refactored.reason);
       return done();
     }
     refactorSummary = refactored.summary;
@@ -349,7 +351,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
     const summaryLine = firstSummaryLine(refactored.summary) ?? req.task;
     const changedFiles = commitCandidateChanges(prepared.worktrees.candidateDir, prepared.baseSha, summaryLine);
     if (changedFiles.length === 0) {
-      abort(orch, logger, "refactor agent made no changes");
+      abort(orch, "refactor agent made no changes");
       return done();
     }
     const patch: PatchFacts = {
@@ -363,7 +365,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
 
     logger.phase("VERIFICATION");
     if (declared === null || declared.buildResolutions.length === 0) {
-      abort(orch, logger, "declared workflow resolution missing or empty build set");
+      abort(orch, "declared workflow resolution missing or empty build set");
       return done();
     }
     logger.info("workflow verification started", { phase_detail: "all builds + ctest both sides" });
@@ -377,7 +379,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       patch,
     });
     if (isHalt(verified)) {
-      abort(orch, logger, verified.reason);
+      abort(orch, verified.reason);
       return done();
     }
     verification = verified;
@@ -387,7 +389,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
     return done();
   } catch (error) {
     const reason = errorMessage(error);
-    abort(orch, logger, reason);
+    abort(orch, reason);
     return done();
   } finally {
     timed(logger, "worktree cleanup", () => {
@@ -398,7 +400,14 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       logger.finish("accepted", "workflow verification accepted candidate");
     }
     else if (store.state === "REJECTED") logger.finish("rejected", "workflow verification rejected candidate");
-    else if (store.state === "ABORTED") logger.finish("aborted", "workflow verification aborted");
+    else if (store.state === "ABORTED") {
+      // Every abort path records its reason on the session store, including the
+      // direct Orchestrator.abort calls that never touch the logger: read it
+      // back so the run journal states WHY the run stopped.
+      const reason = abortReason(store) ?? "workflow verification aborted";
+      logger.abort(reason);
+      logger.finish("aborted", reason);
+    }
     logger.close();
   }
 }
@@ -458,6 +467,7 @@ export const defaultWorkflowsStage: WorkflowsStage = async (ctx, input) => {
       logger: ctx.logger,
       sessionStore: ctx.sessionStore,
       limits: ctx.limits.sessions.testWriter,
+      policyRepairs: ctx.limits.stages.policyRepairs,
     });
   } finally {
     ctx.logger.stopHeartbeat();
@@ -556,8 +566,23 @@ export const defaultVerifyStage: VerifyStage = async (ctx, input) => {
   });
 };
 
-function abort(orch: Orchestrator, logger: E2ELogger, reason: string): void {
-  logger.error(reason);
+/**
+ * The reason recorded for the ABORTED transition. The orchestrator stores it in
+ * the session history; the run journal is written from it in the finally block,
+ * so an abort that never goes through a logger call still explains itself.
+ */
+function abortReason(store: SessionStore): string | null {
+  for (let index = store.history.length - 1; index >= 0; index -= 1) {
+    const entry = store.history[index];
+    if (entry?.to === "ABORTED") {
+      return entry.note.trim().length > 0 ? entry.note.trim() : null;
+    }
+  }
+  return null;
+}
+
+/** Abort the run. The reason is journaled once, from the store, in the finally block. */
+function abort(orch: Orchestrator, reason: string): void {
   orch.abort(reason);
 }
 
@@ -640,6 +665,8 @@ async function runDeclaredResolution(options: {
   readonly logger: E2ELogger;
   readonly sessionStore: FileSessionStore;
   readonly limits: SessionLimits;
+  /** Rewrite sessions allowed per rejected workflow source. */
+  readonly policyRepairs: number;
 }): Promise<DeclaredAgentResolution> {
   const testRelDir = join(".refactor", "runs", options.sessionId, "workflows", "test");
   const testEntry = join(options.repoDir, testRelDir, "test-workflow.ts");
@@ -683,15 +710,17 @@ async function runDeclaredResolution(options: {
     buildSources.push({ id, entry: resolved.entry, runLocal: resolved.runLocal });
   }
 
-  const resolved = await resolveDeclaredWorkflows({
-    workspaceRoot: options.repoDir,
-    entryRoot: options.repoDir,
-    host: options.host,
-    project: options.project,
+  const resolved = await resolveWithRepairs({
+    repoDir: options.repoDir,
     testEntry,
     testWorkflowId: `test-${options.sessionId}`,
-    testRevision: 1,
-    builds: buildSources.map((b) => ({ id: b.id, entry: b.entry, runLocal: b.runLocal })),
+    buildSources,
+    host: options.host,
+    project: options.project,
+    logger: options.logger,
+    sessionStore: options.sessionStore,
+    limits: options.limits,
+    policyRepairs: options.policyRepairs,
   });
 
   return buildDeclaredResolution({
@@ -702,6 +731,114 @@ async function runDeclaredResolution(options: {
     builds: buildSources,
     resolved,
   });
+}
+
+/**
+ * Resolve every declared workflow, handing a source-policy violation back to a
+ * bounded repair session instead of aborting the run. Any other failure (hash
+ * mismatch, missing file, session error) still propagates.
+ */
+async function resolveWithRepairs(options: {
+  readonly repoDir: string;
+  readonly testEntry: string;
+  readonly testWorkflowId: string;
+  readonly buildSources: readonly { id: string; entry: string; runLocal: boolean }[];
+  readonly host: HostPreflight;
+  readonly project: ProjectDetection;
+  readonly logger: E2ELogger;
+  readonly sessionStore: FileSessionStore;
+  readonly limits: SessionLimits;
+  readonly policyRepairs: number;
+}): Promise<ResolvedDeclaredWorkflows> {
+  const attempts: WorkflowRepairAttempt[] = [];
+  const record = (attempt: WorkflowRepairAttempt): void => {
+    attempts.push(attempt);
+  };
+  try {
+    const resolved = await resolveWithRepairSessions({
+      workspaceRoot: options.repoDir,
+      entryRoot: options.repoDir,
+      host: options.host,
+      project: options.project,
+      testEntry: options.testEntry,
+      testWorkflowId: options.testWorkflowId,
+      testRevision: 1,
+      builds: options.buildSources.map((b) => ({ id: b.id, entry: b.entry, runLocal: b.runLocal })),
+      policyRepairs: options.policyRepairs,
+      onRepairAttempt: record,
+      repair: async (request) => {
+        options.logger.warn("workflow source rejected by the source policy; requesting a repair", {
+          attempt: request.attempt,
+          max_repairs: request.attempts,
+          entry: relative(options.repoDir, request.entry).split("\\").join("/"),
+          rule: request.violation.rule,
+          line: request.violation.line,
+          column: request.violation.column,
+          detail: request.violation.detail,
+          snippet: request.violation.snippet,
+        });
+        const repair = await runWorkflowRepairSession({
+          repoDir: options.repoDir,
+          entry: request.entry,
+          kind: request.kind,
+          violation: request.violation,
+          attempt: request.attempt,
+          attempts: request.attempts,
+          logger: options.logger,
+          sessionStore: options.sessionStore,
+          limits: options.limits,
+        });
+        options.logger.info("workflow source repair session completed", {
+          attempt: request.attempt,
+          entry: relative(options.repoDir, request.entry).split("\\").join("/"),
+          ok: repair.ok,
+          timed_out: repair.timedOut,
+          summary: repair.summary.slice(0, 200),
+        });
+        return { ok: repair.ok, timedOut: repair.timedOut, summary: repair.summary };
+      },
+    });
+    if (attempts.length > 0) {
+      options.logger.info("workflow source repair accepted", {
+        repairs: attempts.length,
+        entries: attempts.map((a) => relative(options.repoDir, a.entry).split("\\").join("/")).join(", "),
+      });
+      options.logger.artifact("workflow-source-repairs.json", {
+        outcome: "accepted",
+        repairs: repairRecords(options.repoDir, attempts),
+      });
+    }
+    return resolved;
+  } catch (error) {
+    if (attempts.length > 0) {
+      options.logger.artifact("workflow-source-repairs.json", {
+        outcome: "rejected",
+        repairs: repairRecords(options.repoDir, attempts),
+        final_reason: errorMessage(error),
+      });
+    }
+    throw error;
+  }
+}
+
+/** Journal-friendly view: repo-relative entries, no full session text. */
+function repairRecords(
+  repoDir: string,
+  attempts: readonly WorkflowRepairAttempt[],
+): Record<string, unknown>[] {
+  return attempts.map((attempt) => ({
+    attempt: attempt.attempt,
+    entry: relative(repoDir, attempt.entry).split("\\").join("/"),
+    kind: attempt.kind,
+    rule: attempt.violation.rule,
+    detail: attempt.violation.detail,
+    line: attempt.violation.line,
+    column: attempt.violation.column,
+    snippet: attempt.violation.snippet,
+    session_ok: attempt.outcome.ok,
+    timed_out: attempt.outcome.timedOut,
+    summary: attempt.outcome.summary.slice(0, 400),
+  }));
 }
 
 /**

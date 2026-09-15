@@ -15,7 +15,7 @@ import {
   type CTestMaterializationPolicy,
   type TestWorkflow as TestWorkflowValue,
 } from "../artifacts/test-workflow.js";
-import { checkWorkflowSource } from "./source-policy.js";
+import { checkWorkflowSource, throwWorkflowSourceError } from "./source-policy.js";
 import { runWorkflow } from "./runner.js";
 import type { WorkflowFacts } from "./types.js";
 
@@ -46,7 +46,7 @@ export async function resolveTestWorkflow(
 ): Promise<TestWorkflowResolution> {
   const entry = absoluteWithin(options.entry, options.entryRoot);
   const checked = checkWorkflowSource(entry);
-  if (!checked.ok) throw new Error(checked.reason ?? "test workflow source rejected");
+  if (!checked.ok) throwWorkflowSourceError(entry, checked);
 
   const sourceHash = sha256(checked.source);
   const workspaceRoot = resolve(options.workspaceRoot ?? options.entryRoot);
@@ -156,7 +156,7 @@ export function loadTestWorkflowManifest(
   const manifest = TestWorkflowManifest.parse(JSON.parse(readFileSync(manifestPath, "utf8")));
   const entry = absoluteWithin(manifest.entry, entryRoot);
   const checked = checkWorkflowSource(entry);
-  if (!checked.ok) throw new Error(checked.reason ?? `test workflow source rejected: ${entry}`);
+  if (!checked.ok) throwWorkflowSourceError(entry, checked);
   const actual = sha256(checked.source);
   if (actual !== manifest.source_hash) {
     throw new Error(

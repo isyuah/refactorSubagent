@@ -73,6 +73,11 @@ export const Limits = z
         ctestMs: NullablePositiveInt,
         /** One self-driven TestWorkflow run on one worktree. */
         testWorkflowMs: NullablePositiveInt,
+        /**
+         * Rewrite sessions allowed when a produced workflow source violates the
+         * source policy (0 = reject immediately). Each attempt re-validates.
+         */
+        policyRepairs: z.number().int().min(0).max(5),
       })
       .strict(),
     commands: z
@@ -112,7 +117,7 @@ export const DEFAULT_LIMITS: Limits = {
     testWriter: { deadlineMs: null, stallMs: 180_000, maxTurns: 48 },
     refactor: { deadlineMs: null, stallMs: 180_000, maxTurns: 80 },
   },
-  stages: { buildMs: null, ctestMs: null, testWorkflowMs: null },
+  stages: { buildMs: null, ctestMs: null, testWorkflowMs: null, policyRepairs: 1 },
   commands: { processMs: null, readyMs: 10_000 },
   resources: {
     build: { maxProcesses: 4, maxOutputBytes: 16 * 1024 * 1024, maxFileBytes: 64 * 1024 * 1024 },
@@ -190,7 +195,7 @@ export function describeLimits(limits: Limits): string {
   return [
     `sessions: testWriter=${ms(limits.sessions.testWriter.deadlineMs)}`,
     `refactor=${ms(limits.sessions.refactor.deadlineMs)}`,
-    `stages: build=${ms(limits.stages.buildMs)} ctest=${ms(limits.stages.ctestMs)} testWorkflow=${ms(limits.stages.testWorkflowMs)}`,
+    `stages: build=${ms(limits.stages.buildMs)} ctest=${ms(limits.stages.ctestMs)} testWorkflow=${ms(limits.stages.testWorkflowMs)} policyRepairs=${String(limits.stages.policyRepairs)}`,
     `commands: process=${ms(limits.commands.processMs)}`,
   ].join("; ");
 }

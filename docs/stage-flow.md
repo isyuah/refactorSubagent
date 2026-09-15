@@ -127,6 +127,22 @@ bun run scripts/cli.ts run ./repo --task "..." \
 槽位返回 `halt(reason)`（`{ halt: true, reason }`），由组合器统一调用 `Orchestrator.abort(reason)`。
 阶段拿不到 `Orchestrator`，无法自行推进或篡改状态。
 
+**abort 的原因一定会落盘。** 原因写在会话历史的 `ABORTED` 迁移上（`Orchestrator.abort` 的唯一写入点），
+组合器在 `finally` 里把它读回来写进 `run.jsonl`（`event: "abort"`）与运行快照 `state.json.abort_reason`。
+这样连不经日志的 `Orchestrator.abort` 直调路径也有原因可查——以前只留一句"workflow verification aborted"，
+排查得靠复现。
+
+**源码违反策略 ⇒ 打回重写，而不是直接 abort。** 模型产出的 workflow 源码在会话结束后才被宿主校验，
+一旦违反源策略（宿主 import、宿主全局），宿主会带着违规位置（文件、行、列、片段）开一个**修复会话**让写作方改，
+改完重新校验；次数由 `stages.policyRepairs` 限制（默认 1，0 = 不重写）。
+只有"重写能解决"的失败才走这条路（哈希不匹配、文件缺失、构建 id 解析不到仍然直接失败），
+每次尝试都写日志并落 `workflow-source-repairs.json`。
+
+**源策略只看代码。** 校验前会先把注释、字符串/模板正文、正则字面量遮成空白（长度与行号不变），
+因此注释里写 `... per process.` 不再被误判；而模板插值 `${...}` 仍按代码检查。
+两条判定规则（宿主 import、宿主全局）与旧版一致，但位置准确、且两条路径（`checkWorkflowSource` 与
+dep-registry 的源码字符串校验）现在共用同一份实现。
+
 ## 6. 测试模式 → 配置映射
 
 | 想测什么 | `workflows` | `prepare` | `refactor` | `verify` |
@@ -142,8 +158,12 @@ bun run scripts/cli.ts run ./repo --task "..." \
 - `tests/stage-flow.test.ts`：离线跑完整管线（真 gcc、真 git、无模型调用）
   - 行为保持补丁 → `ACCEPTED`，`comparison.overall === "consistent"`
   - 改变行为补丁 → `REJECTED`
-  - 预置源缺失 → 阶段 `halt` → `ABORTED`（日志含原因）
+  - 预置源缺失 → 阶段 `halt` → `ABORTED`（日志含原因，且 `state.json.abort_reason` 含同一原因）
   - 注入 `verify` → `provenance.injected` 含 `verify`、`verification_authoritative === false`，artifact 落盘
+- `tests/source-policy.test.ts`：策略的边界——代码里的宿主访问被拒（含 `node:` import、裸模块、`fs/promises`、
+  `require`、模板插值、`globalThis["process"]`），注释/字符串/正则里的同样文字被接受
+- `tests/resolve-with-repairs.test.ts`：报出违规 → 写作方修好 → 解析通过；改不好则在预算用尽后抛错；
+  预算为 0 不重写；重写解决不了的失败（文件缺失）不重写
 - `tests/pipeline-config.test.ts`：默认全 AI / 单阶段替换 / 键写错被点名 / 覆盖优先级 / `none` 与 `create` 冲突 / 空 `builds` 被拒
 
 ## 8. 设计边界（刻意不做）

@@ -8,7 +8,7 @@ import {
   type HostPreflight,
   type ProjectDetection,
 } from "../artifacts/index.js";
-import { checkWorkflowSource } from "./source-policy.js";
+import { checkWorkflowSource, throwWorkflowSourceError } from "./source-policy.js";
 import { runWorkflow } from "./runner.js";
 import type { WorkflowCapabilityPolicy, WorkflowFacts } from "./types.js";
 
@@ -51,7 +51,7 @@ export async function resolveBuildWorkflow(
   const entryRoot = resolve(options.entryRoot ?? options.cwd);
   const entry = absoluteWithin(options.entry, entryRoot, "workflow entry");
   const checked = checkWorkflowSource(entry);
-  if (!checked.ok) throw new Error(checked.reason ?? "build workflow source rejected");
+  if (!checked.ok) throwWorkflowSourceError(entry, checked);
 
   const sourceHash = sha256(checked.source);
   const workspaceRoot = resolve(options.workspaceRoot ?? options.cwd);

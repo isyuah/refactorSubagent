@@ -176,6 +176,14 @@ describe("stage flow with preset stages", () => {
     expect(result.state).toBe("ABORTED");
     const runLog = readFileSync(join(result.logDir, "run.jsonl"), "utf8");
     expect(runLog).toContain("preset workflow source missing");
+    // The reason must also be readable from the run snapshot, not just the log
+    // line: an aborted run whose cause is missing costs a reproduction.
+    const events = runLog.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events.some((event) => event.event === "abort")).toBe(true);
+    const state = JSON.parse(readFileSync(join(result.logDir, "state.json"), "utf8")) as {
+      abort_reason?: string;
+    };
+    expect(state.abort_reason).toContain("preset workflow source missing");
   }, 180_000);
 
   test("an injected verification stage is recorded as non-authoritative", async () => {
