@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "id": "thread",
+  "title": "线程与同步原语",
+  "why": "barrier/condvar/semaphore/mutex/rwlock/TLS 的行为保持。这些用例含真实线程调度，负载高时可能出现时序抖动，所以评价方法不是「跑一次必须过」，而是「重复 N 次给出稳定分类」。",
+  "policy": {
+    "kind": "calibrate",
+    "repeats": 3,
+    "expectExit": 0,
+    "expectTap": "ok 1 - {case}",
+    "onFail": "classify"
+  },
+  "status": "measured-stable",
+  "cases": [
+    "barrier_1",
+    "barrier_2",
+    "barrier_3",
+    "barrier_serial_thread",
+    "barrier_serial_thread_single",
+    "condvar_1",
+    "condvar_2",
+    "condvar_3",
+    "condvar_4",
+    "condvar_5",
+    "semaphore_1",
+    "semaphore_2",
+    "semaphore_3",
+    "thread_create",
+    "thread_equal",
+    "thread_detach",
+    "thread_local_storage",
+    "thread_mutex",
+    "thread_mutex_recursive",
+    "thread_rwlock",
+    "thread_rwlock_trylock",
+    "thread_stack_size"
+  ],
+  "calibration": {
+    "date": "2026-09-15",
+    "run": "runs/calib-corpus",
+    "result": "22/22 stable-ok, 3 repeats each",
+    "case_run_seconds": 43,
+    "note": "本机无抖动；每条重复 3 次的 exit 与 stdout 逐字节一致，且命中期望 TAP 行"
+  }
+}

@@ -9,6 +9,7 @@ import {
   type ConfigCommand,
   type LimitsCommand,
   type PreflightCommand,
+  type RunCommand,
   type WorkflowBuildCommand,
   type WorkflowListCommand,
 } from "../src/cli/args.js";
@@ -22,12 +23,21 @@ import {
 } from "../src/workflow/registry.js";
 import { readJsonInput, runWorkflow } from "../src/workflow/runner.js";
 import type { WorkflowRunResult } from "../src/workflow/types.js";
-import { extractLimitArgs, resolveLimits, type LimitsLayers } from "../src/config/limits.js";
+import { extractLimitArgs, resolveLimits } from "../src/config/limits.js";
+import type { LayerOverrides } from "../src/config/layers.js";
+import {
+  buildStageFlow,
+  describePipeline,
+  extractPipelineArgs,
+  resolvePipeline,
+} from "../src/config/pipeline.js";
+import { runStageFlow } from "../src/runtime/stage-flow.js";
 
 try {
   const { overrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
-  const command = parseCliArgs(remaining);
-  const exitCode = await execute(command, overrides);
+  const { overrides: pipelineOverrides, remaining: argv } = extractPipelineArgs(remaining);
+  const command = parseCliArgs(argv);
+  const exitCode = await execute(command, overrides, pipelineOverrides);
   if (exitCode !== 0) process.exitCode = exitCode;
 } catch (cause) {
   if (cause instanceof CliUsageError) {
@@ -39,12 +49,17 @@ try {
   }
 }
 
-async function execute(command: CliCommand, overrides: LimitsLayers): Promise<number> {
+async function execute(
+  command: CliCommand,
+  overrides: LayerOverrides,
+  pipelineOverrides: LayerOverrides,
+): Promise<number> {
   if (command.kind === "help") {
     console.log(CLI_HELP);
     return 0;
   }
   if (command.kind === "preflight") return executePreflight(command, overrides);
+  if (command.kind === "run") return executeRun(command, overrides, pipelineOverrides);
   if (command.kind === "workflow-build") return executeWorkflowBuild(command, overrides);
   if (command.kind === "workflow-list") return executeWorkflowList(command, overrides);
   if (command.kind === "config") return executeConfig(command);
@@ -69,7 +84,7 @@ async function execute(command: CliCommand, overrides: LimitsLayers): Promise<nu
 }
 
 /** Print the limits that would apply to this repo, with their sources. */
-function executeLimits(command: LimitsCommand, overrides: LimitsLayers): number {
+function executeLimits(command: LimitsCommand, overrides: LayerOverrides): number {
   const repo = resolve(command.repo);
   const resolved = resolveLimits({ repoRoot: repo, overrides });
   if (command.format === "json") {
@@ -84,7 +99,7 @@ function executeLimits(command: LimitsCommand, overrides: LimitsLayers): number 
   return 0;
 }
 
-function executePreflight(command: PreflightCommand, overrides: LimitsLayers): number {
+function executePreflight(command: PreflightCommand, overrides: LayerOverrides): number {
   const repo = resolve(command.repo);
   const limits = resolveLimits({ repoRoot: repo, overrides }).limits;
   const host = probeHost(repo, { toolTimeoutMs: limits.probes.hostMs });
@@ -102,9 +117,65 @@ function executePreflight(command: PreflightCommand, overrides: LimitsLayers): n
   return project.status === "ready" ? 0 : 1;
 }
 
+/** Run the whole pipeline; where each stage's input comes from is config. */
+async function executeRun(
+  command: RunCommand,
+  overrides: LayerOverrides,
+  pipelineOverrides: LayerOverrides,
+): Promise<number> {
+  const repo = resolve(command.repo);
+  const resolved = resolvePipeline({ repoRoot: repo, overrides: pipelineOverrides });
+  const flow = buildStageFlow(resolved.pipeline);
+  const sessionId = command.session ?? `run-${Date.now().toString(36)}`;
+  const sessionRoot = command.sessionRoot === null ? repo : resolve(command.sessionRoot);
+  const result = await runStageFlow({
+    repoPath: repo,
+    task: command.task,
+    sessionRoot,
+    sessionId,
+    ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
+    limitOverrides: overrides,
+    flow,
+  });
+  const declaredBuilds = result.declared?.declaredSet.builds.map((build) => build.id) ?? [];
+  const summary = {
+    state: result.state,
+    session: sessionId,
+    repo,
+    log_dir: result.logDir,
+    pipeline: describePipeline(resolved.pipeline),
+    pipeline_layers: resolved.sources,
+    injected_stages: result.provenance.injected,
+    verification_authoritative: result.provenance.verification_authoritative,
+    declared_builds: declaredBuilds,
+    baseline_build: result.verification?.baselineBuild?.status ?? null,
+    candidate_build: result.verification?.candidateBuild?.status ?? null,
+    comparison: result.verification?.expectationComparison?.overall ??
+      result.verification?.comparison?.overall ?? null,
+    refactor_summary: result.refactorSummary.slice(0, 500),
+  };
+  if (command.format === "json") {
+    console.log(JSON.stringify(summary, null, 2));
+  } else {
+    console.log(`state: ${summary.state}`);
+    console.log(`session: ${sessionId}`);
+    console.log(`log: ${result.logDir}`);
+    console.log(`pipeline: ${summary.pipeline}`);
+    for (const layer of resolved.sources) console.log(`pipeline layer: ${layer}`);
+    if (result.provenance.injected.length > 0) {
+      const authority = result.provenance.verification_authoritative
+        ? ""
+        : " (verification replaced: verdict is non-authoritative)";
+      console.log(`injected stages: ${result.provenance.injected.join(", ")}${authority}`);
+    }
+    if (declaredBuilds.length > 0) console.log(`declared builds: ${declaredBuilds.join(", ")}`);
+  }
+  return result.state === "ACCEPTED" ? 0 : 1;
+}
+
 async function executeWorkflowBuild(
   command: WorkflowBuildCommand,
-  overrides: LimitsLayers,
+  overrides: LayerOverrides,
 ): Promise<number> {
   const cwd = resolve(command.cwd);
   const limits = resolveLimits({ repoRoot: cwd, overrides }).limits;
@@ -182,7 +253,7 @@ function executeConfig(command: ConfigCommand): number {
   return 0;
 }
 
-function executeWorkflowList(command: WorkflowListCommand, overrides: LimitsLayers): number {
+function executeWorkflowList(command: WorkflowListCommand, overrides: LayerOverrides): number {
   const repo = resolve(command.cwd);
   const limits = resolveLimits({ repoRoot: repo, overrides }).limits;
   const host = probeHost(repo, { toolTimeoutMs: limits.probes.hostMs });

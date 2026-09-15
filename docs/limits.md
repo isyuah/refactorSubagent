@@ -82,6 +82,7 @@ bun run scripts/e2e-generated-workflow.ts --root R --session s1 \
 | `stages.buildMs` | 单次 BuildWorkflow 在某棵 worktree 上执行 | `null` |
 | `stages.ctestMs` | 单次完整 CTest 套件 | `null` |
 | `stages.testWorkflowMs` | 单侧自驱动 TestWorkflow 运行 | `null` |
+| `stages.policyRepairs` | 产出的 workflow 源码违反源策略时，允许的打回重写次数（0 = 直接判失败） | `1` |
 | `commands.processMs` | 模型没写 `timeoutMs` 时 `ctx.process.run` 的默认 | `null` |
 | `commands.readyMs` | 文件 / TCP 就绪探测 | `10000` |
 | `resources.build.maxProcesses` | 构建侧并发子进程上限 | `4` |
@@ -174,8 +175,10 @@ bun run scripts/e2e-generated-workflow.ts --root R --session redis-1 \
 
 | 文件 | 角色 |
 |---|---|
-| `src/config/limits.ts` | schema、默认值、分层合并、`--limit` 解析、`extractLimitArgs` |
-| `src/runtime/workflow-agent-pipeline.ts` | 运行开始时解析并写入 `limits.json` + 日志 |
+| `src/config/layers.ts` | 多源引擎：层路径、深合并、`key.path=value` 覆盖、来源记账 |
+| `src/config/limits.ts` | limits 域：schema、默认值、`--limit` 值解析、`extractLimitArgs` |
+| `src/config/pipeline.ts` | 阶段来源域（同引擎的第二域），见 [`stage-flow.md`](stage-flow.md) |
+| `src/runtime/stage-flow.ts` | 运行开始时解析并写入 `limits.json` + 日志 |
 | `src/runtime/workflow-pipeline.ts` | stages 预算与两份 policy 的资源上限来源 |
 | `src/workflow/capabilities.ts` | `processTimeoutMs` / `readyTimeoutMs` 落到子进程与探测 |
 | `src/agents/{driver,refactor,workflow-session}.ts` | 会话预算（deadline / stall / maxTurns） |

@@ -1,0 +1,5 @@
+为这份 libuv v1.52.1 检出写一套 build / test workflow，用来冻结 **src/inet.c（uv_inet_ntop / uv_inet_pton 及其 static 内部函数）** 的行为：
+构建产物要求 build/uv_run_tests_a.exe 与 build/libuv.a（GCC 15 需要 -Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers，否则 src/win/util.c:630 直接报错；CMake 需要 -DBUILD_TESTING=ON）。
+测试判据由你自己设计：跑哪些用例、声明哪些期望（两侧一致 + 绝对值两种都要有）、以及怎么防止判据材料本身被改。仓库自带的 test/ 套件可用（`build/uv_run_tests_a.exe <case>`，一个用例一个进程；`--list` 列出全部用例名）。
+不允许：修改 src/**、include/**、test/**、CMakeLists.txt；只产出 workflow 源。
+注意：目标缓冲区规则（size >= strlen(渲染)+1 才成功，否则 UV_ENOSPC 且目标缓冲区一个字节都不写）、IPv6 单个零组不压缩、v4-mapped 用点分十进制——这些是必须保持的行为。

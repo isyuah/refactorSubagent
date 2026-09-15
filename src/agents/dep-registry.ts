@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "n
 import { join, resolve } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import { discoverBuildWorkflows } from "../workflow/registry.js";
+import { checkWorkflowSourceText, stripComments } from "../workflow/source-policy.js";
 
 /**
  * dep-registry — host-side dependency registry for the subagent-driven
@@ -112,43 +113,22 @@ function safeRunLocalId(slugged: string, sessionId: string): string {
 
 /**
  * Validate a workflow-driven BuildWorkflow source string before
- * materialization. Mirrors source-policy (syntax, forbidden host imports,
- * workflowKind literal) without requiring the file to exist.
+ * materialization. Shares the host source policy (imports, host globals,
+ * syntax) and adds the build-specific `workflowKind` literal requirement.
  */
 export function validateBuildWorkflowSource(source: string): { ok: boolean; reason: string | null } {
-  const trimmed = source.trim();
-  if (trimmed.length === 0) {
+  if (source.trim().length === 0) {
     return { ok: false, reason: "content must not be empty" };
   }
-  const forbidden = [
-    /from\s+["'](?:node:|bun:)/,
-    /import\s*\(\s*["'](?:node:|bun:)/,
-    /require\s*\(\s*["'](?:node:|bun:)/,
-    /from\s*["'](?:fs|child_process|worker_threads|net|http|https|os|process)["']/,
-    /(?<![\w.])process\s*\.(?!run\b|start\b|wait\b|stop\b)/,
-    /(?<![\w.])Bun\s*\./,
-  ];
-  for (const pattern of forbidden) {
-    if (pattern.test(trimmed)) {
-      return { ok: false, reason: "workflow directly imports a host API; use injected capabilities instead" };
-    }
-  }
-  if (!/export\s+const\s+workflowKind\s*=\s*["']workflow-driven["']/.test(trimmed)) {
+  const checked = checkWorkflowSourceText(source);
+  if (!checked.ok) return { ok: false, reason: checked.reason };
+  if (!/export\s+const\s+workflowKind\s*=\s*["']workflow-driven["']/.test(stripComments(source))) {
     return {
       ok: false,
       reason: 'build workflow must declare export const workflowKind = "workflow-driven"',
     };
   }
-  try {
-    new Bun.Transpiler({ loader: "ts" }).transformSync(trimmed);
-  } catch (error) {
-    return { ok: false, reason: `workflow syntax transpilation failed: ${errorMessage(error)}` };
-  }
   return { ok: true, reason: null };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**

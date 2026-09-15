@@ -122,22 +122,27 @@ export class WorkflowCapabilityClient {
       },
     };
     const expect: WorkflowExpectApi = (
-      nameOrDeclaration: string | ExpectationDeclaration,
-      maybeRelation?: ExpectationRelation | unknown,
-      maybeValue?: unknown,
-      pattern?: string,
+      declaration: string | ExpectationDeclaration,
+      ...rest: readonly unknown[]
     ) => {
-      if (typeof nameOrDeclaration === "string") {
-        // (name, value) => equal; (name, relation, value, pattern?) => relation
-        const relation = typeof maybeRelation === "string" &&
-          ["equal", "not-equal", "baseline-greater", "baseline-less", "both-matches"].includes(maybeRelation)
-          ? maybeRelation as ExpectationRelation
-          : "equal";
-        const value = typeof maybeRelation === "string" ? maybeValue : maybeRelation;
-        this.expectDeclaration({ name: nameOrDeclaration, relation, value, ...(pattern === undefined ? {} : { pattern }) });
-      } else {
-        this.expectDeclaration(nameOrDeclaration);
+      if (typeof declaration !== "string") {
+        this.expectDeclaration(declaration);
+        return;
       }
+      // Arity decides the form, never the value's type: a two-argument call is
+      // (name, value) with the default "equal" relation. Type-sniffing here
+      // used to swallow string values ("hello v1") into the relation slot and
+      // drop them, which made two different strings compare as equal.
+      if (rest.length <= 1) {
+        this.expectDeclaration({ name: declaration, relation: "equal", value: rest[0] });
+        return;
+      }
+      this.expectDeclaration({
+        name: declaration,
+        relation: rest[0] as ExpectationRelation,
+        value: rest[1],
+        ...(rest.length >= 3 && rest[2] !== undefined ? { pattern: String(rest[2]) } : {}),
+      });
     };
     return {
       fs,

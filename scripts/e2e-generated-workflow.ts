@@ -2,13 +2,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { runAgentWorkflowVerification } from "../src/runtime/workflow-agent-pipeline.js";
-import { extractLimitArgs, type LimitsLayers } from "../src/config/limits.js";
+import { runStageFlow } from "../src/runtime/stage-flow.js";
+import { extractLimitArgs } from "../src/config/limits.js";
+import type { LayerOverrides } from "../src/config/layers.js";
 
 interface Options {
   readonly root: string;
   readonly sessionId: string;
-  readonly limitOverrides: LimitsLayers;
+  readonly limitOverrides: LayerOverrides;
 }
 
 const { overrides: limitOverrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
@@ -29,7 +30,7 @@ console.log(JSON.stringify({
   message: "Claude will write BuildWorkflow/TestWorkflow TypeScript sources before execution",
 }, null, 2));
 
-const result = await runAgentWorkflowVerification({
+const result = await runStageFlow({
   repoPath: repo,
   sessionRoot,
   sessionId: options.sessionId,

@@ -59,6 +59,8 @@ export interface E2EState {
   readonly updated_at: string;
   readonly elapsed_ms: number;
   readonly last_event: string;
+  /** Why the run aborted; null unless status is "aborted". */
+  readonly abort_reason: string | null;
 }
 
 /**
@@ -79,6 +81,7 @@ export class E2ELogger implements Logger {
   private status = "running";
   private phaseName = "INIT";
   private lastEvent = "run started";
+  private abortReason: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(root: string, runId: string, level: LogLevel = resolveLogLevel()) {
@@ -170,6 +173,15 @@ export class E2ELogger implements Logger {
     }
   }
 
+  /**
+   * Record why the run is stopping. Called once per aborted run, before
+   * `finish`, so the reason reaches both run.jsonl and state.json.
+   */
+  abort(reason: string): void {
+    this.abortReason = reason;
+    this.emit("error", "abort", reason, { reason });
+  }
+
   finish(status: string, message: string): void {
     this.stopHeartbeat();
     this.status = status;
@@ -211,6 +223,7 @@ export class E2ELogger implements Logger {
       updated_at: new Date().toISOString(),
       elapsed_ms: Date.now() - this.startedAt,
       last_event: this.lastEvent,
+      abort_reason: this.abortReason,
     };
     writeFileSync(this.statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   }

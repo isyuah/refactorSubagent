@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "id": "pure",
+  "title": "纯函数用例（已在判定中使用，作为语料自检）",
+  "why": "这 14 条是当前判据 A 层；单独跑一遍是「语料本身还能用吗」的最快自检（约 10 s，无模型、无候选）。",
+  "policy": {
+    "kind": "strict",
+    "repeats": 1,
+    "expectExit": 0,
+    "expectTap": "ok 1 - {case}",
+    "onFail": "fail-case"
+  },
+  "status": "pinned",
+  "cases": [
+    "strscpy",
+    "strtok",
+    "utf8_decode1",
+    "utf8_decode1_overrun",
+    "wtf8",
+    "idna_toascii",
+    "ip4_addr",
+    "ip6_pton",
+    "ip6_sin6_len",
+    "ip_name",
+    "uname",
+    "gethostname",
+    "getters_setters",
+    "queue_foreach_delete"
+  ],
+  "calibration": {
+    "date": "2026-09-15",
+    "run": "runs/calib-corpus",
+    "result": "14/14 stable-ok, 3 repeats each",
+    "case_run_seconds": 0,
+    "note": "本机无抖动；每条重复 3 次的 exit 与 stdout 逐字节一致，且命中期望 TAP 行"
+  }
+}

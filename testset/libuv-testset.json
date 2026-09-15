@@ -1,0 +1,656 @@
+{
+  "version": 1,
+  "kind": "libuv-refactor-testset",
+  "purpose": "行为保持型重构任务集：构建事实、自带用例测试用例清单、自研 oracle、期望声明模型与排除项。消费方是 E:/Proj/refactorSubagent 的声明制流程（DeclaredBuildSet + 自驱 TestWorkflow）。",
+  "pinned": {
+    "project": "libuv",
+    "tag": "v1.52.1",
+    "commit": "1cfa32f",
+    "date": "2026.03.06",
+    "remote": "https://github.com/libuv/libuv.git",
+    "local_path": "libuv",
+    "clone_command": "git clone --depth 1 --branch v1.52.1 https://github.com/libuv/libuv.git libuv"
+  },
+  "host": {
+    "os": "Windows 11 Pro x64 (10.0.26200)",
+    "compiler": "gcc.exe (GCC) 15.2.0 (E:/Scoop/apps/gcc/current/bin/gcc.exe)",
+    "cmake": "4.3.1",
+    "ninja": "1.13.2",
+    "generator": "Ninja",
+    "build_type": "Debug",
+    "measured_full_build_s": 32
+  },
+  "build": {
+    "configure": [
+      "cmake",
+      "-S",
+      "<worktree>",
+      "-B",
+      "<worktree>/build",
+      "-G",
+      "Ninja",
+      "-DCMAKE_BUILD_TYPE=Debug",
+      "-DBUILD_TESTING=ON",
+      "-DCMAKE_C_FLAGS=-Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers"
+    ],
+    "compile": [
+      "cmake",
+      "--build",
+      "<worktree>/build",
+      "--target",
+      "uv_run_tests_a",
+      "-j",
+      "8"
+    ],
+    "required_artifacts": [
+      "build/uv_run_tests_a.exe",
+      "build/libuv.a"
+    ],
+    "optional_artifacts": [
+      "build/uv_run_tests.exe",
+      "build/uv.dll"
+    ],
+    "runner_binary": "build/uv_run_tests_a.exe",
+    "runner_rationale": "静态链接 uv_a，不需要 DLL 在 PATH/同目录；uv_run_tests.exe 依赖共享库 uv.dll。",
+    "facts": [
+      "LIBUV_BUILD_TESTS 依赖 LIBUV_BUILD_SHARED=ON（CMakeLists.txt:30-32），不能只建静态库而保留测试目标。",
+      "GCC 15 默认把 -Wincompatible-pointer-types 当错误：src/win/util.c:630 直接编译失败（uv__convert_utf16_to_utf8 期望 char**，实参是 const char**）。必须加 -Wno-error=incompatible-pointer-types（配套 -Wno-error=discarded-qualifiers 处理 src/win/util.c:644）。",
+      "Ninja 单配置生成器：所有产物平铺在 build/ 根下，无 CMAKE_RUNTIME_OUTPUT_DIRECTORY 覆盖。",
+      "全部测试与 helper 都在同一个 exe 内，helper 由 argv[1] 选择并重新执行自身。"
+    ]
+  },
+  "runner_protocol": {
+    "select_one_case": "<runner> <case-name>",
+    "list_cases": "<runner> --list",
+    "no_flags": "除 --list 外没有 --slow/--one/--filter，也没有多名字/通配选择；子集只能多次调用。",
+    "cwd": "这些纯函数用例不读 test/fixtures，cwd 与结果无关（ctest 以源码根为 cwd）。",
+    "spawn_overhead_ms": 250,
+    "exit_codes": {
+      "0": "该用例通过",
+      "3": "ASSERT 失败（abort）",
+      "7": "TEST_SKIP —— 非零但不是失败；不能按 exit!=0 判定失败",
+      "255": "用例名不存在，或用例超时",
+      "n>7": "整轮运行时的失败个数（argc==1 时）"
+    },
+    "stdout_format": "TAP：通过为 `ok 1 - <case>`，跳过为 `ok 1 - <case> # SKIP <reason>`，失败为 `not ok 1 - <case>`，失败细节以 `# ` 前缀追加。"
+  },
+  "upstream_cases": [
+    {
+      "name": "strscpy",
+      "source": "test/test-strscpy.c:29",
+      "target": "src/strscpy.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - strscpy",
+      "measured_ms": 464,
+      "env_sensitive": false
+    },
+    {
+      "name": "strtok",
+      "source": "test/test-strtok.c:61",
+      "target": "src/strtok.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - strtok",
+      "measured_ms": 509,
+      "env_sensitive": false
+    },
+    {
+      "name": "utf8_decode1",
+      "source": "test/test-idna.c:35",
+      "target": "src/idna.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - utf8_decode1",
+      "measured_ms": 488,
+      "env_sensitive": false
+    },
+    {
+      "name": "utf8_decode1_overrun",
+      "source": "test/test-idna.c:108",
+      "target": "src/idna.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - utf8_decode1_overrun",
+      "measured_ms": 516,
+      "env_sensitive": false
+    },
+    {
+      "name": "wtf8",
+      "source": "test/test-idna.c:230",
+      "target": "src/idna.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - wtf8",
+      "measured_ms": 452,
+      "env_sensitive": false
+    },
+    {
+      "name": "idna_toascii",
+      "source": "test/test-idna.c:158",
+      "target": "src/idna.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - idna_toascii",
+      "measured_ms": 493,
+      "env_sensitive": false
+    },
+    {
+      "name": "ip4_addr",
+      "source": "test/test-ip4-addr.c:29",
+      "target": "src/inet.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - ip4_addr",
+      "measured_ms": 489,
+      "env_sensitive": false
+    },
+    {
+      "name": "ip6_pton",
+      "source": "test/test-ip6-addr.c:155",
+      "target": "src/inet.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - ip6_pton",
+      "measured_ms": 453,
+      "env_sensitive": false
+    },
+    {
+      "name": "ip6_sin6_len",
+      "source": "test/test-ip6-addr.c:168",
+      "target": "src/inet.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - ip6_sin6_len",
+      "measured_ms": 463,
+      "env_sensitive": false
+    },
+    {
+      "name": "ip_name",
+      "source": "test/test-ip-name.c:35",
+      "target": "src/inet.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - ip_name",
+      "measured_ms": 455,
+      "env_sensitive": false
+    },
+    {
+      "name": "uname",
+      "source": "test/test-uname.c:30",
+      "target": "src/win/util.c (uv_os_uname)",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - uname",
+      "measured_ms": 448,
+      "env_sensitive": false,
+      "note": "Windows 上只断言 UV_EINVAL 与 ASSERT_OK，值不断言"
+    },
+    {
+      "name": "gethostname",
+      "source": "test/test-gethostname.c:28",
+      "target": "src/win/util.c (uv_os_gethostname)",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - gethostname",
+      "measured_ms": 456,
+      "env_sensitive": false
+    },
+    {
+      "name": "getters_setters",
+      "source": "test/test-getters-setters.c",
+      "target": "src/uv-data-getter-setters.c",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - getters_setters",
+      "measured_ms": 456,
+      "env_sensitive": false
+    },
+    {
+      "name": "queue_foreach_delete",
+      "source": "test/test-queue-foreach-delete.c",
+      "target": "src/queue.h",
+      "expected_exit": 0,
+      "expected_stdout_regex": "^ok 1 - queue_foreach_delete",
+      "measured_ms": 466,
+      "env_sensitive": false
+    }
+  ],
+  "oracles": [
+    {
+      "name": "oracle_strtok",
+      "source": "testset/oracle/oracle_strtok.c",
+      "binary": "build/oracle_strtok.exe",
+      "target": "src/strtok.c",
+      "checks_ok": 21,
+      "expected_exit": 0,
+      "expected_stdout_regex": "strtok-oracle: total_failures=0",
+      "pins": [
+        "\"a..b\" sep \".\" -> [a][][b]：相邻分隔符产生空 token，不跳过",
+        "\"abc.\" sep \".\" -> [abc][]：尾随分隔符产生一个尾部空 token",
+        "\".abc\" -> [][abc]：首部分隔符产生前导空 token",
+        "\"...\" -> 四个空 token",
+        "空串 -> 一个空 token（非 NULL）",
+        "sep==\"\" -> 整串一个 token，随后 NULL",
+        "原地破坏：每次命中分隔符处写 NUL；itr 依次推进到 token 之后，末尾置 NULL",
+        "itr 为 NULL 后继续调用恒返回 NULL"
+      ],
+      "gap_covered": "自带用例只用无相邻/首尾分隔符的输入，且把 src/strtok.c 直接 include 进测试 TU；Windows 上库内副本没有任何生产调用者，自带用例套件对其零覆盖。"
+    },
+    {
+      "name": "oracle_strscpy",
+      "source": "testset/oracle/oracle_strscpy.c",
+      "binary": "build/oracle_strscpy.exe",
+      "target": "src/strscpy.c",
+      "checks_ok": 23,
+      "expected_exit": 0,
+      "expected_stdout_regex": "strscpy-oracle: total_failures=0",
+      "pins": [
+        "n==0：返回 0 且一个字节都不写（不是 UV_E2BIG）",
+        "n==1 且源为 \"x\"：返回 UV_E2BIG(-4093)，d[0]==0，d[1] 未被触碰",
+        "恰好装下：\"xyz\" 在 4 字节中返回 3，内容 \"xyz\\0\"",
+        "截断：写入恰好 n-1 个源字节并置 d[n-1]=0，返回 UV_E2BIG",
+        "写出区域之外的字节从不被触碰",
+        "d==s 别名时结果不被破坏"
+      ],
+      "gap_covered": "自带用例不测 n==1、不检查写出区域之外的字节、不测别名。"
+    },
+    {
+      "name": "oracle_inet",
+      "source": "testset/oracle/oracle_inet.c",
+      "binary": "build/oracle_inet.exe",
+      "target": "src/inet.c",
+      "checks_ok": 48,
+      "expected_exit": 0,
+      "expected_stdout_regex": "inet-oracle: total_failures=0",
+      "pins": [
+        "单个零组不压缩：2001:db8:0:1:1:1:1:1",
+        "两个及以上零组才压缩：2001:db8::1 / :: / ::1",
+        "v4-mapped 渲染为 ::ffff:1.2.3.4",
+        "缓冲区规则为 size >= strlen(渲染结果)+1；否则 UV_ENOSPC(-4055) 且目标缓冲区完全不被写入",
+        "AF_INET 同样规则：\"1.2.3.4\" 需要 size>=8",
+        "uv_inet_pton 拒绝尾随点/短串/溢出/空元素/双重压缩/超长组，返回 UV_EINVAL(-4071)；未知 family 返回 UV_EAFNOSUPPORT(-4089)",
+        "zone 后缀（fe80::1%7）在解析前被剥离且不校验"
+      ],
+      "gap_covered": "自带用例的 ip4_addr/ip6_pton/ip6_sin6_len/ip_name 完全不经过 AF_INET6 的 ntop 路径。"
+    },
+    {
+      "name": "oracle_errstr",
+      "source": "testset/oracle/oracle_errstr.c",
+      "binary": "build/oracle_errstr.exe",
+      "target": "src/uv-common.c:198-250",
+      "checks_ok": 24,
+      "expected_exit": 0,
+      "expected_stdout_regex": "errstr-oracle: total_failures=0",
+      "pins": [
+        "uv_err_name(UV_EINVAL)==\"EINVAL\"，uv_strerror(UV_EINVAL)==\"invalid argument\"",
+        "uv_err_name(UV_ENOENT)==\"ENOENT\"，uv_strerror(UV_ENOENT)==\"no such file or directory\"",
+        "未知码与 0 走 heap 分支：\"Unknown system error <n>\"（含负数）",
+        "uv_err_name_r/uv_strerror_r 恒返回传入的 buf，并 NUL 结尾",
+        "截断规则：n-1 字节 + NUL（uv_strerror_r(EINVAL,buf,4)==\"inv\"；uv_err_name_r(EINVAL,buf,2)==\"E\"；n==1 -> 空串）"
+      ],
+      "gap_covered": "test/test-error.c:49-58 是唯一断言点，但其守卫比较 uv_strerror(0) 与 \"Success\"（实际为 \"Unknown system error 0\"），永远打印 'i18n error messages detected, skipping test.' 后返回 0——断言从未执行。"
+    },
+    {
+      "name": "oracle_getters",
+      "source": "testset/oracle/oracle_getters.c",
+      "binary": "build/oracle_getters.exe",
+      "target": "src/uv-data-getter-setters.c",
+      "checks_ok": 52,
+      "expected_exit": 0,
+      "expected_stdout_regex": "getters-oracle: total_failures=0",
+      "pins": [
+        "uv_handle_type_name 全表 0..18：UV_UNKNOWN_HANDLE 与 UV_HANDLE_TYPE_MAX 为 NULL，UV_FILE 为 \"file\"，越界为 NULL",
+        "uv_req_type_name 全表 0..19：1..10 为表内名字，11..18（Windows 私有类型 UV_ACCEPT..UV_SIGNAL_REQ）与 UV_UNKNOWN_REQ/UV_REQ_TYPE_MAX 均为 NULL",
+        "uv_udp_get_send_queue_size 读 send_queue_size，uv_udp_get_send_queue_count 读 send_queue_count（用 0x1111/0x2222 区分，互换即失败）",
+        "uv_process_get_pid 逐字返回 proc->pid",
+        "uv_req_get_type 逐字返回 req->type；uv_req_get_data/uv_req_set_data 往返"
+      ],
+      "gap_covered": "自带用例从不调用 uv_udp_get_send_queue_size/count、uv_process_get_pid、uv_req_get_type/get_data/set_data。"
+    },
+    {
+      "name": "oracle_version",
+      "source": "testset/oracle/oracle_version.c",
+      "binary": "build/oracle_version.exe",
+      "target": "src/version.c",
+      "checks_ok": 6,
+      "expected_exit": 0,
+      "expected_stdout_regex": "version-oracle: total_failures=0",
+      "pins": [
+        "uv_version()==0x00013401 且等于 UV_VERSION_HEX",
+        "uv_version_string()==\"1.52.1\" 且与 MAJOR.MINOR.PATCH 一致",
+        "重复调用稳定"
+      ],
+      "gap_covered": "全仓没有任何用例调用 uv_version/uv_version_string。"
+    }
+  ],
+  "excluded_cases": [
+    {
+      "name": "getaddrinfo_fail",
+      "reason": "解析 example.invalid. 并断言失败；通配 DNS/captive portal 会让它成功而硬失败"
+    },
+    {
+      "name": "getaddrinfo_fail_sync",
+      "reason": "同上（超时上限 10s）"
+    },
+    {
+      "name": "getaddrinfo_basic",
+      "reason": "依赖 localhost 解析（hosts/DNS）"
+    },
+    {
+      "name": "getaddrinfo_basic_sync",
+      "reason": "同上"
+    },
+    {
+      "name": "getaddrinfo_concurrent",
+      "reason": "10 路并发解析 + threadpool，负载下会晃"
+    },
+    {
+      "name": "getnameinfo_basic_ip4",
+      "reason": "flags=0 走真实 PTR 反查"
+    },
+    {
+      "name": "getnameinfo_basic_ip4_sync",
+      "reason": "同上"
+    },
+    {
+      "name": "getnameinfo_basic_ip6",
+      "reason": "PTR 反查且要求主机启用 IPv6"
+    },
+    {
+      "name": "ip6_addr_link_local",
+      "reason": "枚举真实网卡；VPN/Hyper-V/WSL 适配器变化会改变枚举结果（无 fe80:: 地址时该用例空转通过）"
+    }
+  ],
+  "expectation_model": {
+    "host_semantics": "自驱 TestWorkflow 在 baseline 与 candidate 各执行一次；宿主按位置配对 ctx.expect 声明。baseline 值只与 candidate 值比较。",
+    "absolute_assertion": "ctx.expect(name, \"both-matches\", value, \"^pattern\")：两侧各自匹配正则（value 必须是字符串）。用于把 '必须为 0 / 必须为这段文本' 钉死。",
+    "differential_assertion": "ctx.expect(name, value)（默认 relation=equal）：要求两侧观测值相同，用于抓 candidate 相对 baseline 的任何漂移。",
+    "newline_caveat": "JS 正则的 $ 不匹配结尾换行，模式不要以 $ 收尾；先对 stdout 做 trim()。",
+    "per_stock_case": [
+      "(name + \".exit\", \"both-matches\", String(result.exitCode).trim(), \"^0\")",
+      "(name + \".tap\", \"both-matches\", result.stdout.trim(), \"^ok 1 - <case>\")",
+      "(name + \".transcript\", result.stdout.trim())  -> equal 漂移检查"
+    ],
+    "per_oracle": [
+      "(oracle + \".exit\", \"both-matches\", String(result.exitCode), \"^0\")",
+      "(oracle + \".summary\", \"both-matches\", stdout.trim(), \"total_failures=0\")",
+      "(oracle + \".transcript\", stdout.trim())  -> equal 漂移检查"
+    ],
+    "declaration_order": "两侧声明数量与顺序必须完全一致：所有 assertFile/编译/运行失败都必须在 declare 之前以 throw 结束（fail-closed），不要在循环里按环境分支提前 return。"
+  },
+  "mutations": [
+    {
+      "id": "mut-strtok-final-empty-token",
+      "file": "src/strtok.c",
+      "change": "末尾 *itr = NULL 后改为 `return (start != NULL && *start == '\\0') ? NULL : start;`（丢弃尾部/空输入的空 token）",
+      "stock_result": "`uv_run_tests_a.exe strtok` 仍为 ok 1 - strtok（rc=0）",
+      "oracle_result": "oracle_strtok 4 项失败：trailing-separator / all-separators / empty-input / runs-and-edges",
+      "conclusion": "自带用例对空 token 语义零覆盖；oracle 能抓到。"
+    },
+    {
+      "id": "mut-inet-single-zero-group",
+      "file": "src/inet.c:105",
+      "change": "`best.len < 2` 改为 `best.len < 1`（单个零组也被压缩）",
+      "stock_result": "ip4_addr / ip6_pton / ip6_sin6_len / ip_name 全部仍为 ok（rc=0）",
+      "oracle_result": "oracle_inet 4 项失败：ntop6-plain 渲染变化，且 ntop6-plain-short 边界随之改变",
+      "conclusion": "自带用例不经过 AF_INET6 ntop 路径；oracle 能抓到。"
+    }
+  ],
+  "task_baseline": {
+    "branch": "task-baseline",
+    "content": "libuv v1.52.1 + refactor-task/（判据 + 任务定义 + 10 个候选补丁） + 根 .gitattributes（* -text，防行尾转换）",
+    "sha_note": "精确提交见 README「钉死的事实」表，或 `git -C libuv rev-parse task-baseline`",
+    "sha": "c6154e79c3f4669e603fd287cdb89e5795d62235",
+    "sha_history": [
+      {
+        "sha": "c0f65f3",
+        "note": "T3 运行记录（AI 重构 src/inet.c，ACCEPTED）"
+      },
+      {
+        "sha": "bcfd4ec",
+        "note": "变异语料 8 个补丁 + 任务简报改为调用方提供（TASK.md 泛化）"
+      },
+      {
+        "sha": "e9ec612",
+        "note": "当前：同步仓内测试集清单（mutation corpus / parts / suite / tasks）"
+      },
+      {
+        "sha": "5e2d240",
+        "note": "术语拆分：判据=judgement，裁判=rubric（仓内清单同步）"
+      },
+      {
+        "sha": "7b00a02",
+        "note": "曾加过判据内重建守卫，判定为错误设计后撤销"
+      },
+      {
+        "sha": "5262632",
+        "note": "撤销回到原判据（摘要 738664b0…），语料与外置清单不变"
+      },
+      {
+        "sha": "c6154e7",
+        "note": "新增 inet 行为保持补丁（writer 档好坏配对准同一文件）"
+      }
+    ]
+  },
+  "judgement_workflows": {
+    "note": "判据 workflow 本体，随基线提交；harness 用 --pipeline-file 的 preset 模式注入，代替两个 AI 会话。",
+    "files": {
+      "refactor-task/workflows/build-workflow.ts": "ed3e67f3e310b4996a7960dbee64d35f5bca2edfacce4070f317d2611a90674e",
+      "refactor-task/workflows/test-workflow.ts": "738664b0f6e9799cfef27f6c2fad57d43327898f0aae827e0f8e6e8ae6ae69db"
+    },
+    "test_workflow_shape": {
+      "declarations_per_side": 98,
+      "layers": [
+        "2 条：refactor-task/oracle 目录摘要（both-matches 精确串 + equal 跨侧）",
+        "30 条：15 个 test/** 判据文件逐个摘要（both-matches + equal）",
+        "6 条：oracle 编译退出码（both-matches ^0，失败降级为声明值而非抛异常）",
+        "42 条：14 个自带用例（exit ^0 / TAP ^ok 1 - <case> / stdout 跨侧相等）",
+        "18 条：6 个 oracle（exit ^0 / summary ^<name>-oracle: total_failures=0 / stdout 跨侧相等）"
+      ]
+    }
+  },
+  "pipeline_configs": {
+    "accept": "testset/pipeline/m1a-accept.json",
+    "reject": "testset/pipeline/m1a-reject.json",
+    "invocation": "bun run scripts/cli.ts run <libuv 检出> --task <task> --pipeline-file <json> --session <id> --session-root <runs 目录>",
+    "m1b_refactor_ai": "testset/pipeline/m1b-strtok-ai.json",
+    "m1b_task_text": "testset/tasks/t1-strtok.task.txt",
+    "m1b2_refactor_ai": "testset/pipeline/m1b2-inet-ai.json",
+    "m1b2_task_text": "testset/tasks/t3-inet.task.txt",
+    "all_task_texts": [
+      "testset/tasks/t1-strtok.task.txt",
+      "testset/tasks/t2-strscpy.task.txt",
+      "testset/tasks/t3-inet.task.txt",
+      "testset/tasks/t4-errstr.task.txt",
+      "testset/tasks/t5-getters.task.txt",
+      "testset/tasks/t6-version.task.txt"
+    ]
+  },
+  "validation_runs": [
+    {
+      "id": "m1a-accept-s2",
+      "kind": "acceptance-dry-run (no model calls)",
+      "candidate": "refactor-task/patches/m1a-accept.patch（src/strtok.c 加一行注释，行为不变）",
+      "state": "ACCEPTED",
+      "exit_code": 0,
+      "comparison": "all 98 expectation(s) consistent",
+      "notes": "两侧 build pass；injected_stages=[workflows, refactor]；verification_authoritative=true"
+    },
+    {
+      "id": "m1a-reject-s2",
+      "kind": "acceptance-dry-run (no model calls)",
+      "candidate": "refactor-task/patches/m1a-reject.patch（M1：丢弃空/尾 token，两处 return start 都改）",
+      "state": "REJECTED",
+      "exit_code": 1,
+      "comparison": "95/98；仅 oracle_strtok.exit / .summary / .stdout 失配",
+      "stock_suite_verdict": "14 个自带用例全绿（strtok 仍为 `ok 1 - strtok`，exit 0）——上游对该改动失明",
+      "oracle_failures": [
+        "empty-token-between expected=\"[a]|[]|[b]|END\" got=\"[a]|END\"",
+        "trailing-separator expected=\"[abc]|[]|END\" got=\"[abc]|END\"",
+        "leading-separator expected=\"[]|[abc]|END\" got=\"END\"",
+        "all-separators expected=\"[]|[]|[]|[]|END\" got=\"END\"",
+        "empty-input expected=\"[]|END\" got=\"END\"",
+        "runs-and-edges expected=\"[]|[]|[x]|[]|[y]|[]|END\" got=\"END\"",
+        "mutate-second-token expected=\"\" got=\"(null)\""
+      ]
+    },
+    {
+      "id": "m1b-strtok-s1",
+      "kind": "frozen judgement + AI refactor session (T1: src/strtok.c)",
+      "config": "testset/pipeline/m1b-strtok-ai.json（workflows=preset，refactor=ai）",
+      "limits": {
+        "sessions.refactor.deadlineMs": 1800000,
+        "sessions.refactor.maxTurns": 60
+      },
+      "state": "ACCEPTED",
+      "exit_code": 0,
+      "comparison": "all 98 expectation(s) consistent",
+      "patch": {
+        "branch": "refactor/agent-m1b-strtok-s1",
+        "commit_sha": "1c1f9b9bfddb5e02b08ba116d9461c357c1dc06a",
+        "base_commit_sha": "9ddbf6201cf932f13357d80561f1a87ad191247e",
+        "changed_files": [
+          "src/strtok.c"
+        ],
+        "shape": "抽出 static uv__strtok_is_sep 谓词；两条赋值分支合成三元式；tmp==NULL 早退提前；循环体平坦化（18 增 / 15 删）"
+      },
+      "wall_clock_s": 249.4,
+      "phase_seconds": {
+        "prepare": 6.9,
+        "refactor_session": 56.7,
+        "baseline_build": 56.6,
+        "baseline_test": 16.0,
+        "candidate_build": 90.0,
+        "candidate_test": 21.1
+      },
+      "notes": "判据与 M1a 完全同一套（同一份 test-workflow.ts + 同一 DAG）；只有 refactor 槽来自 AI。对标 §9 的 M1：同类文件上，破坏性改动判 REJECT、行为保持重构判 ACCEPT。"
+    },
+    {
+      "id": "m1b2-inet-s1",
+      "kind": "frozen judgement + AI refactor session (T3: src/inet.c, harder target; judgement unchanged)",
+      "config": "testset/pipeline/m1b2-inet-ai.json（workflows=preset，refactor=ai）",
+      "limits": {
+        "sessions.refactor.deadlineMs": 2400000,
+        "sessions.refactor.maxTurns": 80
+      },
+      "state": "ACCEPTED",
+      "exit_code": 0,
+      "comparison": "all 98 expectation(s) consistent",
+      "patch": {
+        "branch": "refactor/agent-m1b2-inet-s1",
+        "commit_sha": "8c6166c74630",
+        "base_commit_sha": "b7463b73a40f54b720bf30895d06ec953057e805",
+        "changed_files": [
+          "src/inet.c"
+        ],
+        "diff_size": {
+          "insertions": 124,
+          "deletions": 56
+        },
+        "shape": "新增 static inet_ntop_finish / inet_words_from_bytes / inet_find_best_run(+struct inet_run) / inet_pton6_emit；两处 ENOSPC 尾巴合一；inet_pton4 状态机 continue 平坦化；embedded_v4 提变量",
+        "preserved_boundaries": [
+          "best.len < 2（单零组不压缩）",
+          "len > size（比较含结尾 NUL，等价 size >= len+1）"
+        ]
+      },
+      "wall_clock_s": 244.2,
+      "phase_seconds": {
+        "prepare": 6.2,
+        "refactor_session": 134.5,
+        "baseline_build": 40.1,
+        "baseline_test": 11.6,
+        "candidate_build": 39.2,
+        "candidate_test": 11.8
+      },
+      "notes": "判据与 T1 两轮完全同一份（98 条声明、同一 DAG、同一 pins）；只有任务侧加难（298 行 / 4 个 static / 48 项 oracle_inet 检查 + 4 个自带用例）。refactor 会话耗时 56.7 s → 134.5 s，与任务规模同步增长。"
+    },
+    {
+      "id": "capability-t2-t6",
+      "kind": "frozen judgement + AI refactor sessions (T2 strscpy / T4 errstr / T5 getters / T6 version)",
+      "date": "2026-09-15",
+      "baseline": "5262632",
+      "result": "4/4 ACCEPTED, 0 mismatches, both builds pass, wall 9m35s at concurrency 2",
+      "artifacts": "runs/capability-t2-t6/<case>/ + summary.json",
+      "notes": "期望 injected_stages 首版写错（把 mode:ai 也算注入），修正后用 --reevaluate 重判，未重跑模型"
+    },
+    {
+      "id": "verify-judgement",
+      "kind": "judgement suite re-run with frozen exact mismatch sets",
+      "date": "2026-09-15",
+      "baseline": "7b00a02 (唯一差异是后来撤销的重建守卫)",
+      "result": "10/10 pass, attribution-exact true for all frozen cases",
+      "artifacts": "runs/verify-judgement/summary.json"
+    },
+    {
+      "id": "calib-corpus",
+      "kind": "upstream corpus parts (pure/loop/thread/util) stability classification",
+      "date": "2026-09-15",
+      "baseline": "5e2d240",
+      "result": "65/65 stable-ok (3 repeats per candidate case), wall 3m16s at concurrency 2",
+      "artifacts": "runs/calib-corpus/"
+    },
+    {
+      "id": "capability-writer-r2",
+      "kind": "writer capability (M2): AI writes build/test workflows, programmatic verdict + rubric scorer",
+      "date": "2026-09-15",
+      "baseline": "c6154e7",
+      "result": "4/4 writer cases pass (good/evil × material/hidden); rubric 0.78-0.91; e2e-t1-full ABORTED by source policy (workflow imports a host API)",
+      "artifacts": "runs/capability-writer-r2/ (per-case + summary.json + summary.reevaluated.json)",
+      "notes": "第一版用例把 strtok 简报配上 inet 补丁，测量无效；修正简报/补丁配对并把 hidden 档轮次上限从 60 提到 140"
+    }
+  ],
+  "dry_run_findings": [
+    "首轮演练抓到：15 个 test/** 摘要在 CRLF 工作区上计算 → LF checkout 全表失配。已改为按 blob 字节重算，并在仓库根加 `* -text` + 克隆内 core.autocrlf=false。",
+    "首轮演练抓到：oracle 汇总行名字是 `strtok-oracle`（源内宏），不是文件名 `oracle_strtok`；6 条 summary 声明写成文件名后两侧都不匹配。已在 workflow 内加 ORACLE_SUMMARY_NAMES 映射。"
+  ],
+  "mutation_corpus": {
+    "note": "候选补丁：行为变异必须被判 REJECTED，判据篡改必须被摘要抓到；期望失配集见 suite.json 各用例的 failuresRequired",
+    "patches": {
+      "mutant-strscpy-n0": "uv__strscpy(d,s,0) 返回 UV_E2BIG（应为 0）→ 期望 oracle_strscpy.* 失配",
+      "mutant-inet-zero": "单个零组也被压缩（best.len < 1）→ 期望 oracle_inet.* 失配",
+      "mutant-getters-udp": "uv_udp_get_send_queue_{size,count} 互换字段 → 期望 oracle_getters.* 失配",
+      "mutant-version-hex": "uv_version() 返回 UV_VERSION_HEX + 1 → 期望 oracle_version.* 失配",
+      "mutant-errstr-unknown": "未知码措辞改为 \"Unknown error N\" → 期望 oracle_errstr.* 失配",
+      "tamper-weaken-tests": "test/test-strtok.c 删掉循环内 ASSERT_STRCMP → 期望 test/** 摘要失配",
+      "tamper-edit-oracle": "oracle_strtok.c 删掉一条检查 → 期望 oracle.sources 摘要失配",
+      "tamper-drop-case": "test/test-list.h 删掉 TEST_DECLARE/TEST_ENTRY(strtok) → 期望摘要 + strtok.* 失配"
+    },
+    "location": "libuv/refactor-task/patches/"
+  },
+  "corpus_parts": {
+    "note": "上游 437 个用例里按部分挑出的候选语料；pure 已是判据 A 层，其余为 calibrate 候选",
+    "parts": {
+      "pure": {
+        "file": "testset/parts/pure.json",
+        "cases": 14,
+        "policy": "strict",
+        "status": "pinned",
+        "calibration": "1 run, all stable-ok (already in the judgement workflow)"
+      },
+      "loop": {
+        "file": "testset/parts/loop.json",
+        "cases": 19,
+        "policy": "calibrate",
+        "status": "measured-stable (2026-09-15, runs/calib-corpus)",
+        "calibration": "3 repeats per case, all stable-ok"
+      },
+      "thread": {
+        "file": "testset/parts/thread.json",
+        "cases": 22,
+        "policy": "calibrate",
+        "status": "measured-stable (2026-09-15, runs/calib-corpus)",
+        "calibration": "3 repeats per case, all stable-ok"
+      },
+      "util": {
+        "file": "testset/parts/util.json",
+        "cases": 10,
+        "policy": "calibrate",
+        "status": "measured-stable (2026-09-15, runs/calib-corpus)",
+        "calibration": "3 repeats per case, all stable-ok"
+      }
+    }
+  },
+  "suite": {
+    "file": "testset/suite.json",
+    "runner": "testset/run.ts",
+    "usage": "bun testset/run.ts --list | --dry-run | --subject <s> | --tag <t> | --self-test",
+    "subjects": {
+      "judgement": "判据本体（离线、不调模型）：程序化判定 + 失配声明归因",
+      "refactor": "重构能力（判据冻结 + AI 会话）：程序化判定",
+      "writer": "判据编写能力（AI 写 workflow）：程序化（注入已知好坏补丁）+ 裁判 rubric 打分",
+      "e2e": "端到端（AI 写判据 + AI 重构）：程序化 + 裁判评述",
+      "corpus": "测试语料本身：strict（逐条必须过）/ calibrate（重复 N 次分类）"
+    },
+    "isolation": "每个 pipeline 用例独立 clone（7 MB）+ 独立 session root；corpus 用例共用一份检出与构建",
+    "evidence": "runs/suite-<ts>/summary.json + 每例 run-result.json / part-result.json / rubric.json / written/",
+    "rubric_scorer": "testset/runner/rubric.ts（裁判，测试侧工具；--rubric-cmd 接外部命令）"
+  }
+}

@@ -70,16 +70,24 @@ export function hasBranch(repo: string, branch: string): boolean {
 
 /**
  * Create the worktree pair. `candidateBranch` must already hold the
- * refactoring commits; it is NOT created here (the refactor agent owns that
- * step). Baseline always checks out the recorded base commit.
+ * refactoring commits (either pre-existing, or created by the caller); it is
+ * NOT created here (the refactor agent owns that step). Baseline always checks
+ * out the recorded base commit.
+ *
+ * `reuse` switches the pair to a caller-owned, persistent layout: an existing
+ * directory is reset in place (tracked edits dropped, ignored build outputs
+ * kept) instead of being left alone, and `keep` stops cleanup from deleting it.
+ * That is what makes a warm cmake/ninja directory reusable — the build tree
+ * pins absolute paths, so it can only be reused where it was created.
  */
 export function createWorktrees(
   repo: string,
-  sessionRoot: string,
+  worktreeRoot: string,
   candidateBranch: string,
   baseSha = resolveHead(repo),
+  reuse: { readonly reuse?: boolean; readonly keep?: boolean } = {},
 ): WorktreePair {
-  const wtRoot = join(sessionRoot, "worktrees");
+  const wtRoot = join(worktreeRoot, "worktrees");
   mkdirSync(wtRoot, { recursive: true });
 
   const baselineDir = join(wtRoot, "baseline");
@@ -93,12 +101,32 @@ export function createWorktrees(
       git(repo, ["branch", baseBranch, baseSha], "branch base");
     }
     git(repo, ["worktree", "add", "--detach", baselineDir, baseBranch], "add baseline");
+  } else if (reuse.reuse === true) {
+    try {
+      git(baselineDir, ["checkout", "--force", "--detach", baseSha], "detach reused baseline");
+      resetToBase(baselineDir, baseSha, "baseline");
+    } catch {
+      // A directory left by a clone that has since moved or been deleted is not
+      // a worktree any more (its .git still points at the old registration).
+      // Drop it and rebuild: the warm outputs are lost, the run stays correct.
+      recreateWorktree(repo, baselineDir, ["--detach"], baseSha);
+    }
   }
   if (!hasBranch(repo, candidateBranch)) {
     throw new Error(`candidate branch not found: ${candidateBranch}`);
   }
   if (!existsSync(candidateDir)) {
     git(repo, ["worktree", "add", candidateDir, candidateBranch], "add candidate");
+  } else if (reuse.reuse === true) {
+    try {
+      // Stay ON the branch: the refactor agent commits here, and a dangling
+      // detached commit would leave `refactor/agent-<session>` pointing at baseSha.
+      git(candidateDir, ["checkout", "--force", candidateBranch], "checkout reused candidate");
+      resetToBase(candidateDir, baseSha, "candidate");
+    } catch {
+      recreateWorktree(repo, candidateDir, [], candidateBranch);
+      resetToBase(candidateDir, baseSha, "candidate");
+    }
   }
 
   return {
@@ -106,10 +134,51 @@ export function createWorktrees(
     candidateDir,
     baseSha,
     cleanup() {
+      if (reuse.keep === true) return;
       for (const dir of [baselineDir, candidateDir]) {
         if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
       }
       git(repo, ["worktree", "prune"], "prune");
     },
   };
+}
+
+/**
+ * Free a worktree that still holds a branch, so the caller can recreate that
+ * branch for a new session in the same persistent root.
+ */
+export function releaseWorktree(dir: string): void {
+  if (!existsSync(dir)) return;
+  try {
+    git(dir, ["checkout", "--force", "--detach"], "detach stale worktree");
+  } catch {
+    // A directory that is no longer a valid worktree is handled by the caller's
+    // next `worktree add`; nothing to release.
+  }
+}
+
+/**
+ * Drop a directory whose worktree registration is gone and create it again.
+ * Used when a reused root was moved or its clone replaced underneath it.
+ */
+function recreateWorktree(
+  repo: string,
+  dir: string,
+  options: readonly string[],
+  commitish: string,
+): void {
+  rmSync(dir, { recursive: true, force: true });
+  git(repo, ["worktree", "prune"], "prune stale worktree");
+  // `git worktree add [<options>] <path> <commit-ish>`: the path comes first.
+  git(repo, ["worktree", "add", ...options, dir, commitish], "recreate worktree");
+}
+
+/**
+ * Drop tracked-file edits in a reused worktree while keeping ignored build
+ * outputs: a warm cmake/ninja directory is the point of reuse, and ninja
+ * rebuilds whatever the reset changed.
+ */
+function resetToBase(dir: string, baseSha: string, what: string): void {
+  git(dir, ["reset", "--hard", baseSha], `reset reused ${what}`);
+  git(dir, ["clean", "-fd", "-e", "build"], `clean reused ${what}`);
 }

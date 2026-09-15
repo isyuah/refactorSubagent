@@ -1,0 +1,13 @@
+diff --git a/src/strtok.c b/src/strtok.c
+index 45ddea5..e5a96d0 100644
+--- a/src/strtok.c
++++ b/src/strtok.c
+@@ -25,7 +25,7 @@
+ char* uv__strtok(char* str, const char* sep, char** itr) {
+   const char* sep_itr;
+   char* tmp;
+-  char* start;
++  char* start;  /* the token being built */
+ 
+   if (str == NULL)
+     start = tmp = *itr;

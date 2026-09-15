@@ -1,0 +1,13 @@
+diff --git a/src/inet.c b/src/inet.c
+index 620be5a..6feaea6 100644
+--- a/src/inet.c
++++ b/src/inet.c
+@@ -102,7 +102,7 @@ static int inet_ntop6(const unsigned char *src, char *dst, size_t size) {
+     if (best.base == -1 || cur.len > best.len)
+       best = cur;
+   }
+-  if (best.base != -1 && best.len < 2)
++  if (best.base != -1 && best.len < 1)
+     best.base = -1;
+ 
+   /*

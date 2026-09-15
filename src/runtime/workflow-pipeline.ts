@@ -63,6 +63,8 @@ export interface WorkflowVerificationOutcome {
   readonly baseline: CTestBaseline | null;
   readonly candidate: CTestCandidate | null;
   readonly comparison: CTestComparisonResult | null;
+  /** Self-driven test path: the declared-expectation comparison that decided the run. */
+  readonly expectationComparison: ExpectationComparisonResult | null;
 }
 
 /**
@@ -216,6 +218,7 @@ export async function runWorkflowVerification(
     baseline,
     candidate,
     comparison,
+    expectationComparison: null,
   };
 }
 
@@ -372,6 +375,7 @@ async function runSelfDrivenCore(
     baseline: null,
     candidate: null,
     comparison: null,
+    expectationComparison: comparisonArtifact,
   };
 }
 
@@ -552,6 +556,7 @@ function emptyOutcome(
     baseline: null,
     candidate: null,
     comparison: null,
+    expectationComparison: null,
   };
 }
 

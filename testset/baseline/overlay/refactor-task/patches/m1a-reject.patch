@@ -1,0 +1,19 @@
+diff --git a/src/strtok.c b/src/strtok.c
+index 45ddea5..82c6474 100644
+--- a/src/strtok.c
++++ b/src/strtok.c
+@@ -41,12 +41,12 @@ char* uv__strtok(char* str, const char* sep, char** itr) {
+       if (*tmp == *sep_itr) {
+         *itr = tmp + 1;
+         *tmp = '\0';
+-        return start;
++        return (start && *start == '\0') ? NULL : start;
+       }
+       sep_itr++;
+     }
+     tmp++;
+   }
+   *itr = NULL;
+-  return start;
++  return (start && *start == '\0') ? NULL : start;
+ }

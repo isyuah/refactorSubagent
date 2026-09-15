@@ -3,3 +3,10 @@ node_modules/
 *.tsbuildinfo
 .claude/skills/
 .refactorsa/
+
+# Test set: only the runner and its expectations are versioned. The pinned
+# libuv checkout, the evidence of past runs and the warm build slots are all
+# reproducible (or huge), so they stay on disk and out of history.
+libuv/
+runs/
+testset/.cache/

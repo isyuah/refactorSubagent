@@ -101,7 +101,7 @@ describe("limits validation", () => {
   test("a mistyped override key names the available keys", () => {
     expect(() =>
       resolveLimits({ repoRoot: repo, homeDir: home, overrides: { values: ["stages.builMs=1"] } }),
-    ).toThrow(/unknown limit override 'stages.builMs'.*buildMs, ctestMs, testWorkflowMs/);
+    ).toThrow(/unknown limit override 'stages\.builMs'[\s\S]*buildMs[\s\S]*ctestMs[\s\S]*testWorkflowMs/);
   });
 
   test("non-JSON and non-positive values are rejected with the file named", () => {
