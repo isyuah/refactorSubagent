@@ -60,6 +60,11 @@ export interface DriverOptions {
   allowedTools: string[];
   /** Max assistant turns. Omitted/null = SDK default (unbounded). */
   maxTurns?: number | null;
+  /**
+   * Model name/id for this session (e.g. a gateway alias like `codeagent`).
+   * Omitted/null = whatever the CLI resolves from user settings and environment.
+   */
+  model?: string | null;
   /** Host deadline for the SDK query. Omitted means no deadline. */
   timeoutMs?: number;
   /** Treat N ms without any SDK message as a dead stream and abort. null disables the watchdog. */
@@ -117,6 +122,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       ...(o.mcpServers !== undefined ? { mcpServers: o.mcpServers } : {}),
       systemPrompt: o.systemPrompt,
       ...(o.maxTurns !== undefined && o.maxTurns !== null ? { maxTurns: o.maxTurns } : {}),
+      ...(o.model !== undefined && o.model !== null ? { model: o.model } : {}),
       abortController,
       ...(o.outputFormat ? { outputFormat: o.outputFormat } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),

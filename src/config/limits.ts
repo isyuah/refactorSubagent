@@ -18,7 +18,8 @@ import {
  *   2. ~/.refactor/limits.json            (user)
  *   3. <repo>/.refactor/limits.json       (project)
  *   4. --limits-file <path> ...           (explicit, in order)
- *   5. --limit <key.path>=<value> ...     (single values, in order)
+ *   5. --limit <key.path>=<value> ...     (single values, in order; every key
+ *      takes a number or null, except `sessions.<stage>.model` which takes a name)
  *
  * Time budgets default to `null` (unbounded): a deadline tuned for a small
  * project kills a healthy large one, and the failure surfaces as an opaque
@@ -43,6 +44,11 @@ export const SessionLimits = z
     stallMs: NullablePositiveInt,
     /** Max assistant turns. null = SDK default. */
     maxTurns: NullablePositiveInt,
+    /**
+     * Model name/id handed to the agent CLI for this session. null = whatever
+     * the CLI resolves on its own (user settings / environment).
+     */
+    model: z.union([z.string().min(1), z.null()]),
   })
   .strict();
 
@@ -114,8 +120,8 @@ export type ResourceLimits = z.infer<typeof ResourceLimits>;
 export const DEFAULT_LIMITS: Limits = {
   version: 1,
   sessions: {
-    testWriter: { deadlineMs: null, stallMs: 180_000, maxTurns: 48 },
-    refactor: { deadlineMs: null, stallMs: 180_000, maxTurns: 80 },
+    testWriter: { deadlineMs: null, stallMs: 180_000, maxTurns: 48, model: null },
+    refactor: { deadlineMs: null, stallMs: 180_000, maxTurns: 80, model: null },
   },
   stages: { buildMs: null, ctestMs: null, testWorkflowMs: null, policyRepairs: 1 },
   commands: { processMs: null, readyMs: 10_000 },
@@ -154,6 +160,8 @@ const LIMITS_LAYERS: LayeredConfigSpec<{ repoRoot: string; homeDir: string }, Li
   paths: ({ repoRoot, homeDir }) => limitsPaths(repoRoot, homeDir),
   parseValue: (text, raw) => {
     if (text === "null") return null;
+    // Session models are names, not budgets: `--limit sessions.refactor.model=codeagent`.
+    if (raw.split("=")[0]!.endsWith(".model")) return text;
     const value = Number(text);
     if (!Number.isFinite(value) || value <= 0) {
       throw new Error(`limit override '${raw}' needs a positive number or null`);

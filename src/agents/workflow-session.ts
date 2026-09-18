@@ -58,6 +58,8 @@ export interface WorkflowSessionAgentOptions {
   readonly mcpServers: Record<string, unknown>;
   readonly skills: readonly string[];
   readonly maxTurns: number | null;
+  /** Model name/id for the session CLI; null = CLI default. */
+  readonly model?: string | null;
   readonly timeoutMs?: number;
   readonly stallTimeoutMs?: number | null;
   /** Run-scoped logger; session events are mirrored by the runner. */
@@ -192,6 +194,7 @@ export async function runWorkflowSession(
     mcpServers: { [serverName]: mcpServer },
     skills: ["workflow-spec:workflow-spec"],
     maxTurns: limits.maxTurns,
+    model: limits.model,
     timeoutMs: limits.deadlineMs ?? undefined,
     stallTimeoutMs: limits.stallMs,
     logger: options.logger,
@@ -237,9 +240,11 @@ async function defaultRunAgent(
     mcpServers: o.mcpServers as never,
     skills: [...o.skills],
     maxTurns: o.maxTurns,
+    model: o.model,
     timeoutMs: o.timeoutMs,
     stallTimeoutMs: o.stallTimeoutMs,
     logger: o.logger,
     sessionStore: o.sessionStore,
   });
 }
+

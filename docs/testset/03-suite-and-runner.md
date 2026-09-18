@@ -58,7 +58,7 @@ testset/
 | `task` | 任务简报路径（默认 `resources/tasks/…`，`./x` 表示用例目录内） |
 | `stages` | 阶段来源：`workflows`（`ai` 或 `preset`+`resource`）、`prepare`、`refactor`（`ai` / `patch` / `none`） |
 | `inject` | 验证前才注入两侧 worktree 的判据材料（`source` → worktree 内 `dest`） |
-| `limits` / `timeoutMs` | 传给 harness 的会话限制与用例超时 |
+| `limits` / `timeoutMs` | 传给 harness 的会话限制与用例超时（`sessions.<stage>.model` 可给某阶段指定模型名，如跑模型矩阵） |
 | `expect` | 评价方法（`verdict` / `verdict+attribution` / `verdict+rubric` / `part`）与期望值 |
 | `evaluate.command` | 可选评测命令（裁判），会被 `--rubric-cmd` 覆盖 |
 
