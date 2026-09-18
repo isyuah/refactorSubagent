@@ -17,7 +17,7 @@
 - [`04-rubric.md`](../docs/testset/04-rubric.md) — 裁判给分标准
 
 ```bash
-cd E:/Proj/refactorSubagent
+cd <repo-root>
 
 bun testset/run.ts --list                                   # 26 个用例（扫描 cases/*/case.json）
 bun testset/run.ts --self-test                              # 执行器自检（合成用例，不碰项目）
@@ -44,7 +44,7 @@ testset/
 │  └─ exec.ts / util.ts  进程执行（超时+树终止）/ 小工具
 ├─ cases/<id>/           用例：case.json（行为）+ prepare.ts（环境）+ 可选本地材料
 ├─ resources/
-│  ├─ sources/           源与 pin（libuv.json：上游 tag + commit）
+│  ├─ sources/           源与 pin（libuv.json：上游 tag + commit + remote 兜底）
 │  ├─ workflows/         预置 workflow 资源（judgement/manifest.json + build/test 源）
 │  ├─ patches/           候选补丁（行为保持 / 变异 / 篡改）
 │  ├─ judge/             判据材料（oracle 源），验证前注入 worktree
@@ -101,6 +101,32 @@ testset/
 声明 build/test workflow 的文件名与 id/revision；runner 把它们解析成绝对路径写进 `pipeline.json`，
 harness 用 `entryRoot`（= testset 根）判断入口没有逃出允许的目录。`mode = "ai"` 时不引用任何资源。
 
+## 在另一台机器上跑
+
+前置（缺了不会崩，用例会判定 **blocked** 并跳过）：
+
+| 需要 | 用途 | 缺了会怎样 |
+|---|---|---|
+| `bun` ≥ 1.3 | 跑 `run.ts` 与 harness | 跑不起来 |
+| `git` | 浅克隆源（本地无检出时从 `sources/*.json` 的 `remote` 拉） | 全部 libuv 用例 error |
+| `cmake` + `ninja` + `gcc`（Windows 上是 MinGW-w64） | recipe `win-mingw-ninja-debug` 探针 + 两侧构建 | 判据/重构类用例 blocked |
+| 网络 | 首次克隆 libuv（≈7 MB）+ 模型网关 | 环境准备失败 / 会话失败 |
+| Claude Code CLI（`claude` 在 PATH，或 `CLAUDE_CODE_EXECUTABLE` 指向兼容 CLI）+ 你的网关配置 | AI 档会话与裁判 | 只有离线用例能跑 |
+
+```bash
+bun install
+bun testset/run.ts --self-test                             # 执行器自检，不碰项目
+bun testset/run.ts --list                                  # 26 个用例
+bun testset/run.ts --subject judgement --concurrency 2     # 离线 10 例，零模型成本（约 15 min）
+bun testset/run.ts --only e2e-t1-blind --rubric-cmd "claude -p" --out runs/blind-1   # 盲测 e2e（要额度）
+```
+
+- 其它平台（Linux/macOS）现在会被判 **blocked**（`requires.recipe` 只有 Windows/MinGW 版）；
+  要支持得先加一条 recipe（`runner/probe.ts`）。
+- 想换某阶段用的模型/程序：`--limit sessions.<stage>.model=<名字>`；整程序则设
+  `CLAUDE_CODE_EXECUTABLE=<兼容 CLI 的路径>`（见 `docs/limits.md`）。
+- 结果永远落在 `--out`（默认 `runs/suite-<时间戳>/`）；已有旧结果的目录要 `--force` 才会覆盖。
+
 ## 维护约定
 
 - **判据材料只改 `resources/`**（`judge/**`、`workflows/**`、`patches/**`）。oracle 的 sha256 被
@@ -111,4 +137,5 @@ harness 用 `entryRoot`（= testset 根）判断入口没有逃出允许的目�
 - **裁判是外部命令**：`--rubric-cmd "<cmd>"`（用例里的 `evaluate.command` 为默认值），prompt 由
   runner 组装后通过 `RUBRIC_PROMPT_FILE` 传入；默认只记录分数，`--rubric-min` 才当门槛。
 - **不要改 `libuv/`**：它只是源材料（浅克隆 + overlay）；环境由用例的 prepare 脚本从
-  `resources/sources/libuv.json` 的 pin 浅克隆而来，overlay 不会进入环境。
+  `resources/sources/libuv.json` 的 pin 浅克隆而来，overlay 不会进入环境。**新机器上不需要 `libuv/`**：
+  本地没有检出时 `cloneSource` 用 pin 里的 `remote`（上游 GitHub tag）兜底。

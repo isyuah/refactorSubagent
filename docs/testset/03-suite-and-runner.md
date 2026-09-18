@@ -192,6 +192,8 @@ runs/suite-<时间戳>/
 
 - 环境由用例的 prepare 脚本从 `resources/sources/libuv.json` 的 pin **浅克隆**而来：只有上游 tag 那一个提交，
   **不含 overlay 历史**，也没有 `refactor-task/**`（oracle、补丁、判据 workflow、PINS 都不在里面）。
+  本机有 `../libuv` 就地取；没有（新克隆的仓库）就用 pin 里的 `remote` 从上游 GitHub 拉，所以换机器不需要
+  预置 `libuv/`。
 - 判据 workflow 源与 oracle 都住在 `resources/`，通过 `case.json` 的 `inject` 声明目标位置（如
   `refactor-task/oracle`）。harness 在**候选提交之后、验证之前**把它们拷进 baseline / candidate
   两侧 worktree（`--inject <src>=<dest>`），并把逐文件 sha256 与"目标位置原本是否已有不同文件"

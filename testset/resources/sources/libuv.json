@@ -1,7 +1,8 @@
 {
   "id": "libuv",
   "repo": "../libuv",
+  "remote": "https://github.com/libuv/libuv",
   "ref": "v1.52.1",
   "commit": "1cfa32ff59c076ffb6ed735bbc8c18361558661f",
-  "note": "upstream libuv v1.52.1; environments are cloned shallowly so the overhead overlay never travels with them"
+  "note": "upstream libuv v1.52.1; environments are cloned shallowly so the overhead overlay never travels with them. The local checkout is preferred when it exists (offline, fast); `remote` is the same upstream tag, used by machines that never cloned it"
 }
