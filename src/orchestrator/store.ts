@@ -39,6 +39,7 @@ const HistoryEntry = z.object({
   artifact_kind: z.string().nullable(),
   at: z.string(),
   note: z.string().default(""),
+  warnings: z.array(z.string().min(1)).default([]),
 });
 
 const SessionFile = z.object({
@@ -220,7 +221,12 @@ export class SessionStore {
     return parsed;
   }
   /** Record a completed transition and persist. Only the orchestrator calls this. */
-  commitTransition(to: SessionState, artifactKind: string | null, note = "") {
+  commitTransition(
+    to: SessionState,
+    artifactKind: string | null,
+    note = "",
+    warnings: readonly string[] = [],
+  ) {
     this.file = {
       ...this.file,
       state: to,
@@ -232,6 +238,7 @@ export class SessionStore {
           artifact_kind: artifactKind,
           at: new Date().toISOString(),
           note,
+          warnings: [...warnings],
         },
       ],
     };

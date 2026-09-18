@@ -67,6 +67,8 @@ export const ExpectationComparisonResult = z.object({
   ).default([]),
   /** Structural errors (count mismatch, name mismatch, …). */
   errors: z.array(z.string().min(1)).default([]),
+  /** Non-fatal conditions preserved when a consistent comparison is accepted. */
+  warnings: z.array(z.string().min(1)).default([]),
   reason: z.string().min(1),
 });
 

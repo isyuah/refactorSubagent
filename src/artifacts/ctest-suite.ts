@@ -105,6 +105,8 @@ export const CTestComparisonResult = z.object({
   added_failures: z.array(z.string().min(1)),
   removed_failures: z.array(z.string().min(1)),
   overall: z.enum(["consistent", "inconsistent"]),
+  /** Non-fatal conditions that must remain visible when a comparison is accepted. */
+  warnings: z.array(z.string().min(1)).default([]),
   reason: z.string().min(1),
 });
 

@@ -60,6 +60,11 @@ export function compareCTestSuites(
   const overall = topLevelMatch && added.length === 0 && removed.length === 0 && statusMatch
     ? "consistent"
     : "inconsistent";
+  const warnings = ctestComparisonWarnings(
+    baseline.result.status,
+    candidate.result.status,
+    overall,
+  );
 
   return CTestComparisonResult.parse({
     kind: "ctest-comparison-result",
@@ -73,11 +78,35 @@ export function compareCTestSuites(
     added_failures: added,
     removed_failures: removed,
     overall,
+    warnings,
     reason: overall === "consistent"
       ? "candidate has the same CTest status, top-level targets, and failure set as baseline"
       : `CTest drift: added=[${added.join(", ")}] removed=[${removed.join(", ")}] ` +
         `top_level_match=${String(topLevelMatch)} status_match=${String(statusMatch)}`,
   });
+}
+
+/**
+ * A matching failure is behaviorally consistent, but it is not a healthy test
+ * run. Keep that distinction visible without turning the comparison into a
+ * rejection.
+ */
+export function ctestComparisonWarnings(
+  baselineStatus: CTestSuiteResult["status"],
+  candidateStatus: CTestSuiteResult["status"],
+  overall: CTestComparisonResult["overall"],
+): string[] {
+  if (
+    overall === "consistent" &&
+    baselineStatus !== "pass" &&
+    candidateStatus !== "pass"
+  ) {
+    return [
+      `baseline and candidate CTest suites both ended with status '${baselineStatus}'; ` +
+        "the result is accepted because the failure behavior is consistent",
+    ];
+  }
+  return [];
 }
 
 function classifyFailure(output: string, patterns: readonly RegExp[] | undefined): CTestFailureClassification["category"] {

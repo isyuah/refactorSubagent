@@ -11,6 +11,7 @@ import type {
   ExpectationComparisonResult,
 } from "../artifacts/index.js";
 import { SessionStore, type SessionState } from "./store.js";
+import { ctestComparisonWarnings } from "../runtime/ctest-comparator.js";
 
 /**
  * Orchestrator — the only component allowed to move a session forward.
@@ -53,7 +54,7 @@ const PIPELINE: Partial<Record<SessionState, TransitionRule>> = {
 };
 
 export type SubmitResult =
-  | { ok: true; from: SessionState; to: SessionState }
+  | { ok: true; from: SessionState; to: SessionState; warnings?: readonly string[] }
   | { ok: false; reason: string };
 
 export class Orchestrator {
@@ -97,8 +98,11 @@ export class Orchestrator {
           ? "REJECTED"
           : transition.to;
 
-    this.store.commitTransition(to, artifact.kind);
-    return { ok: true, from: current, to };
+    const warnings = comparisonWarnings(artifact);
+    this.store.commitTransition(to, artifact.kind, "", warnings);
+    return warnings.length > 0
+      ? { ok: true, from: current, to, warnings }
+      : { ok: true, from: current, to };
   }
 
   /** Abort from any non-terminal state. */
@@ -349,6 +353,11 @@ function checkCTestComparison(
   const expectedOverall = sameTopLevel && sameFailures && sameStatus
     ? "consistent"
     : "inconsistent";
+  const expectedWarnings = ctestComparisonWarnings(
+    baseline.result.status,
+    candidate.result.status,
+    expectedOverall,
+  );
 
   if (artifact.baseline_status !== baseline.result.status) return "CTest comparison baseline status drift";
   if (artifact.candidate_status !== candidate.result.status) return "CTest comparison candidate status drift";
@@ -370,7 +379,20 @@ function checkCTestComparison(
   if (artifact.overall !== expectedOverall) {
     return `R6 violation: program recomputed CTest verdict is ${expectedOverall}`;
   }
+  if (!sameArray(artifact.warnings, expectedWarnings)) {
+    return "CTest comparison warning drift";
+  }
   return null;
+}
+
+function comparisonWarnings(artifact: AnyArtifact): readonly string[] {
+  if (
+    artifact.kind === "ctest-comparison-result" ||
+    artifact.kind === "expectation-comparison-result"
+  ) {
+    return artifact.warnings;
+  }
+  return [];
 }
 
 function setDifference(left: Set<string>, right: Set<string>): string[] {
