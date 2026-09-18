@@ -13,6 +13,8 @@ import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "
 import { join } from "node:path";
 import { exec } from "./exec.js";
 import { ensureDir } from "./util.js";
+import type { SuiteCase } from "./suite.js";
+import type { PipelineRunResult } from "./drivers.js";
 
 export interface RubricCriterion {
   readonly name: string;
@@ -38,6 +40,8 @@ export interface RubricOptions {
   readonly rubricPath: string;
   readonly referencePath: string | null;
   readonly timeoutMs: number;
+  /** Host-executed facts (see {@link programmaticEvidence}); empty = omit the section. */
+  readonly evidence: string;
   /** null = advisory: the score is reported, it does not fail the case. */
   readonly minScore: number | null;
 }
@@ -53,6 +57,9 @@ Rules:
 - The reference implementation (shown under "Hidden reference") is one way to do it,
   not the only one. A different but complete solution scores full marks.
 - Every criterion needs a reason, including the ones you award full marks to.
+- The "Programmatic evidence" section is what the host actually executed. Prefer it
+  over inference from the source when judging whether the judgement has teeth, and
+  do not credit coverage the evidence does not show.
 - Keep each reason under ~200 characters and on ONE line, and do not use ASCII
   double quotes inside a reason (use 「」 or single quotes): the score is parsed
   as JSON and stray quotes break it.
@@ -112,10 +119,115 @@ export function writerArtifacts(sessionRoot: string, sessionId: string): { testS
   return { testSource: join(testDir, "test-workflow.ts"), buildSources };
 }
 
+/** Declaration pairs the host compared, plus how they were asserted (relation histogram). */
+function comparisonFacts(path: string | null): string | null {
+  if (path === null || !existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      overall?: string;
+      declarations?: { relation?: string; matched?: boolean }[];
+    };
+    const declarations = parsed.declarations ?? [];
+    const relations: Record<string, number> = {};
+    let matched = 0;
+    for (const entry of declarations) {
+      const relation = String(entry.relation ?? "?");
+      relations[relation] = (relations[relation] ?? 0) + 1;
+      if (entry.matched === true) matched++;
+    }
+    const histogram = Object.entries(relations).map(([name, count]) => `${name}=${String(count)}`).join(", ");
+    return `Declaration pairs compared by the host: ${String(declarations.length)} ` +
+      `(matched ${String(matched)}, mismatched ${String(declarations.length - matched)}` +
+      (histogram === "" ? ")" : ` · relations: ${histogram})`) +
+      (parsed.overall === undefined ? "" : ` · overall=${parsed.overall}`) + "\n";
+  } catch {
+    return null;
+  }
+}
+
+function list(items: readonly string[], limit: number): string {
+  if (items.length === 0) return " (none)";
+  const shown = items.slice(0, limit).map((item) => `\n  - ${item}`).join("");
+  return items.length > limit ? `${shown}\n  … ${String(items.length - limit)} more` : shown;
+}
+
+/**
+ * What the host already observed about this candidate, rendered for the scorer.
+ *
+ * The scorer is evaluation infrastructure, not the candidate, so it may see the
+ * pinned patch and the host's verdict. The section states what the evidence does
+ * and does not prove, so a verdict on one pinned change is never read as coverage.
+ */
+export function programmaticEvidence(c: SuiteCase, run: PipelineRunResult): string {
+  const e = c.expect;
+  const summary = run.summary;
+  const lines: string[] = [];
+  lines.push(`Case: ${c.id} · subject ${c.subject} · method ${e.method}`);
+
+  const expected: string[] = [];
+  if (e.state !== undefined) expected.push(`state=${e.state}`);
+  if (e.injectedStages !== undefined) expected.push(`injectedStages=${JSON.stringify(e.injectedStages)}`);
+  if (e.failuresRequired !== undefined) expected.push(`failuresRequired=${JSON.stringify(e.failuresRequired)}`);
+  if (e.failuresExact != null) expected.push(`failuresExact=${JSON.stringify(e.failuresExact)}`);
+  if (e.failuresForbidden !== undefined) expected.push(`failuresForbidden=${JSON.stringify(e.failuresForbidden)}`);
+  if (e.replacedFiles !== undefined) expected.push(`replacedFiles=${JSON.stringify(e.replacedFiles)}`);
+  if (e.requireFiles !== undefined) expected.push(`requireFiles=${JSON.stringify(e.requireFiles)}`);
+  lines.push(`Case expectation: ${expected.length === 0 ? "(nothing declared)" : expected.join(" · ")}`);
+
+  lines.push(
+    `Harness verdict: ${summary?.state ?? "(no verdict)"} · exit ${String(run.exitCode ?? "?")} · ` +
+    `comparison=${summary?.comparison ?? "?"} · verification_authoritative=${String(summary?.verification_authoritative ?? "?")}`,
+  );
+  lines.push(
+    `Builds: baseline=${summary?.baseline_build ?? "?"} · candidate=${summary?.candidate_build ?? "?"}` +
+    (summary?.declared_builds === undefined || summary.declared_builds.length === 0
+      ? ""
+      : ` · declared=${JSON.stringify(summary.declared_builds)}`),
+  );
+  if (summary?.injected_stages !== undefined) lines.push(`Injected stages observed: ${JSON.stringify(summary.injected_stages)}`);
+  if (c.inject.length > 0) {
+    lines.push(`Judge material injected by the host: ${c.inject.map((entry) => `${entry.source} → ${entry.dest}`).join(" · ")}`);
+  }
+  const facts = comparisonFacts(run.comparisonPath);
+  if (facts !== null) lines.push(facts.trimEnd());
+  lines.push(`Mismatched declarations:${list(run.mismatches, 40)}`);
+  lines.push(`Comparison errors:${list(run.comparisonErrors, 10)}`);
+  if (run.injectionReplaced.length > 0) lines.push(`Injection replaced pre-existing files at:${list(run.injectionReplaced, 10)}`);
+  if (run.harnessPhase !== "") lines.push(`Last harness phase: ${run.harnessPhase}`);
+  if (run.error !== null) lines.push(`Harness error: ${run.error}`);
+
+  const refactor = c.stages["refactor"];
+  const patchFile = refactor === undefined ? undefined : refactor["patchFile"];
+  const patch = typeof patchFile === "string" && existsSync(patchFile) ? patchFile : null;
+  lines.push("", "### Pinned candidate change");
+  if (patch === null) {
+    lines.push("(none — no patch was pinned for this case; any candidate change came from the model)");
+  } else {
+    const body = readFileSync(patch, "utf8");
+    lines.push(
+      `File: ${patch}`, "",
+      "```diff",
+      body.length > 12_000 ? body.slice(0, 12_000) + "\n… (truncated)" : body,
+      "```",
+    );
+  }
+
+  lines.push(
+    "",
+    "### How to read this evidence",
+    "- REJECTED on a pinned behaviour-changing patch = the judgement detected that change. It says nothing about changes it was not shown.",
+    "- ACCEPTED on a pinned behaviour-preserving patch = no false positive on that change.",
+    "- ACCEPTED on a pinned behaviour-changing patch = a miss; score the teeth criterion down for it.",
+    "- No pinned patch (the e2e cases) = the verdict only shows the judgement ran consistently against the candidate the pipeline itself produced. It is NOT evidence about teeth or coverage; judge those from the source and the declarations.",
+  );
+  return lines.join("\n");
+}
+
 export async function runRubric(options: RubricOptions): Promise<RubricOutcome> {
   const promptPath = join(options.caseDir, "rubric-prompt.md");
   const artifacts = writerArtifacts(options.sessionRoot, options.sessionId);
   const body: string[] = [PROMPT_HEADER, "## Rubric", options.rubricPath === "" ? "(none)" : contents(options.rubricPath, 40000)];
+  if (options.evidence !== "") body.push("## Programmatic evidence (host-executed, before this scoring)", options.evidence);
   body.push("## Candidate: declared test workflow");
   body.push("```ts\n" + contents(artifacts.testSource) + "\n```");
   body.push("## Candidate: declared build workflow(s)");

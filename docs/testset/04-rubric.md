@@ -1,7 +1,8 @@
 # 裁判评分标准（rubric，writer 档 / M2）
 
 > 谁在用：`bun testset/run.ts --subject writer --rubric-cmd "<命令>"` 里的裁判（人或大模型）。
-> 输入由 runner 组装成 `runs/…/<case>/rubric-prompt.md`：本评分标准 + 候选写出的 workflow 源 + **隐藏参考实现**的清单与要点。
+> 输入由 runner 组装成 `runs/…/<case>/rubric-prompt.md`：本评分标准 + **宿主已执行的程序化证据** + 候选写出的 workflow 源 + **隐藏参考实现**的清单与要点。
+> 程序化证据段（`## Programmatic evidence`）给的是这台机器**真的跑过什么**：harness 判定、两侧构建、宿主比较出的声明对（含 `equal` / `both-matches` 关系直方图）、失配声明清单，以及本用例**钉住的候选改动**（补丁全文）。裁判是评分方、不是被测方，所以可以看这些；被测的 writer 会话看不到。
 > 输出必须是 JSON：`{"score": 0..1, "criteria": [{"name","score","reason"}], "summary": "…"}`。
 
 ## 0. 这套评分的立场

@@ -27,7 +27,7 @@ import {
   type JobContext, type PartRunResult, type PipelineRunResult,
 } from "./runner/drivers.js";
 import { evaluateBlocked, evaluatePart, evaluatePipeline, type CaseEvaluation } from "./runner/evaluate.js";
-import { runRubric, type RubricOutcome } from "./runner/rubric.js";
+import { programmaticEvidence, runRubric, type RubricOutcome } from "./runner/rubric.js";
 import { LiveDisplay, type Row } from "./runner/display.js";
 
 interface Options {
@@ -228,6 +228,7 @@ async function rubricFor(
     rubricPath: c.expect.rubric?.rubric ?? "",
     referencePath: c.expect.rubric?.reference ?? null,
     timeoutMs: 900_000,
+    evidence: programmaticEvidence(c, run),
     minScore: options.rubricMin,
   });
   if (options.rubricMin !== null && rubric.status === "scored" && rubric.score !== null && rubric.score < options.rubricMin) {
