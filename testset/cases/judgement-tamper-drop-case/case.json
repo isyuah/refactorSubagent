@@ -1,0 +1,62 @@
+{
+  "id": "judgement-tamper-drop-case",
+  "title": "候选从 test-list.h 删掉用例 → 摘要 + 用例缺跑双命中",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "attribution",
+    "tamper"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t1-strtok.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/tamper-drop-case.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+attribution",
+    "state": "REJECTED",
+    "failuresRequired": [
+      "test/test-list.h.digest",
+      "strtok.exit"
+    ],
+    "provisional": false,
+    "note": "实测冻结（2026-09-15，5 条失配） — 原预测：预测：test-list.h 两条摘要 + strtok.{exit,tap,stdout}（未知用例返回 255）",
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "failuresExact": [
+      "strtok.exit",
+      "strtok.stdout",
+      "strtok.tap",
+      "test/test-list.h.digest",
+      "test/test-list.h.snapshot"
+    ]
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ]
+}

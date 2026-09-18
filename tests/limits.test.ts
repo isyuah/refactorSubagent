@@ -59,6 +59,26 @@ describe("limits resolution", () => {
     expect(limits.stages.buildMs).toBeNull();
   });
 
+  test("session model is per-session and reaches the CLI by name", () => {
+    const plain = resolveLimits({ repoRoot: repo, homeDir: home });
+    expect(plain.limits.sessions.testWriter.model).toBeNull(); // CLI/user default
+
+    writeLimits(join(home, ".refactor", "limits.json"), {
+      sessions: { testWriter: { model: "codeagent" } },
+    });
+    const layered = resolveLimits({ repoRoot: repo, homeDir: home });
+    expect(layered.limits.sessions.testWriter.model).toBe("codeagent");
+    expect(layered.limits.sessions.refactor.model).toBeNull(); // untouched session keeps the default
+
+    const overridden = resolveLimits({
+      repoRoot: repo,
+      homeDir: home,
+      overrides: { values: ["sessions.refactor.model=other-model"] },
+    });
+    expect(overridden.limits.sessions.refactor.model).toBe("other-model");
+    expect(overridden.limits.sessions.testWriter.model).toBe("codeagent");
+  });
+
   test("explicit files merge after the project layer, overrides last", () => {
     writeLimits(join(repo, ".refactor", "limits.json"), { stages: { buildMs: 10_000 } });
     const extra = join(repo, "extra-limits.json");

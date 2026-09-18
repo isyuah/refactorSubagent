@@ -1,0 +1,29 @@
+{
+  "id": "corpus-util",
+  "title": "OS/工具函数 10 条（校准）",
+  "subject": "corpus",
+  "tags": [
+    "corpus",
+    "offline",
+    "candidate"
+  ],
+  "kind": "upstream-part",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "part": "resources/parts/util.json",
+  "expect": {
+    "method": "part",
+    "provisional": true,
+    "note": "calibrate：重复 N 次给出稳定分类（stable-ok / stable-fail / flaky），不预判通过"
+  },
+  "timeoutMs": 1800000
+}

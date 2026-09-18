@@ -1,0 +1,55 @@
+{
+  "id": "refactor-t3-inet",
+  "title": "AI 重构 inet（判据冻结，只换 refactor 槽）",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "t3",
+    "measured"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t3-inet.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "已实测 ACCEPTED（98/98，会话 134.5 s，124+/56-）"
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 2400000,
+    "sessions.refactor.maxTurns": 60
+  },
+  "timeoutMs": 3600000
+}

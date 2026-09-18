@@ -1,0 +1,11 @@
+{
+  "builds": [
+    {
+      "id": "libuv-static-runner",
+      "entry": "build-workflow.ts"
+    }
+  ],
+  "testEntry": "test-workflow.ts",
+  "workflowId": "libuv-v1.52.1-judgement",
+  "revision": 1
+}

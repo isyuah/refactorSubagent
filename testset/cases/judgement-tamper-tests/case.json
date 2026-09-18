@@ -1,0 +1,59 @@
+{
+  "id": "judgement-tamper-tests",
+  "title": "候选弱化自带用例断言 → 必须靠 test/** 摘要 REJECTED",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "attribution",
+    "tamper"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t1-strtok.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/tamper-weaken-tests.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+attribution",
+    "state": "REJECTED",
+    "failuresRequired": [
+      "test/test-strtok.c.digest",
+      "test/test-strtok.c.snapshot"
+    ],
+    "provisional": false,
+    "note": "实测冻结（2026-09-15，2 条失配） — 原预测：失配集确定：两条都在 UPSTREAM_PINS 里",
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "failuresExact": [
+      "test/test-strtok.c.digest",
+      "test/test-strtok.c.snapshot"
+    ]
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ]
+}

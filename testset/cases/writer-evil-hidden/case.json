@@ -1,0 +1,56 @@
+{
+  "id": "writer-evil-hidden",
+  "title": "writer 写判据（隐藏参考 workflow 与 oracle）+ 破坏性补丁 → REJECTED",
+  "subject": "writer",
+  "tags": [
+    "ai",
+    "writer",
+    "hidden",
+    "rubric"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/writer-hidden.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "ai"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/mutant-inet-zero.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+rubric",
+    "state": "REJECTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "refactor"
+    ],
+    "authoritative": true,
+    "requireFiles": [
+      ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+    ],
+    "provisional": false,
+    "note": "实测：REJECTED，14 条失配 —— 模型自建 oracle 覆盖 ntop6 单零组 first/middle/last、exact-size、size-20-rejected，并给每条加了 .stable 稳定性声明；裁判 0.86",
+    "rubric": {
+      "rubric": "../docs/testset/04-rubric.md",
+      "reference": "resources/workflows/judgement"
+    }
+  },
+  "limits": {
+    "sessions.testWriter.deadlineMs": 3600000,
+    "sessions.testWriter.maxTurns": 140
+  },
+  "timeoutMs": 5400000
+}

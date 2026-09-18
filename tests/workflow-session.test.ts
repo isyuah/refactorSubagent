@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../src/artifacts/index.js";
+import { DEFAULT_LIMITS, type SessionLimits } from "../src/config/limits.js";
 import {
   runWorkflowSession,
   type WorkflowSessionAgentOptions,
@@ -56,7 +57,7 @@ interface RunnerBehavior {
   result?: string;
 }
 
-function makeSessionHarness(behavior: RunnerBehavior) {
+function makeSessionHarness(behavior: RunnerBehavior, limits?: SessionLimits) {
   const repoDir = tempRepo();
   const sessionRoot = mkdtempSync(join(tmpdir(), "rfr-wfsess-run-"));
   const sessionId = "sess-123";
@@ -104,6 +105,7 @@ function makeSessionHarness(behavior: RunnerBehavior) {
         testEntry,
         host: minimalHost(),
         project: minimalProject(repoDir),
+        ...(limits !== undefined ? { limits } : {}),
         runAgentFn: runner,
       }),
     captured: () => capturedOptions,
@@ -122,6 +124,19 @@ describe("runWorkflowSession", () => {
     expect(o!.extraAllowedTools).toContain("mcp__dep-registry__declareDependency");
     expect(o!.extraAllowedTools).toContain("mcp__dep-registry__generateBuildWorkflow");
     expect(o!.skills).toContain("workflow-spec:workflow-spec");
+  });
+
+  test("session model from limits reaches the agent runner", async () => {
+    const configured = makeSessionHarness(
+      { writeTestEntry: true },
+      { ...DEFAULT_LIMITS.sessions.testWriter, model: "codeagent" },
+    );
+    await configured.run();
+    expect(configured.captured()!.model).toBe("codeagent");
+
+    const fallback = makeSessionHarness({ writeTestEntry: true });
+    await fallback.run();
+    expect(fallback.captured()!.model).toBeNull(); // null = the CLI's own default
   });
 
   test("fails when the test workflow file is not produced", async () => {

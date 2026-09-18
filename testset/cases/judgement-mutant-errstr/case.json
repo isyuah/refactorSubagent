@@ -1,0 +1,61 @@
+{
+  "id": "judgement-mutant-errstr",
+  "title": "行为变异（未知错误码措辞被改）必须 REJECTED",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "attribution",
+    "mutation"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t1-strtok.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/mutant-errstr-unknown.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+attribution",
+    "state": "REJECTED",
+    "failuresRequired": [
+      "oracle_errstr.exit",
+      "oracle_errstr.summary",
+      "oracle_errstr.stdout"
+    ],
+    "provisional": false,
+    "note": "实测冻结（2026-09-15，3 条失配） — 原预测：期望失配集为预测值（按 oracle 覆盖推断），首次跑用 --calibrate 冻结精确集",
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "failuresExact": [
+      "oracle_errstr.exit",
+      "oracle_errstr.stdout",
+      "oracle_errstr.summary"
+    ]
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ]
+}

@@ -42,6 +42,8 @@ export interface WorkflowRepairAgentOptions {
   readonly extraAllowedTools?: string[];
   readonly skills?: string[];
   readonly maxTurns: number | null;
+  /** Model name/id for the session CLI; null = CLI default. */
+  readonly model?: string | null;
   readonly timeoutMs?: number;
   readonly stallTimeoutMs?: number | null;
   readonly logger?: Logger;
@@ -69,6 +71,7 @@ export async function runWorkflowRepairSession(
     allowedTools: [...REPAIR_TOOLS],
     skills: ["workflow-spec:workflow-spec"],
     maxTurns: limits.maxTurns,
+    model: limits.model,
     timeoutMs: limits.deadlineMs ?? undefined,
     stallTimeoutMs: limits.stallMs,
     ...(options.logger !== undefined ? { logger: options.logger } : {}),

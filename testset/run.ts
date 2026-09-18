@@ -1,128 +1,125 @@
-#!/usr/bin/env bun
 /**
- * Suite runner — parallel, selectable, with a live table.
+ * Test set runner: discovery → probe → gate → prepare → execute → evaluate.
  *
- *   bun testset/run.ts --list
- *   bun testset/run.ts --dry-run --subject judgement
- *   bun testset/run.ts --tag offline --concurrency 4
- *   bun testset/run.ts --only refactor-t1-strtok,refactor-t3-inet
- *   bun testset/run.ts --self-test            # validates the runner itself
+ * Every case is a directory (`cases/<id>/case.json` + `prepare.ts`). The runner
+ * discovers them, probes the host once, skips the ones whose `requires` this
+ * host does not meet (blocked, not failed), gives each runnable case its own
+ * environment directory prepared by the case's own script, then runs the
+ * harness with the stage sources from `case.json`. Results are summarised like
+ * they always were: one table plus summary.json.
  *
- * Every pipeline case gets its own clone of the pinned baseline, its own session
- * root and its own session id, so cases never share mutable state and the
- * baseline checkout in libuv/ is never touched (the harness creates its branches
- * and worktrees inside the clone).
+ * The runner never touches the harness checkout outside a case's environment
+ * directory, and it never imports application source: it drives the harness
+ * through `scripts/cli.ts`.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Term, ensureDir, fmtDuration, isTty, nowIso, timestamp, writeJson } from "./runner/util.js";
+import { Term, ensureDir, fmtDuration, isTty, nowIso, readJson, timestamp, writeJson } from "./runner/util.js";
 import {
   loadPart, loadSuite, materializePipeline, selectCases, verifyMaterial,
   type Part, type Selection, type Suite, type SuiteCase,
 } from "./runner/suite.js";
+import { describeProbe, evaluateRequirement, probeEnvironment, type ProbeReport } from "./runner/probe.js";
+import { prepareEnvironment } from "./runner/env.js";
 import {
-  dropClone, preserveWritten, runPartCase, runPipelineCase,
-  type HarnessSummary, type JobContext, type PartRunResult, type PipelineRunResult,
+  dropEnvironment, readTask, runPartCase, runPipelineCase,
+  type JobContext, type PartRunResult, type PipelineRunResult,
 } from "./runner/drivers.js";
-import { evaluatePart, evaluatePipeline, type CaseEvaluation } from "./runner/evaluate.js";
-import { runRubric, type RubricOutcome } from "./runner/rubric.js";
+import { evaluateBlocked, evaluatePart, evaluatePipeline, type CaseEvaluation } from "./runner/evaluate.js";
+import { programmaticEvidence, runRubric, type RubricOutcome } from "./runner/rubric.js";
 import { LiveDisplay, type Row } from "./runner/display.js";
 
 interface Options {
+  /** Test set root (holds cases/ and resources/). */
   suitePath: string;
   out: string | null;
   concurrency: number;
-  buildCache: boolean;
-  /** Overrides suite.baseline.commit (a reconstructed checkout has its own sha). */
-  baselineCommit: string | null;
-  /** Root of the persistent worker slots used by --build-cache. */
-  cacheDir: string | null;
   list: boolean;
   dryRun: boolean;
   selfTest: boolean;
   calibrate: boolean;
   repeats: number;
   rebuild: boolean;
-  keepClones: boolean;
+  /** Delete each case's environment after it finishes (default: keep it). */
+  dropEnv: boolean;
+  /** Treat blocked cases as failures instead of skips. */
+  strictEnv: boolean;
+  /** Erase a previous attempt's output directory for each selected case. */
+  force: boolean;
   json: boolean;
   color: boolean;
   rubricCommand: string | null;
-  /** null = the rubric score is advisory (it is reported, not enforced). */
   rubricMin: number | null;
   partFilter: string | null;
-  /** freeze expectations from a finished (or interrupted) run directory. */
-  freeze: string | null;
-  /** re-judge stored results against the current expectations (no execution). */
+  frozen: string | null;
   reevaluate: string | null;
   selection: Selection;
 }
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const HELP = `Usage: bun testset/run.ts [options]
 
 Selection:
   --only a,b            run exactly these case ids
   --exclude <substr>    drop case ids containing the substring (repeatable)
-  --subject judgement   subjects: judgement | refactor | writer | e2e | corpus (repeatable/comma list)
+  --subject judgement   subjects: judgement | refactor | writer | e2e | corpus
   --tag offline         tag filter (repeatable/comma list)
   --filter <text>       free text over id/title/tags
   --part-filter <text>  corpus only: sub-case name filter
 
+Modes:
+  --list                print the discovered cases and exit
+  --dry-run             print exactly what would run
+  --self-test           run the scheduler against a synthetic test set
+
 Calibration:
   --calibrate           report attribution gaps instead of failing on them
-  --freeze <dir>        freeze expectations from a run directory's per-case results,
-                        then exit (no case is executed)
-  --reevaluate <dir>    re-judge stored per-case results against the current
-                        expectations, then exit (no case is executed)
-
-Modes:
-  --list                print the selected cases and exit
-  --dry-run             print exactly what would run (clones, configs, commands)
-  --self-test           run the scheduler against a synthetic suite (no real tests)
+  --freeze <dir>        freeze expectations from a run directory into case.json
+  --reevaluate <dir>    re-judge stored per-case results (no execution)
 
 Execution:
-  --concurrency N       parallel cases (default cpu/2, 2..8)
+  --root <dir>          test set root (default: this file's directory)
+  --concurrency N       parallel cases (default cpu/4, 1..4)
   --out <dir>           result root (default runs/suite-<timestamp>)
   --repeats N           override the corpus repeat count
   --rebuild             corpus: rebuild the runner even if present
-  --keep-clones         keep the per-case clones (default: drop them, artifacts stay)
-  --build-cache         reuse one persistent clone + worktree pair per worker for
-                        judgement/refactor cases (warm cmake/ninja tree; ~5x faster
-                        per case). writer/e2e stay isolated.
-  --cache-dir <dir>     where those worker slots live, so they survive a batch
-                        (default <suiteRoot>/.cache; first batch pays the cold build)
-  --baseline-commit <ref>  checkout this ref instead of the pinned sha (use on a
-                        checkout rebuilt from testset/baseline/overlay)
-  --calibrate           report attribution gaps instead of failing on them
-  --rubric-cmd "<cmd>"   score writer cases with an external rubric scorer
-  --rubric-min <score>   fail a writer case below this score
-                        (default: advisory only — rubric scores vary run to run)
+  --drop-env            delete each case's environment directory after the case
+  --strict-env          blocked cases count as failures
+  --force               erase a previous attempt in each selected case's output dir
+  --rubric-cmd "<cmd>"  evaluation command, overrides evaluate.command in case.json
+  --rubric-min <score>  fail a case below this rubric score (default: advisory)
   --json                machine-readable list/summary output
   --no-color            plain output
 `;
 
+function defaultConcurrency(): number {
+  const cpu = navigator.hardwareConcurrency || 8;
+  // Each case may build with -j8; keep the machine from being oversubscribed.
+  return Math.max(1, Math.min(4, Math.floor(cpu / 4)));
+}
+
 function parseArgs(argv: readonly string[]): Options {
-  const here = dirname(fileURLToPath(import.meta.url));
   const options: Options = {
-    suitePath: join(here, "suite.json"),
+    suitePath: HERE,
     out: null,
-    concurrency: Math.max(2, Math.min(8, Math.floor((navigator.hardwareConcurrency || 8) / 2))),
-    buildCache: false,
-    baselineCommit: null,
-    cacheDir: null,
+    concurrency: defaultConcurrency(),
     list: false,
     dryRun: false,
     selfTest: false,
     calibrate: false,
     repeats: 0,
     rebuild: false,
-    keepClones: false,
+    dropEnv: false,
+    strictEnv: false,
+    force: false,
     json: false,
     color: true,
     rubricCommand: null,
     rubricMin: null,
     partFilter: null,
-    freeze: null,
+    frozen: null,
     reevaluate: null,
     selection: { only: [], exclude: [], subjects: [], tags: [], filter: null },
   };
@@ -134,19 +131,16 @@ function parseArgs(argv: readonly string[]): Options {
       if (next === undefined) throw new Error(`${arg} requires a value`);
       return next;
     };
-    if (arg === "--suite") options.suitePath = resolve(value());
+    if (arg === "--root" || arg === "--suite") options.suitePath = resolve(value());
     else if (arg === "--out") options.out = resolve(value());
     else if (arg === "--concurrency") options.concurrency = Math.max(1, Number(value()));
-    else if (arg === "--build-cache") options.buildCache = true;
-    else if (arg === "--baseline-commit") options.baselineCommit = value();
-    else if (arg === "--cache-dir") options.cacheDir = value();
     else if (arg === "--only") options.selection = { ...options.selection, only: list(value()) };
     else if (arg === "--exclude") options.selection = { ...options.selection, exclude: [...options.selection.exclude, value()] };
     else if (arg === "--subject") options.selection = { ...options.selection, subjects: [...options.selection.subjects, ...list(value())] };
     else if (arg === "--tag") options.selection = { ...options.selection, tags: [...options.selection.tags, ...list(value())] };
     else if (arg === "--filter") options.selection = { ...options.selection, filter: value() };
     else if (arg === "--part-filter") options.partFilter = value();
-    else if (arg === "--freeze") options.freeze = resolve(value());
+    else if (arg === "--freeze") options.frozen = resolve(value());
     else if (arg === "--reevaluate") options.reevaluate = resolve(value());
     else if (arg === "--list") options.list = true;
     else if (arg === "--dry-run") options.dryRun = true;
@@ -154,7 +148,9 @@ function parseArgs(argv: readonly string[]): Options {
     else if (arg === "--calibrate") options.calibrate = true;
     else if (arg === "--repeats") options.repeats = Math.max(1, Number(value()));
     else if (arg === "--rebuild") options.rebuild = true;
-    else if (arg === "--keep-clones") options.keepClones = true;
+    else if (arg === "--drop-env") options.dropEnv = true;
+    else if (arg === "--strict-env") options.strictEnv = true;
+    else if (arg === "--force") options.force = true;
     else if (arg === "--json") options.json = true;
     else if (arg === "--no-color") options.color = false;
     else if (arg === "--rubric-cmd") options.rubricCommand = value();
@@ -175,10 +171,90 @@ interface CaseOutcome {
   readonly extra: Record<string, unknown>;
 }
 
-async function executeCase(c: SuiteCase, ctx: JobContext, suite: Suite, options: Options): Promise<CaseOutcome> {
+/** Names the runner writes into a case result directory; anything else means the directory is not ours to erase. */
+const RUNNER_OUTPUTS = [
+  "env", "session", "prepare.json", "pipeline.json", "part-result.json",
+  "run-result.json", "harness.stdout.txt", "harness.stderr.txt",
+  "rubric-prompt.md", "rubric.stdout.txt", "rubric.stderr.txt", "rubric.json",
+];
+
+/**
+ * A case writes into `<out>/<case-id>/` next to its environment. Reusing a directory
+ * that still holds a previous attempt would leave that attempt's judge material
+ * (rubric prompt with the hidden reference, previous verdicts) inside the tree the
+ * agents read while they run, so a dirty directory is an error until `--force`.
+ */
+function claimCaseDir(outDir: string, caseId: string, force: boolean): string | null {
+  const dir = join(outDir, caseId);
+  if (!existsSync(dir)) return null;
+  const entries = readdirSync(dir);
+  if (entries.length === 0) return null;
+  const foreign = entries.filter((name) => !RUNNER_OUTPUTS.includes(name));
+  if (foreign.length > 0) {
+    return `${dir} holds files the runner did not write (${foreign.join(", ")}) — move them away or pick a fresh --out`;
+  }
+  if (!force) {
+    return `${dir} still holds a previous attempt (${entries.join(", ")}) — pass --force to erase it, or pick a fresh --out; a reused directory leaks judge material into the tree the agents read`;
+  }
+  rmSync(dir, { recursive: true, force: true });
+  return null;
+}
+
+function blockedOutcome(c: SuiteCase, caseDir: string, reason: string): CaseOutcome {
+  writeJson(join(caseDir, "run-result.json"), {
+    status: "blocked", reason, state: null, exitCode: null, elapsedMs: 0,
+    summary: null, mismatches: [], comparisonErrors: [], envDir: null,
+    logDir: null, comparisonPath: null, pipelinePath: null, error: null,
+  });
+  return { evaluation: evaluateBlocked(c, reason), caseDir, logDir: null, comparisonPath: null, extra: { blocked: reason } };
+}
+
+async function rubricFor(
+  c: SuiteCase,
+  options: Options,
+  run: PipelineRunResult,
+  caseDir: string,
+  onPhase: (phase: string, detail?: string) => void,
+): Promise<RubricOutcome | null> {
+  if (c.expect.method !== "verdict+rubric") return null;
+  const command = options.rubricCommand ?? c.evaluate?.command ?? null;
+  onPhase("rubric", command === null ? "writing prompt (no scorer)" : `scoring with ${command}`);
+  let rubric = await runRubric({
+    command: command === null ? null : command.split(" ").filter((v) => v !== ""),
+    caseId: c.id,
+    caseDir,
+    sessionRoot: run.sessionRoot,
+    sessionId: run.sessionId,
+    rubricPath: c.expect.rubric?.rubric ?? "",
+    referencePath: c.expect.rubric?.reference ?? null,
+    timeoutMs: 900_000,
+    evidence: programmaticEvidence(c, run),
+    minScore: options.rubricMin,
+  });
+  if (options.rubricMin !== null && rubric.status === "scored" && rubric.score !== null && rubric.score < options.rubricMin) {
+    rubric = { ...rubric, status: "failed", detail: `${rubric.detail} — below --rubric-min` };
+  }
+  return rubric;
+}
+
+async function executeCase(c: SuiteCase, ctx: JobContext, options: Options): Promise<CaseOutcome> {
   const caseDir = ctx.caseDir;
+  ctx.onPhase("prepare", c.prepare === null ? "(none)" : c.prepare.split(/[\\/]/).slice(-2).join("/"));
+  const prepared = await prepareEnvironment(c, caseDir, {
+    timeoutMs: 1_800_000,
+    testRoot: ctx.testRoot,
+    onOutput: () => ctx.onPhase("prepare", `${String(Math.round((Date.now() - ctx.startedAt) / 1000))}s`),
+  });
+  writeJson(join(caseDir, "prepare.json"), {
+    status: prepared.status, reason: prepared.reason, envDir: prepared.envDir,
+    repoDir: prepared.repoDir, exitCode: prepared.exitCode, elapsedMs: prepared.elapsedMs,
+  });
+  if (prepared.status === "blocked") return blockedOutcome(c, caseDir, prepared.reason ?? "environment not met");
+  if (prepared.status !== "prepared") throw new Error(`prepare failed: ${prepared.reason ?? "unknown"}`);
+
   if (c.kind === "upstream-part") {
-    const part: Part = loadPart(ctx.suiteRoot, c.part!);
+    if (c.part === null) throw new Error(`case ${c.id}: part definition missing`);
+    const part: Part = loadPart(c.part);
     const run: PartRunResult = await runPartCase(ctx, c, part, options.partFilter);
     writeJson(join(caseDir, "part-result.json"), run);
     return {
@@ -186,13 +262,11 @@ async function executeCase(c: SuiteCase, ctx: JobContext, suite: Suite, options:
       caseDir,
       logDir: null,
       comparisonPath: null,
-      extra: { part: part.id, checkout: run.checkoutPath, status: run.status },
+      extra: { part: part.id, checkout: run.repoDir, status: run.status },
     };
   }
 
-  const pipeline = materializePipeline(suite, c);
-  const task = readFileSync(join(ctx.suiteRoot, c.task!), "utf8").trim();
-  const run: PipelineRunResult = await runPipelineCase(ctx, c, pipeline, task);
+  const run = await runPipelineCase(ctx, c, readTask(c));
   writeJson(join(caseDir, "run-result.json"), {
     status: run.status,
     exitCode: run.exitCode,
@@ -200,44 +274,17 @@ async function executeCase(c: SuiteCase, ctx: JobContext, suite: Suite, options:
     summary: run.summary,
     mismatches: run.mismatches,
     comparisonErrors: run.comparisonErrors,
-    clonePath: run.clonePath,
+    envDir: run.envDir,
     logDir: run.logDir,
     comparisonPath: run.comparisonPath,
     pipelinePath: run.pipelinePath,
+    harnessPhase: run.harnessPhase,
     error: run.error,
   });
 
-  let rubric = null;
-  if (c.expect.method === "verdict+rubric") {
-    const expectRubric = c.expect.rubric;
-    rubric = await runRubric({
-      command: options.rubricCommand === null ? null : options.rubricCommand.split(" ").filter((v) => v !== ""),
-      caseId: c.id,
-      caseDir,
-      clonePath: run.clonePath,
-      sessionId: run.sessionId,
-      rubricPath: expectRubric === undefined ? "" : join(ctx.suiteRoot, expectRubric.rubric),
-      referencePath: expectRubric?.reference === undefined ? null : join(ctx.suiteRoot, expectRubric.reference),
-      timeoutMs: 900000,
-      minScore: options.rubricMin,
-    });
-    if (options.rubricMin !== null && rubric.status === "scored" && rubric.score !== null && rubric.score < options.rubricMin) {
-      rubric = { ...rubric, status: "failed" as const, detail: `${rubric.detail} — below --rubric-min` };
-    }
-  }
-
+  const rubric = await rubricFor(c, options, run, caseDir, (phase, detail) => ctx.onPhase(phase, detail));
   const evaluation = evaluatePipeline(c, run, { calibrate: options.calibrate }, rubric);
-  // Evidence that lives inside the clone (the workflows a writer session wrote)
-  // is copied out before the clone is dropped; harness artifacts are already in
-  // the case directory (the session root).
-  if (ctx.slotDir !== null) {
-    // The clone *is* the warm cache; copy the produced workflows out and keep it.
-    const preserved = preserveWritten(run.clonePath, caseDir, run.sessionId);
-    if (preserved !== null) ctx.onPhase("preserved", preserved);
-  } else if (!options.keepClones) {
-    const preserved = dropClone(run.clonePath, caseDir, run.sessionId);
-    if (preserved !== null) ctx.onPhase("preserved", preserved);
-  }
+  if (options.dropEnv) dropEnvironment(run);
   return {
     evaluation,
     caseDir,
@@ -245,7 +292,7 @@ async function executeCase(c: SuiteCase, ctx: JobContext, suite: Suite, options:
     comparisonPath: run.comparisonPath,
     extra: {
       pipeline: run.pipelinePath,
-      clone: run.clonePath,
+      env: run.envDir,
       session: run.sessionId,
       exitCode: run.exitCode,
       harnessStatus: run.status,
@@ -253,14 +300,14 @@ async function executeCase(c: SuiteCase, ctx: JobContext, suite: Suite, options:
   };
 }
 
-/** Bounded-concurrency scheduler over the selected cases. */
 async function runSuite(
   suite: Suite,
-  suiteRoot: string,
   cases: readonly SuiteCase[],
   outDir: string,
   options: Options,
   term: Term,
+  probe: ProbeReport,
+  harnessOverride?: { readonly dir: string; readonly cli: string },
 ): Promise<{ rows: Row[]; outcomes: Map<string, CaseOutcome> }> {
   const display = new LiveDisplay(term, isTty() && !options.json);
   const rows: Row[] = cases.map((c) => ({
@@ -277,35 +324,45 @@ async function runSuite(
     display.update(rows);
   }, 400);
 
-  const harnessDir = resolve(suiteRoot, suite.harness.dir);
-  const baselineRepo = resolve(suiteRoot, suite.baseline.repo);
+  const harnessDir = harnessOverride?.dir ?? resolve(suite.root, "..");
+  const harnessCli = harnessOverride?.cli ?? join(harnessDir, "scripts", "cli.ts");
   let cursor = 0;
-
-  const worker = async (slot: number): Promise<void> => {
+  const worker = async (): Promise<void> => {
     for (;;) {
       const index = cursor++;
       if (index >= cases.length) return;
       const c = cases[index]!;
       const row = byId.get(c.id)!;
-      const caseDir = ensureDir(join(outDir, c.id));
-      // Only pinned-recipe cases share a worker slot: writer/e2e cases have the
-      // model author the build recipe, and a warm tree would hide a broken one.
-      const cacheable = options.buildCache && (c.subject === "judgement" || c.subject === "refactor");
-      const slotDir = cacheable
-        ? ensureDir(join(options.cacheDir ?? join(suiteRoot, ".cache"), `slot-${String(slot)}`))
-        : null;
       row.status = "running";
       row.startedAt = Date.now();
-      row.phase = "start";
+
+      const requirement = evaluateRequirement(c.requires, probe);
+      if (!requirement.ok) {
+        row.status = "settled";
+        row.elapsedMs = 0;
+        const caseDir = ensureDir(join(outDir, c.id));
+        const outcome = blockedOutcome(c, caseDir, requirement.reason ?? "environment not met");
+        outcomes.set(c.id, outcome);
+        row.evaluation = outcome.evaluation;
+        display.log(term.paint("⊘ ", "yellow") + c.id + term.paint(`  blocked: ${requirement.reason ?? ""}`, "dim"));
+        continue;
+      }
+
+      const caseDir = ensureDir(join(outDir, c.id));
       display.log(term.paint(`▶ ${c.id}`, "cyan") + term.paint(`  ${c.title}`, "dim"));
       const ctx: JobContext = {
-        caseDir, slotDir, suiteRoot, baselineRepo, baselineCommit: suite.baseline.commit,
-        harnessDir, harnessCli: resolve(harnessDir, suite.harness.cli), bun: process.execPath,
-        repeats: options.repeats, rebuild: options.rebuild, keepClones: options.keepClones,
+        caseDir,
+        testRoot: suite.root,
+        harnessDir,
+        harnessCli,
+        bun: process.execPath,
+        repeats: options.repeats,
+        rebuild: options.rebuild,
+        startedAt: row.startedAt,
         onPhase: (phase, detail) => { row.phase = phase; row.detail = detail ?? ""; },
       };
       try {
-        const outcome = await executeCase(c, ctx, suite, options);
+        const outcome = await executeCase(c, ctx, options);
         outcomes.set(c.id, outcome);
         row.evaluation = outcome.evaluation;
         row.elapsedMs = Date.now() - row.startedAt;
@@ -322,10 +379,7 @@ async function runSuite(
     }
   };
 
-  const workers = Array.from(
-    { length: Math.min(options.concurrency, cases.length) },
-    (_, slot) => worker(slot),
-  );
+  const workers = Array.from({ length: Math.min(options.concurrency, cases.length) }, () => worker());
   try {
     await Promise.all(workers);
   } finally {
@@ -339,14 +393,16 @@ function summarize(
   cases: readonly SuiteCase[],
   rows: readonly Row[],
   outcomes: Map<string, CaseOutcome>,
+  probe: ProbeReport,
   startedAt: string,
 ): Record<string, unknown> {
-  const counts = { passed: 0, failed: 0, pendingRubric: 0, errored: 0 };
+  const counts = { passed: 0, failed: 0, blocked: 0, pendingRubric: 0, errored: 0 };
   const entries = cases.map((c) => {
     const row = rows.find((r) => r.id === c.id)!;
     const outcome = outcomes.get(c.id);
     if (row.error !== null) counts.errored++;
     else if (outcome?.evaluation.status === "failed") counts.failed++;
+    else if (outcome?.evaluation.status === "blocked") counts.blocked++;
     else if (outcome?.evaluation.status === "pending-rubric") counts.pendingRubric++;
     else if (outcome?.evaluation.status === "passed") counts.passed++;
     return {
@@ -369,7 +425,8 @@ function summarize(
     };
   });
   return {
-    suite: { version: suite.version, baselineCommit: suite.baseline.commit, for: suite.generatedFor },
+    suite: { root: suite.root, cases: cases.length },
+    probe: { host: probe.host, recipes: probe.recipes },
     startedAt,
     endedAt: nowIso(),
     counts,
@@ -377,12 +434,13 @@ function summarize(
   };
 }
 
-function printList(cases: readonly SuiteCase[], json: boolean): void {
+function printList(suite: Suite, cases: readonly SuiteCase[], json: boolean): void {
   if (json) {
     process.stdout.write(JSON.stringify(cases.map((c) => ({
-      id: c.id, subject: c.subject, title: c.title, tags: c.tags,
+      id: c.id, subject: c.subject, title: c.title, tags: c.tags, kind: c.kind,
       method: c.expect.method, state: c.expect.state ?? null,
-      provisional: c.expect.provisional, note: c.expect.note ?? null,
+      provisional: c.expect.provisional ?? false, note: c.expect.note ?? null,
+      requires: c.requires,
     })), null, 2) + "\n");
     return;
   }
@@ -390,322 +448,252 @@ function printList(cases: readonly SuiteCase[], json: boolean): void {
   for (const c of cases) {
     if (c.subject !== subject) {
       subject = c.subject;
-      process.stdout.write(`\n${subject}\n`);
+      const description = suite.subjects[subject];
+      process.stdout.write(`\n${subject}${description === undefined ? "" : ` — ${description}`}\n`);
     }
-    const flags = [c.expect.provisional ? "provisional" : null, ...c.tags].filter((v) => v !== null).join(" ");
-    process.stdout.write(`  ${Term.fit(c.id, 28)} ${Term.fit(c.expect.method, 20)} ${Term.fit(String(c.expect.state ?? "-"), 9)} ${flags}\n`);
-    process.stdout.write(`  ${" ".repeat(28)} ${c.title}\n`);
+    const flags = [c.expect.provisional === true ? "provisional" : null, ...c.tags].filter((v) => v !== null).join(" ");
+    process.stdout.write(`  ${Term.fit(c.id, 30)} ${Term.fit(c.expect.method, 20)} ${Term.fit(String(c.expect.state ?? "-"), 9)} ${flags}\n`);
+    process.stdout.write(`  ${" ".repeat(30)} ${c.title}\n`);
   }
   process.stdout.write(`\n${String(cases.length)} case(s)\n`);
 }
 
-function printDryRun(suite: Suite, suiteRoot: string, cases: readonly SuiteCase[], options: Options, outDir: string): void {
-  const harnessDir = resolve(suiteRoot, suite.harness.dir);
-  process.stdout.write(`baseline  ${resolve(suiteRoot, suite.baseline.repo)} @ ${suite.baseline.commit}\n`);
-  process.stdout.write(`harness   ${harnessDir}  (bun ${resolve(harnessDir, suite.harness.cli)})\n`);
+function printDryRun(suite: Suite, cases: readonly SuiteCase[], options: Options, outDir: string): void {
+  process.stdout.write(`root      ${suite.root}\n`);
+  process.stdout.write(`harness   ${resolve(suite.root, "..")}  (bun ${join(resolve(suite.root, ".."), "scripts", "cli.ts")})\n`);
   process.stdout.write(`out       ${outDir}\n`);
-  process.stdout.write(`parallel  ${String(Math.min(options.concurrency, cases.length))} of ${String(cases.length)} case(s)\n\n`);
+  process.stdout.write(`parallel  ${String(Math.min(options.concurrency, cases.length))} of ${String(cases.length)} case(s)\n`);
+  if (options.dropEnv) process.stdout.write(`env       dropped after each case\n`);
+  process.stdout.write("\n");
   for (const c of cases) {
     const caseDir = join(outDir, c.id);
-    process.stdout.write(`▶ ${c.id}  [${c.subject}] ${c.expect.method}\n`);
-    process.stdout.write(`  cwd     ${caseDir}\n`);
+    process.stdout.write(`▶ ${c.id}  [${c.subject}] ${c.expect.method}${c.expect.provisional === true ? "  (provisional)" : ""}\n`);
+    process.stdout.write(`  requires ${c.requires.tools.join(",") || "(none)"}${c.requires.recipe === null ? "" : ` recipe=${c.requires.recipe}`}\n`);
+    process.stdout.write(`  prepare  bun ${c.prepare ?? "(none)"} ${join(caseDir, "env")}\n`);
     if (c.kind === "upstream-part") {
-      const part = loadPart(suiteRoot, c.part!);
-      process.stdout.write(`  corpus  git clone ${suite.baseline.repo} ${join(caseDir, "corpus")} --no-checkout → checkout --detach ${suite.baseline.commit.slice(0, 8)}\n`);
-      process.stdout.write(`  build   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON\n`);
-      process.stdout.write(`          cmake --build build --target uv_run_tests_a -j 8\n`);
-      process.stdout.write(`  cases   ${String(part.cases.length)} case(s) × ${String(options.repeats > 0 ? options.repeats : part.policy.repeats)} repeat(s), policy=${part.policy.kind}\n`);
-      process.stdout.write(`  expect  ${part.policy.kind === "strict" ? "every case exit 0 + expected TAP" : "classify stable-ok / stable-fail / flaky"}\n\n`);
+      process.stdout.write(`  part     ${c.part ?? "(missing)"}\n\n`);
       continue;
     }
-    const pipelinePath = join(caseDir, "pipeline.json");
-    process.stdout.write(`  repo    git clone ${suite.baseline.repo} ${join(caseDir, "repo")} --no-checkout → checkout --detach ${suite.baseline.commit.slice(0, 8)}\n`);
-    for (const rel of c.clone?.remove ?? []) process.stdout.write(`  hide    ${rel}\n`);
-    process.stdout.write(`  config  ${pipelinePath}\n`);
-    process.stdout.write(`          ${JSON.stringify(materializePipeline(suite, c).stages)}\n`);
-    process.stdout.write(`  task    ${c.task} (${String(readFileSync(join(suiteRoot, c.task!), "utf8").trim().length)} chars)\n`);
-    process.stdout.write(`  run     bun ${suite.harness.cli} run <clone> --session ${c.id}-s1 --session-root ${caseDir} --pipeline-file ${pipelinePath} --format json\n`);
-    for (const [key, value] of Object.entries(c.limits ?? {})) {
-      process.stdout.write(`          --limit ${key}=${String(value)}\n`);
+    process.stdout.write(`  repo     ${join(caseDir, "env", c.repo)}\n`);
+    process.stdout.write(`  config   ${join(caseDir, "pipeline.json")}\n`);
+    process.stdout.write(`           ${JSON.stringify(materializePipeline(suite, c).stages)}\n`);
+    for (const injection of c.inject) {
+      process.stdout.write(`  inject   ${injection.source} → <worktree>/${injection.dest}\n`);
     }
-    process.stdout.write(`  expect  state=${String(c.expect.state)} injected=[${(c.expect.injectedStages ?? []).join(",")}] requiredFailures=[${(c.expect.failuresRequired ?? []).join(",")}]\n`);
-    if (c.expect.provisional) process.stdout.write(`  note    provisional: ${c.expect.note ?? ""}\n`);
+    for (const [key, value] of Object.entries(c.limits)) {
+      process.stdout.write(`  limit    ${key}=${String(value)}\n`);
+    }
+    process.stdout.write(`  expect   state=${String(c.expect.state)} injected=[${(c.expect.injectedStages ?? []).join(",")}] requiredFailures=[${(c.expect.failuresRequired ?? []).join(",")}]\n`);
+    if (c.expect.provisional === true) process.stdout.write(`  note     provisional: ${c.expect.note ?? ""}\n`);
     process.stdout.write("\n");
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* calibration helpers                                                 */
+/* ------------------------------------------------------------------ */
 
-/**
- * Freeze expectations from a run directory.
- *
- * Reads `<dir>/<case>/run-result.json` (per-case results survive an interrupted
- * batch, a summary.json does not) and turns the observed mismatch set into the
- * case's frozen `failuresExact`, clears `provisional` and rewrites the note.
- * A case whose observed state differs from the expected state is reported and
- * left untouched: that is a finding about the expectation, not a mechanical fix.
- */
-function freezeExpectations(suitePath: string, runDir: string, term: Term): number {
-  const { suite } = loadSuite(suitePath);
-  const perCase = new Map<string, { state: string | null; mismatches: string[]; exitCode: number | null }>();
+function caseConfigPath(c: SuiteCase): string {
+  return join(c.dir, "case.json");
+}
+
+/** Freeze expectations from a finished (or interrupted) run directory. */
+function freezeExpectations(suiteRoot: string, runDir: string, term: Term): number {
+  const { suite } = loadSuite(suiteRoot);
+  const observed = new Map<string, { state: string | null; mismatches: string[]; blocked: boolean }>();
   for (const entry of readdirSync(runDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const resultPath = join(runDir, entry.name, "run-result.json");
     if (!existsSync(resultPath)) continue;
     const result = JSON.parse(readFileSync(resultPath, "utf8")) as {
-      exitCode: number | null;
+      status?: string;
       summary: { state?: string } | null;
-      mismatches: string[];
+      mismatches?: string[];
     };
-    perCase.set(entry.name, {
+    observed.set(entry.name, {
       state: result.summary?.state ?? null,
       mismatches: result.mismatches ?? [],
-      exitCode: result.exitCode,
+      blocked: result.status === "blocked",
     });
   }
-  if (perCase.size === 0) {
+  if (observed.size === 0) {
     process.stderr.write(`no per-case run-result.json found under ${runDir}\n`);
     return 2;
   }
 
   let frozen = 0;
   const skipped: string[] = [];
-  const cases = suite.cases.map((c) => {
-    const observed = perCase.get(c.id);
-    if (observed === undefined) return c;
-    if (c.expect.state !== undefined && observed.state !== c.expect.state) {
-      skipped.push(`${c.id}: state ${String(observed.state)} ≠ expected ${String(c.expect.state)}`);
-      return c;
+  for (const c of suite.cases) {
+    const seen = observed.get(c.id);
+    if (seen === undefined || seen.blocked) continue;
+    if (c.expect.state !== undefined && seen.state !== c.expect.state) {
+      skipped.push(`${c.id}: state ${String(seen.state)} ≠ expected ${String(c.expect.state)}`);
+      continue;
     }
+    const raw = readJson<Record<string, unknown>>(caseConfigPath(c));
+    const expect = (raw["expect"] ?? {}) as Record<string, unknown>;
+    expect["failuresExact"] = [...seen.mismatches].sort();
+    expect["provisional"] = false;
+    expect["note"] = `实测冻结（${new Date().toISOString().slice(0, 10)}，${String(seen.mismatches.length)} 条失配）` +
+      (typeof expect["note"] === "string" ? ` — 原预测：${expect["note"]}` : "");
+    raw["expect"] = expect;
+    writeJson(caseConfigPath(c), raw);
     frozen++;
-    const set = [...observed.mismatches].sort();
-    return {
-      ...c,
-      expect: {
-        ...c.expect,
-        failuresExact: set,
-        provisional: false,
-        note: `实测冻结（${new Date().toISOString().slice(0, 10)}，${observed.mismatches.length} 条失配）` +
-          (c.expect.note === undefined ? "" : ` — 原预测：${c.expect.note}`),
-      },
-    };
-  });
-  writeJson(suitePath, { ...suite, cases });
-  for (const c of cases) {
-    const observed = perCase.get(c.id);
-    if (observed === undefined) continue;
-    const mark = observed.state === c.expect.state ? term.paint("frozen", "green") : term.paint("CHECK", "red");
-    process.stdout.write(`  ${mark} ${c.id}  state=${String(observed.state)} failures=${String((c.expect.failuresExact ?? []).length)}\n`);
+    process.stdout.write(`  ${term.paint("frozen", "green")} ${c.id}  state=${String(seen.state)} failures=${String(seen.mismatches.length)}\n`);
   }
   if (skipped.length > 0) {
     process.stdout.write(term.paint("needs a human decision:", "red") + "\n");
     for (const line of skipped) process.stdout.write(`  ${line}\n`);
   }
-  process.stdout.write(`\n${String(frozen)} case(s) frozen into ${suitePath}\n`);
+  process.stdout.write(`\n${String(frozen)} case(s) frozen into cases/*/case.json\n`);
   return skipped.length === 0 ? 0 : 1;
 }
 
-
-/** Set by the re-judge path: relocates file checks to the preserved copy. */
-let layoutOverride: { prefix: string; replacement: string } | null = null;
-
-/**
- * Re-judge a finished run directory against the CURRENT suite expectations.
- *
- * Stored `run-result.json` files carry everything the evaluator needs except the
- * clone; checks that need it (requireFiles) fall back to the preserved
- * `<case>/written/**` tree. Use this after correcting an expectation instead of
- * paying for the runs again — results are written to `summary.reevaluated.json`
- * so the original evidence is never overwritten.
- */
-async function reevaluateRun(suitePath: string, runDir: string, term: Term, options: Options): Promise<number> {
-  const { suite } = loadSuite(suitePath);
+/** Re-judge stored results against the current case expectations. */
+async function reevaluateRun(suiteRoot: string, runDir: string, term: Term, options: Options): Promise<number> {
+  const { suite } = loadSuite(suiteRoot);
   const rows: Row[] = [];
-  const counts = { passed: 0, failed: 0, pendingRubric: 0, unverifiable: 0 };
-  // The same selection flags as a real run, so a re-judge can target a subset.
+  const counts = { passed: 0, failed: 0, blocked: 0, pendingRubric: 0, errored: 0 };
   for (const c of selectCases(suite, options.selection)) {
     const caseDir = join(runDir, c.id);
-    layoutOverride = null;
     const resultPath = join(caseDir, "run-result.json");
     if (!existsSync(resultPath)) continue;
     const stored = JSON.parse(readFileSync(resultPath, "utf8")) as {
-      status: PipelineRunResult["status"];
+      status: PipelineRunResult["status"] | "blocked";
+      reason?: string;
       exitCode: number | null;
       elapsedMs: number;
-      summary: HarnessSummary | null;
+      summary: PipelineRunResult["summary"];
       mismatches: string[];
       comparisonErrors: string[];
-      clonePath: string;
+      envDir: string | null;
       logDir: string | null;
       comparisonPath: string | null;
-      pipelinePath: string;
+      pipelinePath: string | null;
       error: string | null;
     };
-    const sessionId = stored.summary?.session ?? `${c.id}-s1`;
-    // The clone is dropped after a run; point file checks at the preserved copy.
-    const clonePath = existsSync(stored.clonePath)
-      ? stored.clonePath
-      : join(caseDir, "written").replace("\\", "\\");
-    // A preserved copy strips the leading `.refactor/runs/`, so file checks that
-    // target the writer's output resolve there instead of the (dropped) clone.
-    const preserved = !existsSync(stored.clonePath);
-    if (preserved && c.expect.requireFiles !== undefined) {
-      layoutOverride = {
-        // Strip only the `.refactor/runs/` prefix: the `{session}` placeholder
-        // stays in place so the evaluator substitutes it into `written/<session>/`.
-        prefix: ".refactor/runs/",
-        replacement: "",
-      };
+    if (stored.status === "blocked") {
+      const outcome = blockedOutcome(c, caseDir, stored.reason ?? "blocked");
+      counts.blocked++;
+      rows.push({ id: c.id, subject: c.subject, status: "settled", phase: "", detail: "", startedAt: 0, elapsedMs: 0, evaluation: outcome.evaluation, error: null });
+      continue;
     }
+    const envDir = stored.envDir !== null && existsSync(stored.envDir) ? stored.envDir : join(caseDir, "written");
     const run: PipelineRunResult = {
       status: stored.status,
       exitCode: stored.exitCode,
       elapsedMs: stored.elapsedMs,
       summary: stored.summary,
-      stdoutText: stored.summary === null ? "" : JSON.stringify(stored.summary),
+      stdoutText: "",
       stderrText: "",
-      clonePath,
-      sessionId,
+      envDir,
+      repoDir: join(envDir, c.repo),
+      sessionRoot: join(caseDir, "session"),
+      sessionId: stored.summary?.session ?? `${c.id}-s1`,
       logDir: stored.logDir,
       comparisonPath: stored.comparisonPath,
       mismatches: stored.mismatches,
       comparisonErrors: stored.comparisonErrors,
-      pipelinePath: stored.pipelinePath,
+      pipelinePath: stored.pipelinePath ?? join(caseDir, "pipeline.json"),
       error: stored.error,
     };
-    let rubric: RubricOutcome | null = null;
-    if (c.expect.method === "verdict+rubric") {
-      const expectRubric = c.expect.rubric;
-      rubric = await runRubric({
-        command: options.rubricCommand === null ? null : options.rubricCommand.split(" ").filter((v) => v !== ""),
-        caseId: c.id,
-        caseDir,
-        clonePath,
-        sessionId,
-        rubricPath: expectRubric === undefined ? "" : join(dirname(suitePath), expectRubric.rubric),
-        referencePath: expectRubric?.reference === undefined ? null : join(dirname(suitePath), expectRubric.reference),
-        timeoutMs: 900000,
-        minScore: options.rubricMin,
-      });
-      if (options.rubricMin !== null && rubric.status === "scored" && rubric.score !== null && rubric.score < options.rubricMin) {
-        rubric = { ...rubric, status: "failed" as const, detail: `${rubric.detail} — below --rubric-min` };
-      }
-      writeJson(join(caseDir, "rubric.reevaluated.json"), rubric);
-    }
-    const forEval: SuiteCase = layoutOverride === null || c.expect.requireFiles === undefined ? c : {
-      ...c,
-      expect: {
-        ...c.expect,
-        requireFiles: c.expect.requireFiles.map((rel) =>
-          rel.startsWith(layoutOverride!.prefix) ? layoutOverride!.replacement + rel.slice(layoutOverride!.prefix.length) : rel),
-      },
-    };
-    const evaluation = evaluatePipeline(forEval, run, { calibrate: false }, rubric);
-    if (evaluation.status === "passed") counts.passed++;
-    else if (evaluation.status === "pending-rubric") counts.pendingRubric++;
-    else counts.failed++;
-    rows.push({
-      id: c.id, subject: c.subject, status: "settled", phase: "", detail: "",
-      startedAt: 0, elapsedMs: stored.elapsedMs, evaluation, error: stored.error,
-    });
-  }
-  if (rows.length === 0) {
-    process.stderr.write(`no per-case run-result.json found under ${runDir}\n`);
-    return 2;
-  }
-  const display = new LiveDisplay(term, isTty() && !options_jsonOutput());
-  display.finish(rows, runDir);
-  writeJson(join(runDir, "summary.reevaluated.json"), {
-    reevaluatedAt: nowIso(),
-    suite: suitePath,
-    counts,
-    cases: rows.map((r) => ({ id: r.id, status: r.evaluation?.status ?? null, checks: r.evaluation?.checks ?? [] })),
-  });
-  process.stdout.write(`${String(rows.length)} case(s) re-judged; ${String(counts.passed)} pass / ${String(counts.failed)} fail\n`);
-  return counts.failed === 0 ? 0 : 1;
-}
-
-function options_jsonOutput(): boolean {
-  return process.argv.includes("--json");
-}
-
-/* ------------------------------------------------------------------ */
-/* self-test: the runner's own scheduler, evaluators and display       */
-/* ------------------------------------------------------------------ */
-
-async function selfTest(options: Options, term: Term): Promise<number> {
-  const stubSuite: Suite = {
-    version: 1,
-    generatedFor: "runner self-test (synthetic)",
-    baseline: { repo: ".", branch: "-", commit: "0000000" },
-    harness: { dir: ".", runtime: "bun", cli: "none" },
-    presets: {},
-    subjects: { stub: "synthetic cases" },
-    cases: [
-      { id: "stub-accept", subject: "judgement", title: "synthetic ACCEPTED", tags: ["stub"], kind: "pipeline", task: "x", stages: {}, expect: { method: "verdict", state: "ACCEPTED", provisional: false } },
-      { id: "stub-attribution", subject: "judgement", title: "synthetic REJECTED + attribution match", tags: ["stub"], kind: "pipeline", task: "x", stages: {}, expect: { method: "verdict+attribution", state: "REJECTED", failuresRequired: ["oracle_x.exit"], provisional: false } },
-      { id: "stub-attribution-miss", subject: "judgement", title: "synthetic attribution mismatch (must fail)", tags: ["stub"], kind: "pipeline", task: "x", stages: {}, expect: { method: "verdict+attribution", state: "REJECTED", failuresRequired: ["oracle_never_fails.exit"], provisional: false } },
-      { id: "stub-timeout", subject: "refactor", title: "synthetic timeout (must fail)", tags: ["stub"], kind: "pipeline", task: "x", stages: {}, expect: { method: "verdict", state: "ACCEPTED", provisional: false } },
-    ],
-  };
-  const outDir = ensureDir(options.out ?? resolve(dirname(options.suitePath), "..", "runs", `selftest-${timestamp()}`));
-  const display = new LiveDisplay(term, isTty() && !options.json);
-  const rows: Row[] = stubSuite.cases.map((c) => ({
-    id: c.id, subject: c.subject, status: "queued", phase: "", detail: "",
-    startedAt: 0, elapsedMs: 0, evaluation: null, error: null,
-  }));
-  const outcomes = new Map<string, CaseOutcome>();
-  display.log(term.paint("runner self-test — synthetic cases, no project is touched", "magenta"));
-
-  const fake = (id: string): PipelineRunResult => {
-    const rejected = id === "stub-attribution" || id === "stub-attribution-miss";
-    const timedOut = id === "stub-timeout";
-    const state = rejected ? "REJECTED" : "ACCEPTED";
-    return {
-      status: timedOut ? "timeout" : "exited",
-      exitCode: timedOut ? null : rejected ? 1 : 0,
-      elapsedMs: 5,
-      summary: timedOut ? null : {
-        state, session: `${id}-s1`, log_dir: join(outDir, id, "log"), pipeline: "stub",
-        injected_stages: ["workflows", "refactor"], verification_authoritative: true,
-        declared_builds: ["stub"], baseline_build: "pass", candidate_build: "pass",
-        comparison: rejected ? "inconsistent" : "consistent", refactor_summary: "",
-      },
-      stdoutText: JSON.stringify({ state }),
-      stderrText: timedOut ? "simulated timeout" : "",
-      clonePath: join(outDir, id, "repo"),
-      sessionId: `${id}-s1`,
-      logDir: join(outDir, id, "log"),
-      comparisonPath: null,
-      mismatches: id === "stub-attribution" ? ["oracle_x.exit", "oracle_x.summary"]
-        : rejected ? ["oracle_other.exit"] : [],
-      comparisonErrors: [],
-      pipelinePath: join(outDir, id, "pipeline.json"),
-      error: timedOut ? "timed out after 5 ms" : null,
-    };
-  };
-
-  await Promise.all(stubSuite.cases.map(async (c, index) => {
-    const row = rows[index]!;
-    row.status = "running";
-    row.startedAt = Date.now();
-    row.phase = "synthetic";
-    await new Promise((r) => setTimeout(r, 60 + index * 40));
-    const run = fake(c.id);
     const evaluation = evaluatePipeline(c, run, { calibrate: options.calibrate }, null);
-    row.evaluation = evaluation;
-    row.elapsedMs = Date.now() - row.startedAt;
-    row.status = "settled";
-    outcomes.set(c.id, { evaluation, caseDir: join(outDir, c.id), logDir: run.logDir, comparisonPath: null, extra: {} });
-    display.update(rows);
-  }));
+    if (evaluation.status === "failed") counts.failed++;
+    else if (evaluation.status === "blocked") counts.blocked++;
+    else if (evaluation.status === "pending-rubric") counts.pendingRubric++;
+    else counts.passed++;
+    rows.push({ id: c.id, subject: c.subject, status: "settled", phase: "", detail: "", startedAt: 0, elapsedMs: 0, evaluation, error: null });
+  }
+  const summary = { suite: { root: suite.root }, startedAt: nowIso(), endedAt: nowIso(), counts, cases: rows.map((row) => ({ id: row.id, subject: row.subject, status: row.evaluation?.status ?? "not-run", checks: row.evaluation?.checks ?? [] })) };
+  writeJson(join(runDir, "summary.reevaluated.json"), summary);
+  const display = new LiveDisplay(term, isTty() && !options.json);
+  display.finish(rows, join(runDir, "summary.reevaluated.json"));
+  return counts.failed === 0 && counts.errored === 0 ? 0 : 1;
+}
 
-  display.finish(rows, outDir);
-  const summary = summarize(stubSuite, stubSuite.cases, rows, outcomes, nowIso());
-  writeJson(join(outDir, "summary.json"), summary);
-  const counts = summary["counts"] as { passed: number; failed: number };
-  const expected = { passed: 2, failed: 2 };
-  const ok = counts.passed === expected.passed && counts.failed === expected.failed;
-  process.stdout.write(`self-test ${ok ? term.paint("PASS", "green") : term.paint("FAIL", "red")}: expected pass=${String(expected.passed)} fail=${String(expected.failed)}, got pass=${String(counts.passed)} fail=${String(counts.failed)}\n`);
+/* ------------------------------------------------------------------ */
+/* self-test: the scheduler against a synthetic test set               */
+/* ------------------------------------------------------------------ */
+
+const STUB_HARNESS = `
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+const args = process.argv.slice(2);
+const repo = args[1];
+const sessionIndex = args.indexOf("--session");
+const session = args[sessionIndex + 1];
+const rootIndex = args.indexOf("--session-root");
+const sessionRoot = args[rootIndex + 1];
+const state = existsSync(join(repo, "state.txt")) ? readFileSync(join(repo, "state.txt"), "utf8").trim() : "ACCEPTED";
+const logDir = join(sessionRoot, ".refactor", "e2e", session);
+mkdirSync(join(logDir, "artifacts"), { recursive: true });
+writeFileSync(join(logDir, "artifacts", "expectation-comparison-result.json"), JSON.stringify({ declarations: [], errors: [] }));
+console.log(JSON.stringify({
+  state, session, log_dir: logDir, comparison: "consistent", injected_stages: [], verification_authoritative: true,
+  baseline_build: "pass", candidate_build: "pass", declared_builds: [],
+}));
+process.exit(state === "ACCEPTED" ? 0 : 1);
+`;
+
+function prepareStub(state: string | null): string {
+  const lines = [
+    'import { mkdirSync, writeFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    "const envDir = process.argv[2];",
+    'mkdirSync(join(envDir, "repo"), { recursive: true });',
+  ];
+  if (state !== null) lines.push(`writeFileSync(join(envDir, "repo", "state.txt"), ${JSON.stringify(state + "\n")});`);
+  lines.push("");
+  return lines.join("\n");
+}
+
+async function selfTest(term: Term): Promise<number> {
+  const root = join(process.env["TEMP"] ?? process.env["TMP"] ?? ".", `rfr-selftest-${timestamp()}`);
+  const cases: { id: string; state: string | null; requires: string[]; expectState: string }[] = [
+    { id: "synth-pass", state: "ACCEPTED", requires: [], expectState: "ACCEPTED" },
+    { id: "synth-fail", state: "REJECTED", requires: [], expectState: "ACCEPTED" },
+    { id: "synth-blocked", state: "ACCEPTED", requires: ["definitely-not-a-tool-xyz"], expectState: "ACCEPTED" },
+  ];
+  for (const c of cases) {
+    const dir = ensureDir(join(root, "cases", c.id));
+    writeJson(join(dir, "case.json"), {
+      id: c.id, title: `synthetic ${c.id}`, subject: "synthetic",
+      requires: { tools: c.requires },
+      prepare: "prepare.ts",
+      repo: "repo",
+      task: "./task.txt",
+      stages: { workflows: { mode: "ai" } },
+      expect: { method: "verdict", state: c.expectState },
+    });
+    writeFileSync(join(dir, "prepare.ts"), prepareStub(c.state), "utf8");
+    writeFileSync(join(dir, "task.txt"), "synthetic task\n", "utf8");
+  }
+  writeFileSync(join(root, "stub-harness.ts"), STUB_HARNESS, "utf8");
+
+  const { suite } = loadSuite(root);
+  const problems = verifyMaterial(suite, root);
+  if (problems.length > 0) {
+    process.stderr.write(`self-test: material problems: ${JSON.stringify(problems)}\n`);
+    return 1;
+  }
+  const outDir = join(root, "out");
+  const options: Options = {
+    suitePath: root, out: outDir, concurrency: 2, list: false, dryRun: false, selfTest: false,
+    calibrate: false, repeats: 0, rebuild: false, dropEnv: false, strictEnv: false, force: false, json: true,
+    color: false, rubricCommand: null, rubricMin: null, partFilter: null, frozen: null, reevaluate: null,
+    selection: { only: [], exclude: [], subjects: [], tags: [], filter: null },
+  };
+  const probe = probeEnvironment(["definitely-not-a-tool-xyz"], []);
+  const { rows, outcomes } = await runSuite(suite, suite.cases, outDir, options, term, probe,
+    { dir: root, cli: join(root, "stub-harness.ts") });
+  const summary = summarize(suite, suite.cases, rows, outcomes, probe, nowIso());
+  const counts = summary["counts"] as { passed: number; failed: number; blocked: number };
+  const ok = counts.passed === 1 && counts.failed === 1 && counts.blocked === 1;
+  process.stdout.write(
+    `self-test ${ok ? term.paint("PASS", "green") : term.paint("FAIL", "red")}: ` +
+    `expected pass=1 fail=1 blocked=1, got pass=${String(counts.passed)} fail=${String(counts.failed)} blocked=${String(counts.blocked)}\n`,
+  );
   return ok ? 0 : 1;
 }
 
@@ -714,20 +702,15 @@ async function selfTest(options: Options, term: Term): Promise<number> {
 async function main(): Promise<number> {
   const options = parseArgs(process.argv.slice(2));
   const term = new Term(options.color && process.env["NO_COLOR"] === undefined);
-  if (options.freeze !== null) return freezeExpectations(options.suitePath, options.freeze, term);
+  if (options.frozen !== null) return freezeExpectations(options.suitePath, options.frozen, term);
   if (options.reevaluate !== null) return await reevaluateRun(options.suitePath, options.reevaluate, term, options);
-  if (options.selfTest) return await selfTest(options, term);
+  if (options.selfTest) return await selfTest(term);
 
-  const { suite: loadedSuite, root } = loadSuite(options.suitePath);
-  // A checkout rebuilt from testset/baseline/overlay has its own commit sha;
-  // --baseline-commit lets it stand in for the pinned one.
-  const suite = options.baselineCommit === null
-    ? loadedSuite
-    : { ...loadedSuite, baseline: { ...loadedSuite.baseline, commit: options.baselineCommit } };
-  const problems = verifyMaterial(suite, root);
+  const { suite } = loadSuite(options.suitePath);
+  const problems = verifyMaterial(suite, suite.root);
   if (problems.length > 0) {
     process.stderr.write(term.paint(`material check failed (${String(problems.length)}):`, "red") + "\n");
-    for (const p of problems) process.stderr.write(`  ${p.caseId}: ${p.problem}\n`);
+    for (const problem of problems) process.stderr.write(`  ${problem.caseId}: ${problem.problem}\n`);
     return 2;
   }
   const cases = selectCases(suite, options.selection);
@@ -736,23 +719,33 @@ async function main(): Promise<number> {
     return 2;
   }
   if (options.list) {
-    printList(cases, options.json);
+    printList(suite, cases, options.json);
     return 0;
   }
-  const outDir = options.out ?? resolve(root, "..", "runs", `suite-${timestamp()}`);
+  const outDir = options.out ?? resolve(suite.root, "..", "runs", `suite-${timestamp()}`);
   if (options.dryRun) {
-    printDryRun(suite, root, cases, options, outDir);
+    printDryRun(suite, cases, options, outDir);
     return 0;
   }
 
   ensureDir(outDir);
-  process.stdout.write(term.paint(`suite: ${String(cases.length)} case(s) from ${options.suitePath}`, "bold") + "\n");
+  for (const c of cases) {
+    const problem = claimCaseDir(outDir, c.id, options.force);
+    if (problem !== null) {
+      process.stderr.write(term.paint("stale output: ", "red") + problem + "\n");
+      return 2;
+    }
+  }
+  const tools = cases.flatMap((c) => [...c.requires.tools]);
+  const recipes = cases.flatMap((c) => (c.requires.recipe === null ? [] : [c.requires.recipe]));
+  const probe = probeEnvironment(tools, recipes);
+  process.stdout.write(term.paint(`suite: ${String(cases.length)} case(s) from ${suite.root}`, "bold") + "\n");
   process.stdout.write(term.paint(
-    `baseline ${suite.baseline.commit.slice(0, 12)} · concurrency ${String(Math.min(options.concurrency, cases.length))} · out ${outDir}`, "dim") + "\n\n");
+    `probe ${describeProbe(probe)} · concurrency ${String(Math.min(options.concurrency, cases.length))} · out ${outDir}`, "dim") + "\n\n");
 
   const startedAt = nowIso();
-  const { rows, outcomes } = await runSuite(suite, root, cases, outDir, options, term);
-  const summary = summarize(suite, cases, rows, outcomes, startedAt);
+  const { rows, outcomes } = await runSuite(suite, cases, outDir, options, term, probe);
+  const summary = summarize(suite, cases, rows, outcomes, probe, startedAt);
   writeJson(join(outDir, "summary.json"), summary);
 
   if (options.calibrate) {
@@ -766,7 +759,6 @@ async function main(): Promise<number> {
           expectedFailures: c.expect.failuresRequired ?? [],
           observedState: observed["state"] ?? null,
           observedFailures: observed["mismatches"] ?? [],
-          partCases: observed["cases"] ?? null,
         };
       }),
     });
@@ -776,8 +768,11 @@ async function main(): Promise<number> {
   display.finish(rows, outDir);
   if (options.json) process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
 
-  const counts = summary["counts"] as { passed: number; failed: number; pendingRubric: number; errored: number };
-  return counts.failed === 0 && counts.errored === 0 ? 0 : 1;
+  const counts = summary["counts"] as { passed: number; failed: number; blocked: number; errored: number };
+  const failed = counts.failed + (options.strictEnv ? counts.blocked : 0);
+  if (failed > 0 || counts.errored > 0) return 1;
+  if (counts.passed + counts.pendingRubric + counts.blocked === 0) return 2;
+  return 0;
 }
 
 main()

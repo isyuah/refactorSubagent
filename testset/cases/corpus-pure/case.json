@@ -1,0 +1,29 @@
+{
+  "id": "corpus-pure",
+  "title": "自带纯函数用例（14 条，已在判据中使用）",
+  "subject": "corpus",
+  "tags": [
+    "corpus",
+    "offline",
+    "pinned"
+  ],
+  "kind": "upstream-part",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "part": "resources/parts/pure.json",
+  "expect": {
+    "method": "part",
+    "provisional": false,
+    "note": "strict：每条必须 exit 0 且 TAP ok"
+  },
+  "timeoutMs": 1800000
+}

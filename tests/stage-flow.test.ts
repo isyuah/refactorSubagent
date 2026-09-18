@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,6 +41,21 @@ export default async (ctx) => {
   const run = await ctx.process.run({ program: "build/app.exe", args: [], cwd: ".", timeoutMs: 30000 });
   ctx.expect("exit-code", run.exitCode);
   ctx.expect("stdout", run.stdout.trim());
+};
+`;
+
+/** Test workflow that requires judge material injected after the candidate commit. */
+const INJECT_TEST_WORKFLOW = `
+export const workflowKind = "test-workflow-driven";
+
+export default async (ctx) => {
+  await ctx.validator.assertFile("build/app.exe", "fixture executable");
+  await ctx.validator.assertFile("judge/material.txt", "injected judge material");
+  const run = await ctx.process.run({ program: "build/app.exe", args: [], cwd: ".", timeoutMs: 30000 });
+  ctx.expect("exit-code", run.exitCode);
+  ctx.expect("stdout", run.stdout.trim());
+  const material = await ctx.fs.readFile("judge/material.txt", "utf8");
+  ctx.expect("judge.material", material.trim());
 };
 `;
 
@@ -184,6 +200,73 @@ describe("stage flow with preset stages", () => {
       abort_reason?: string;
     };
     expect(state.abort_reason).toContain("preset workflow source missing");
+  }, 180_000);
+
+  test("judge material is injected for verification only, outside the measured change set", async () => {
+    const fixture = createRepo();
+    const patch = writePatch(fixture, "comment-only", (source) =>
+      source.replace("int main(void) {\n", "int main(void) {\n  /* preset patch */\n"),
+    );
+    // A worktree-relative path the candidate could not have written: it exists
+    // only because the host injects it after the candidate commit.
+    writeFileSync(join(fixture.repo, "workflows", "test-inject.ts"), INJECT_TEST_WORKFLOW);
+    const judgeDir = join(fixture.sessionRoot, "judge-material");
+    mkdirSync(judgeDir, { recursive: true });
+    const material = "oracle: strtok empty-token semantics\n";
+    writeFileSync(join(judgeDir, "material.txt"), material);
+    const expectedSha = createHash("sha256").update(material).digest("hex");
+
+    const result = await runStageFlow({
+      repoPath: fixture.repo,
+      task: "preset: injected judgement material",
+      sessionRoot: fixture.sessionRoot,
+      sessionId: "preset-inject",
+      injections: [{ source: judgeDir, dest: "judge" }],
+      flow: {
+        workflows: presetWorkflowsStage({
+          builds: [{ id: "gcc-app", entry: "workflows/build.ts" }],
+          testEntry: "workflows/test-inject.ts",
+        }),
+        refactor: patchRefactorStage(patch),
+      },
+    });
+
+    expect(result.state).toBe("ACCEPTED");
+    expect(result.provenance.verification_authoritative).toBe(true);
+
+    // The injection must not leak into the host-measured change set.
+    const patchRecord = JSON.parse(
+      readFileSync(join(result.logDir, "artifacts", "patch-candidate.json"), "utf8"),
+    ) as { changed_files: string[] };
+    expect(patchRecord.changed_files).toEqual(["main.c"]);
+
+    const injected = JSON.parse(
+      readFileSync(join(result.logDir, "artifacts", "injections.json"), "utf8"),
+    ) as { injections: { dest: string; files: { path: string; sha256: string }[] }[] };
+    expect(injected.injections).toHaveLength(2);
+    for (const report of injected.injections) {
+      expect(report.dest).toBe("judge");
+      expect(report.files).toEqual([{ path: "judge/material.txt", sha256: expectedSha, replaced: false }]);
+    }
+  }, 180_000);
+
+  test("a missing injection source aborts before any verdict", async () => {
+    const fixture = createRepo();
+    const patch = writePatch(fixture, "comment-only", (source) =>
+      source.replace("int main(void) {\n", "int main(void) {\n  /* preset patch */\n"),
+    );
+
+    const result = await runStageFlow({
+      repoPath: fixture.repo,
+      task: "preset: missing judge material",
+      sessionRoot: fixture.sessionRoot,
+      sessionId: "preset-inject-missing",
+      injections: [{ source: join(fixture.sessionRoot, "absent"), dest: "judge" }],
+      flow: presetFlow(patch),
+    });
+
+    expect(result.state).toBe("ABORTED");
+    expect(readFileSync(join(result.logDir, "run.jsonl"), "utf8")).toContain("injection source is missing");
   }, 180_000);
 
   test("an injected verification stage is recorded as non-authoritative", async () => {

@@ -2,6 +2,12 @@
 
 > 消费方：`E:/Proj/refactorSubagent` 的声明制流程（`runAgentWorkflowVerification` → `runDeclaredWorkflowVerification` → 自驱 TestWorkflow + `ctx.expect` 逐位置比较）。
 > 所有数字与行为都是本机实测（Windows 11 x64 / GCC 15.2 / CMake 4.3.1 / Ninja 1.13.2 / Debug）。
+>
+> **2026-09-17 重设计后的路径**：判据 workflow 与 oracle 迁到 `testset/resources/`（工作流入口通过
+> preset 的 `entryRoot` 从库外解析）；oracle 由 harness 在候选提交之后、验证之前注入到两侧 worktree 的
+> `refactor-task/oracle/`，因此本文里"worktree 内"的命令与快照路径仍然逐字有效。逐文件摘要 pin 内嵌在
+> `resources/workflows/judgement/test-workflow.ts` 的 `ORACLE_PINS` / `UPSTREAM_PINS` 里（不再读
+> `refactor-task/PINS.json`）。§12 起是历史运行记录，其中的命令与路径属于旧布局。
 
 ## 1. 目标与分层
 
@@ -10,7 +16,7 @@
 | 层 | 内容 | 它保证什么 |
 |---|---|---|
 | **A. 自带用例层** | libuv 自带 `uv_run_tests_a.exe <case>` 的 14 个纯函数用例 | 改动没有破坏上游已覆盖的行为；这一层同时是"回归"（防止候选把已有用例改坏） |
-| **B. oracle 层** | `refactor-task/oracle/oracle_*.c`（6 个程序、174 项检查、链接 `build/libuv.a`） | 覆盖自带用例层**没有**覆盖的行为（见 §9 的反例证据：两次"自带用例全绿、oracle 抓红"的实验） |
+| **B. oracle 层** | `refactor-task/oracle/oracle_*.c`（6 个程序、174 项检查、链接 `build/libuv.a`；验证前由 harness 注入，源在 `testset/resources/judge/libuv-1.52.1/oracle/`） | 覆盖自带用例层**没有**覆盖的行为（见 §9 的反例证据：两次"自带用例全绿、oracle 抓红"的实验） |
 
 oracle 之所以必要：自带用例套件在若干处是**结构性失明**的——`strtok` 的空 token 语义、`uv_inet_ntop(AF_INET6)` 整条渲染路径、`uv_err_name/uv_strerror` 家族（唯一断言点是死代码）、6 个 getter/setter、`uv_version*`。详见 `01-refactor-targets.md`。
 
@@ -48,11 +54,11 @@ cmake --build <worktree>/build --target uv_run_tests_a -j 8
 
 1. `ctx.validator.assertFile("build/uv_run_tests_a.exe")`、`assertFile("build/libuv.a")` —— 产物缺失直接 throw（fail-closed，不进入声明）。
 2. **判据完整性检查**（两个 pin，缺一不可）：
-   - **oracle 源码**：`const snap = await ctx.fs.snapshot("refactor-task/oracle")`，把结果规范化为 `name=sha256` 排序拼接的字符串，与 `refactor-task/PINS.json` 的 `files` 逐项比对：
+   - **oracle 源码**：`const snap = await ctx.fs.snapshot("refactor-task/oracle")`（该目录由 harness 在验证前注入，候选会话期不存在），把结果规范化为 `name=sha256` 排序拼接的字符串，与该 workflow 源码里的 `ORACLE_PINS` 逐项比对：
      `ctx.expect("oracle.sources.digest", "both-matches", canonical, "^oracle_common\\.h=248fd657…;…")`，另加 `ctx.expect("oracle.sources.snapshot", canonical)`（equal，抓两侧漂移）。
-   - **自带用例的判据本体**：对 `PINS.json` 的 `upstream_judgement_files`（`test/task.h`、`test/runner.c`、`test/runner-win.c`、`test/run-tests.c`、`test/test-list.h` + 14 个用例源码）逐个文件同样声明 `both-matches` + `equal`。
+   - **自带用例的判据本体**：对源码里的 `UPSTREAM_PINS`（`test/task.h`、`test/runner.c`、`test/runner-win.c`、`test/run-tests.c`、`test/test-list.h` + 14 个用例源码）逐个文件同样声明 `both-matches` + `equal`。
    理由：改 **oracle** 会改变判据逻辑；改 **`test/**`** 会弱化判据本身（例如把 `ASSERT_EQ` 换成空语句、删掉几条断言）——两者都不会让 TAP 行或退出码变化，只有摘要能发现。
-   `refactor-task/.gitattributes` 已设 `* -text`，全新 checkout 的字节与 PINS 摘要逐字一致（已用 scratch worktree 实测验证）。
+   摘要按 LF 字节计算：环境由 `cloneSource` 以 `--no-checkout` + `core.autocrlf=false` 检出，工作区行尾固定为 LF。
 3. 逐个编译 oracle（两侧同一命令，输出落在 `build/**` 以符合 `executableGlobs`）：
 
 ```
@@ -103,7 +109,7 @@ gcc -O0 -g -I . -I include -I src -I refactor-task/oracle \
 | `oracle_getters` | `src/uv-data-getter-setters.c` | 52 | 同上 |
 | `oracle_version` | `src/version.c` | 6 | 同上 |
 
-每个 oracle 的逐条语义（"必须保持不变"的完整清单）见 `01-refactor-targets.md`；机器可读版本见 `testset/libuv-testset.json` 的 `oracles[].pins`。
+每个 oracle 的逐条语义（"必须保持不变"的完整清单）见 `01-refactor-targets.md`；机器可读的权威版本是 `testset/cases/*/case.json`（期望值）与 `testset/resources/**`（判据材料与 pin）。
 
 ## 5. 期望声明模型（写给 TestWorkflow 作者）
 
@@ -199,7 +205,7 @@ oracle: 4 项失败 —— ntop6-plain 渲染变化 + ntop6-plain-short 边界�
 
 ## 11. 尚未覆盖 / 后续
 
-> 本节的"后续"里，语料扩容与批量执行已经落地：见 `03-suite-and-runner.md`（25 用例矩阵、5 类被测对象、并行执行器）与 `04-rubric.md`（writer 档裁判标准）。上游 437 个用例中已挑出 loop 19 / thread 22 / util 10 作为候选语料（`testset/parts/`，当前以 calibrate 方式分类，尚未升进判据）。
+> 本节的"后续"里，语料扩容与批量执行已经落地：见 `03-suite-and-runner.md`（26 用例、5 类被测对象、并行执行器）与 `04-rubric.md`（writer 档裁判标准）。上游 437 个用例中已挑出 loop 19 / thread 22 / util 10 作为候选语料（`testset/resources/parts/`，当前以 calibrate 方式分类，尚未升进判据）。
 
 - `src/idna.c` 的截断与溢出路径（`UV_E2BIG`/`UV_ENOBUFS`）、`uv_utf16_to_wtf8` / `uv_utf16_length_as_wtf8` 无任何测试调用者；要做该目标需新增 oracle，并注意 `assert` 在 Release 下消失导致的不变量差异。
 - `src/random.c`（输出不可确定 + threadpool）与 `src/queue.h` / `src/uv-common.h`（宏语义被 29+ TU 复制）不适合作为行为保持型目标，已在 `01` 标注为不建议。

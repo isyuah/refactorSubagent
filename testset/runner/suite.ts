@@ -1,92 +1,156 @@
 /**
- * Suite model: the runnable case matrix of the libuv refactor test set.
+ * Suite model: discovered cases plus the shared resources they reference.
  *
- * A case says WHAT to run (driver, task, stage sources, patch) and HOW the result is evaluated
- * the result (expectation method). The runner materialises every pipeline case
- * into its own clone + session root, so cases are isolated and can run in
- * parallel.
+ * A case is a directory under `cases/` holding `case.json` (behaviour:
+ * expectations, stage sources, requirements) and `prepare.ts` (environment).
+ * Shared content — workflow sources, patches, judge material, source pins —
+ * lives under `resources/` and is referenced by name, so a case never restates
+ * what another case already owns, and the environment a case gets can be
+ * checked before anything runs.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
+import { z } from "zod";
 import { readJson } from "./util.js";
 
-export type Subject = "judgement" | "refactor" | "writer" | "e2e" | "corpus";
+export type Subject = string;
 
-/** subjects are opaque to the runner; suite.subjects documents the known ones. */
-export type SubjectName = Subject | string;
+const RequiresFile = z
+  .object({
+    tools: z.array(z.string().min(1)).default([]),
+    recipe: z.string().min(1).nullish(),
+  })
+  .strict();
 
-export interface StageSources {
-  readonly workflows?: "judgement" | { readonly mode: string } | Record<string, unknown>;
-  readonly prepare?: Record<string, unknown>;
-  readonly refactor?: Record<string, unknown>;
+const RubricFile = z
+  .object({ rubric: z.string().min(1), reference: z.string().min(1).nullish() })
+  .strict();
+
+const ExpectFile = z
+  .object({
+    method: z.enum(["verdict", "verdict+attribution", "verdict+rubric", "part"]),
+    state: z.string().min(1).optional(),
+    failuresRequired: z.array(z.string()).optional(),
+    failuresForbidden: z.array(z.string()).optional(),
+    failuresExact: z.array(z.string()).nullish(),
+    injectedStages: z.array(z.string()).optional(),
+    authoritative: z.boolean().optional(),
+    provisional: z.boolean().optional(),
+    note: z.string().optional(),
+    requireFiles: z.array(z.string()).optional(),
+    /** Injection destinations that must already hold a different file (tamper attempts). */
+    replacedFiles: z.array(z.string()).optional(),
+    rubric: RubricFile.optional(),
+  })
+  .strict();
+
+const StageFile = z.record(z.string(), z.record(z.string(), z.unknown()));
+
+const CaseFile = z
+  .object({
+    id: z.string().min(1).optional(),
+    title: z.string().min(1).optional(),
+    subject: z.string().min(1).optional(),
+    tags: z.array(z.string()).default([]),
+    kind: z.enum(["pipeline", "upstream-part"]).default("pipeline"),
+    requires: RequiresFile.optional(),
+    prepare: z.string().min(1).nullish(),
+    repo: z.string().min(1).default("."),
+    task: z.string().min(1).optional(),
+    part: z.string().min(1).optional(),
+    stages: StageFile.default({}),
+    inject: z.array(z.object({ source: z.string().min(1), dest: z.string().min(1) }).strict()).default([]),
+    limits: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).default({}),
+    timeoutMs: z.number().int().positive().optional(),
+    expect: ExpectFile,
+    evaluate: z.object({ command: z.string().min(1).nullish() }).strict().optional(),
+  })
+  .strict();
+
+const WorkflowManifest = z
+  .object({
+    builds: z.array(
+      z.object({
+        id: z.string().min(1),
+        entry: z.string().min(1),
+        workflowId: z.string().min(1).optional(),
+        revision: z.number().int().positive().optional(),
+      }).strict(),
+    ).min(1),
+    testEntry: z.string().min(1),
+    workflowId: z.string().min(1).optional(),
+    revision: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export interface Requires {
+  readonly tools: readonly string[];
+  /** Named probe (see probe.ts) for checks a tool list cannot express. */
+  readonly recipe: string | null;
 }
 
-export interface Expectation {
-  /** programme-side evaluation method; "verdict*" cases also carry attribution fields. */
-  readonly method: "verdict" | "verdict+attribution" | "verdict+rubric" | "part";
-  readonly state?: "ACCEPTED" | "REJECTED" | "ABORTED";
-  /** declaration names that MUST appear in the mismatch list. */
-  readonly failuresRequired?: readonly string[];
-  /** declaration names that MUST NOT appear in the mismatch list. */
-  readonly failuresForbidden?: readonly string[];
-  /** exact mismatch set; unset until a calibration run froze it. */
+export interface RubricSpec {
+  readonly rubric: string;
+  readonly reference: string | null;
+}
+
+export type Expectation = Omit<z.infer<typeof ExpectFile>, "failuresExact" | "rubric"> & {
   readonly failuresExact?: readonly string[] | null;
-  /** provenance.injected must equal this list (set comparison, order-insensitive). */
-  readonly injectedStages?: readonly string[];
-  /** provenance.verification_authoritative must equal this. */
-  readonly authoritative?: boolean;
-  /** files that must exist inside the clone after the run ("{session}" is substituted). */
-  readonly requireFiles?: readonly string[];
-  readonly rubric?: { readonly rubric: string; readonly reference?: string };
-  /** true = the expected values are inferred, not measured; reported, never hidden. */
-  readonly provisional: boolean;
-  readonly note?: string;
+  readonly rubric?: RubricSpec;
+};
+
+/** Judge material copied into both worktrees before verification. */
+export interface Injection {
+  readonly source: string;
+  readonly dest: string;
 }
 
 export interface SuiteCase {
   readonly id: string;
-  readonly subject: SubjectName;
   readonly title: string;
+  readonly subject: Subject;
   readonly tags: readonly string[];
-  readonly kind?: "pipeline" | "upstream-part";
-  /** pipeline cases: task text file, relative to the testset root. */
-  readonly task?: string;
-  readonly stages?: StageSources;
-  readonly clone?: { readonly remove?: readonly string[]; readonly commit?: boolean };
-  /** corpus cases: part definition, relative to the testset root. */
-  readonly part?: string;
+  readonly kind: "pipeline" | "upstream-part";
+  /** Absolute case directory. */
+  readonly dir: string;
+  /** Absolute prepare script, or null when the case needs no environment. */
+  readonly prepare: string | null;
+  readonly requires: Requires;
+  /** Repository path inside the prepared environment directory. */
+  readonly repo: string;
+  /** Absolute task brief, pipeline cases only. */
+  readonly taskFile: string | null;
+  /** Pipeline stages with every path already resolved (absolute). */
+  readonly stages: Readonly<Record<string, Record<string, unknown>>>;
+  readonly inject: readonly Injection[];
+  readonly limits: Readonly<Record<string, string | number | null>>;
+  readonly timeoutMs: number | null;
   readonly expect: Expectation;
-  readonly limits?: Readonly<Record<string, number | null>>;
-  readonly timeoutMs?: number;
-  readonly repeats?: number;
+  readonly evaluate: { readonly command: string | null } | null;
+  /** Absolute part definition, upstream-part cases only. */
+  readonly part: string | null;
 }
 
 export interface Suite {
-  readonly version: number;
-  readonly generatedFor: string;
-  readonly baseline: { readonly repo: string; readonly branch: string; readonly commit: string; readonly note?: string };
-  readonly harness: { readonly dir: string; readonly runtime: string; readonly cli: string };
-  readonly presets: Readonly<Record<string, unknown>>;
-  readonly subjects: Readonly<Record<string, string>>;
+  readonly root: string;
   readonly cases: readonly SuiteCase[];
+  readonly problems: readonly MaterialProblem[];
+  readonly subjects: Readonly<Record<string, string>>;
 }
 
 export interface PartPolicy {
   readonly kind: "strict" | "calibrate";
   readonly repeats: number;
-  /** "ok 1 - {case}" — {case} is substituted with the case name. */
-  readonly expectTap: string;
   readonly expectExit: number;
-  readonly onFail: "fail-case" | "classify";
+  readonly expectTap: string;
+  readonly onFail: string;
 }
 
 export interface Part {
   readonly version: number;
   readonly id: string;
   readonly title: string;
-  readonly why: string;
   readonly policy: PartPolicy;
-  readonly status: "pinned" | "candidate";
   readonly cases: readonly string[];
 }
 
@@ -98,34 +162,179 @@ export interface Selection {
   readonly filter: string | null;
 }
 
-export function loadSuite(path: string): { suite: Suite; root: string } {
-  const suite = readJson<Suite>(path);
-  const root = resolve(dirname(path));
-  if (suite.version !== 1) throw new Error(`unsupported suite version ${String(suite.version)}`);
-  for (const c of suite.cases) {
-    if (c.kind === "upstream-part") {
-      if (c.part === undefined) throw new Error(`case ${c.id}: upstream-part without "part"`);
-      if (!existsSync(join(root, c.part))) throw new Error(`case ${c.id}: part file missing: ${c.part}`);
-    } else {
-      if (c.task === undefined) throw new Error(`case ${c.id}: pipeline case without "task"`);
-      if (!existsSync(join(root, c.task))) throw new Error(`case ${c.id}: task file missing: ${c.task}`);
-      if (c.stages === undefined) throw new Error(`case ${c.id}: pipeline case without "stages"`);
-    }
-  }
-  return { suite, root };
+export interface MaterialProblem {
+  readonly caseId: string;
+  readonly problem: string;
 }
 
-export function loadPart(root: string, relPath: string): Part {
-  return readJson<Part>(join(root, relPath));
+/** Root-relative by default; "./x" stays inside the case directory. */
+function resolveResource(root: string, caseDir: string, value: string): string {
+  if (isAbsolute(value)) return value;
+  if (value.startsWith("./")) return resolve(caseDir, value.slice(2));
+  return resolve(root, value);
+}
+
+/** Expand a case's stage block into the pipeline file's stage sources. */
+function resolveStages(
+  raw: z.infer<typeof StageFile>,
+  root: string,
+  caseDir: string,
+  id: string,
+  problems: MaterialProblem[],
+): Record<string, Record<string, unknown>> {
+  const stages: Record<string, Record<string, unknown>> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const mode = value["mode"];
+    const resource = value["resource"];
+    const patchFile = value["patchFile"];
+    if (key === "workflows" && mode === "preset" && typeof resource === "string") {
+      const resourceDir = resolve(root, `resources/${resource}`);
+      const manifestPath = join(resourceDir, "manifest.json");
+      if (!existsSync(manifestPath)) {
+        problems.push({ caseId: id, problem: `workflow resource not found: ${manifestPath}` });
+        stages[key] = value;
+        continue;
+      }
+      const manifest = WorkflowManifest.parse(readJson<unknown>(manifestPath));
+      const builds = manifest.builds.map((build) => ({
+        id: build.id,
+        entry: join(resourceDir, build.entry),
+        ...(build.workflowId !== undefined ? { workflowId: build.workflowId } : {}),
+        ...(build.revision !== undefined ? { revision: build.revision } : {}),
+      }));
+      stages[key] = {
+        mode: "preset",
+        entryRoot: root,
+        builds,
+        testEntry: join(resourceDir, manifest.testEntry),
+        ...(manifest.workflowId !== undefined ? { workflowId: manifest.workflowId } : {}),
+        ...(manifest.revision !== undefined ? { revision: manifest.revision } : {}),
+      };
+      for (const entry of [manifest.testEntry, ...manifest.builds.map((build) => build.entry)]) {
+        if (!existsSync(join(resourceDir, entry))) {
+          problems.push({ caseId: id, problem: `workflow entry not found: ${join(resourceDir, entry)}` });
+        }
+      }
+      continue;
+    }
+    if (typeof patchFile === "string" && (key === "refactor" || key === "prepare")) {
+      const resolved = resolveResource(root, caseDir, patchFile);
+      stages[key] = { ...value, patchFile: resolved };
+      if (!existsSync(resolved)) problems.push({ caseId: id, problem: `patch not found: ${resolved}` });
+      continue;
+    }
+    stages[key] = value;
+  }
+  return stages;
+}
+
+function parseCase(root: string, dir: string, problems: MaterialProblem[]): SuiteCase {
+  const raw = CaseFile.parse(readJson<unknown>(join(dir, "case.json")));
+  const id = raw.id ?? dir.split(/[\\/]/).slice(-1)[0]!;
+  const where = `case ${id}`;
+
+  let prepare: string | null = null;
+  const prepareRel = raw.prepare === undefined ? "prepare.ts" : raw.prepare;
+  if (prepareRel !== null) {
+    const path = resolve(dir, prepareRel);
+    if (existsSync(path)) prepare = path;
+    else problems.push({ caseId: id, problem: `prepare script not found: ${path}` });
+  }
+
+  let taskFile: string | null = null;
+  if (raw.kind === "pipeline") {
+    const path = resolveResource(root, dir, raw.task ?? "task.txt");
+    if (existsSync(path)) taskFile = path;
+    else problems.push({ caseId: id, problem: `task brief not found: ${path}` });
+  }
+
+  let part: string | null = null;
+  if (raw.kind === "upstream-part") {
+    if (raw.part === undefined) throw new Error(`${where}: upstream-part needs 'part'`);
+    part = resolveResource(root, dir, raw.part);
+    if (!existsSync(part)) {
+      problems.push({ caseId: id, problem: `part definition not found: ${part}` });
+      part = null;
+    }
+  }
+
+  const inject: Injection[] = raw.inject.map((entry) => {
+    const source = resolveResource(root, dir, entry.source);
+    if (!existsSync(source)) problems.push({ caseId: id, problem: `injection source not found: ${source}` });
+    return { source, dest: entry.dest };
+  });
+
+  const expect = raw.expect;
+  if (expect.rubric !== undefined && expect.method !== "verdict+rubric") {
+    throw new Error(`${where}: expect.rubric needs method 'verdict+rubric'`);
+  }
+
+  return {
+    id,
+    title: raw.title ?? id,
+    subject: raw.subject ?? "uncategorised",
+    tags: raw.tags,
+    kind: raw.kind,
+    dir,
+    prepare,
+    requires: { tools: raw.requires?.tools ?? [], recipe: raw.requires?.recipe ?? null },
+    repo: raw.repo,
+    taskFile,
+    stages: resolveStages(raw.stages, root, dir, id, problems),
+    inject,
+    limits: raw.limits,
+    timeoutMs: raw.timeoutMs ?? null,
+    expect: {
+      ...expect,
+      ...(expect.rubric !== undefined
+        ? {
+            rubric: {
+              rubric: resolveResource(root, dir, expect.rubric.rubric),
+              reference: expect.rubric.reference === undefined || expect.rubric.reference === null
+                ? null
+                : resolveResource(root, dir, expect.rubric.reference),
+            },
+          }
+        : {}),
+    },
+    evaluate: raw.evaluate === undefined ? null : { command: raw.evaluate.command ?? null },
+    part,
+  };
+}
+
+/**
+ * Discover the suite: every `cases/<id>/case.json` under the test set root.
+ * Malformed configuration throws (a typo must not silently drop a case); a
+ * missing referenced file is a material problem the caller reports before any
+ * case runs.
+ */
+export function loadSuite(rootInput: string): { suite: Suite; root: string } {
+  const root = resolve(rootInput);
+  const casesRoot = join(root, "cases");
+  if (!existsSync(casesRoot)) throw new Error(`test set cases directory not found: ${casesRoot}`);
+  const problems: MaterialProblem[] = [];
+  const cases: SuiteCase[] = [];
+  for (const entry of readdirSync(casesRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(casesRoot, entry.name);
+    if (!existsSync(join(dir, "case.json"))) continue;
+    cases.push(parseCase(root, dir, problems));
+  }
+  const subjectsPath = join(root, "subjects.json");
+  const subjects = existsSync(subjectsPath) ? readJson<Record<string, string>>(subjectsPath) : {};
+  return { suite: { root, cases, problems, subjects }, root };
+}
+
+export function loadPart(path: string): Part {
+  return readJson<Part>(path);
 }
 
 export function selectCases(suite: Suite, selection: Selection): SuiteCase[] {
-  const only = selection.only.length === 0 ? null : new Set(selection.only);
   return suite.cases.filter((c) => {
-    if (only !== null && !only.has(c.id)) return false;
-    if (selection.exclude.some((needle) => c.id.includes(needle))) return false;
+    if (selection.only.length > 0 && !selection.only.includes(c.id)) return false;
+    if (selection.exclude.some((part) => c.id.includes(part))) return false;
     if (selection.subjects.length > 0 && !selection.subjects.includes(c.subject)) return false;
-    if (selection.tags.length > 0 && !selection.tags.some((t) => c.tags.includes(t))) return false;
+    if (selection.tags.length > 0 && !selection.tags.some((tag) => c.tags.includes(tag))) return false;
     if (selection.filter !== null) {
       const haystack = `${c.id} ${c.title} ${c.tags.join(" ")}`.toLowerCase();
       if (!haystack.includes(selection.filter.toLowerCase())) return false;
@@ -134,80 +343,12 @@ export function selectCases(suite: Suite, selection: Selection): SuiteCase[] {
   });
 }
 
-/**
- * Expand the case's stage sources into a pipeline file. "judgement" is a named
- * preset from the suite header; anything else is passed through verbatim, so the
- * suite never restates what testset/pipeline/*.json already documents.
- */
-export function materializePipeline(suite: Suite, c: SuiteCase): Record<string, unknown> {
-  const stages: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(c.stages ?? {})) {
-    if (typeof value === "string") {
-      const preset = suite.presets[value];
-      if (preset === undefined) throw new Error(`case ${c.id}: unknown preset '${value}'`);
-      stages[key] = preset;
-    } else if (value !== undefined) {
-      stages[key] = value;
-    }
-  }
-  return { version: 1, stages };
+/** Cases already carry resolved stage sources; this is the pipeline file body. */
+export function materializePipeline(_suite: Suite, c: SuiteCase): Record<string, unknown> {
+  return { version: 1, stages: c.stages };
 }
 
-export interface MaterialProblem {
-  readonly caseId: string;
-  readonly problem: string;
-}
-
-/**
- * Fail before burning a long run: every piece of material a case names must
- * exist in the baseline — patches, preset workflow entries, corpus case names.
- */
-export function verifyMaterial(suite: Suite, root: string): MaterialProblem[] {
-  const problems: MaterialProblem[] = [];
-  const baseline = resolve(root, suite.baseline.repo);
-  const listPath = join(baseline, "test", "test-list.h");
-  const known = new Set(
-    existsSync(listPath)
-      ? [...readFileSync(listPath, "utf8").matchAll(/TEST_DECLARE\s+\(([a-z0-9_]+)\)/g)].map((m) => m[1]!)
-      : [],
-  );
-  if (known.size === 0) {
-    problems.push({ caseId: "-", problem: `baseline checkout not usable: ${listPath} missing or has no TEST_DECLARE entries` });
-  }
-  for (const c of suite.cases) {
-    if (c.kind === "upstream-part") {
-      for (const name of loadPart(root, c.part!).cases) {
-        if (known.size > 0 && !known.has(name)) problems.push({ caseId: c.id, problem: `unknown upstream case '${name}'` });
-      }
-      continue;
-    }
-    const stages = c.stages ?? {};
-    const refactor = stages.refactor as { readonly patchFile?: string } | undefined;
-    if (refactor?.patchFile !== undefined && !existsSync(join(baseline, refactor.patchFile))) {
-      problems.push({ caseId: c.id, problem: `patch not in baseline: ${refactor.patchFile}` });
-    }
-    if (typeof stages.workflows === "string") {
-      const preset = suite.presets[stages.workflows] as { readonly testEntry?: string } | undefined;
-      if (preset === undefined) problems.push({ caseId: c.id, problem: `unknown preset '${stages.workflows}'` });
-      else if (preset.testEntry !== undefined && !existsSync(join(baseline, preset.testEntry))) {
-        problems.push({ caseId: c.id, problem: `preset test workflow not in baseline: ${preset.testEntry}` });
-      }
-    }
-    for (const rel of c.clone?.remove ?? []) {
-      if (!existsSync(join(baseline, rel))) problems.push({ caseId: c.id, problem: `clone preparation target not in baseline: ${rel}` });
-    }
-    if (c.expect.rubric !== undefined) {
-      if (!existsSync(join(root, c.expect.rubric.rubric))) {
-        problems.push({ caseId: c.id, problem: `rubric not found: ${c.expect.rubric.rubric}` });
-      }
-      const reference = c.expect.rubric.reference;
-      if (reference !== undefined && !existsSync(join(root, reference))) {
-        problems.push({ caseId: c.id, problem: `rubric reference not found: ${reference}` });
-      }
-    }
-    if (c.expect.method === "verdict+rubric" && c.expect.requireFiles === undefined) {
-      problems.push({ caseId: c.id, problem: "verdict+rubric case without requireFiles (no evidence the writer produced anything)" });
-    }
-  }
-  return problems;
+/** Material problems collected during discovery, reported before anything runs. */
+export function verifyMaterial(suite: Suite, _root: string): MaterialProblem[] {
+  return [...suite.problems];
 }

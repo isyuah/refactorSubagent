@@ -44,6 +44,7 @@ export async function runRefactor(
     systemPrompt: REFACTOR_SYSTEM,
     allowedTools: [...REFACTOR_AGENT_TOOLS],
     maxTurns: limits.maxTurns,
+    model: limits.model,
     timeoutMs: limits.deadlineMs ?? undefined,
     stallTimeoutMs: limits.stallMs,
     logger: sessionHooks?.logger,

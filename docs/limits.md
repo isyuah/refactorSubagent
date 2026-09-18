@@ -53,6 +53,9 @@ bun run scripts/cli.ts workflow run wf.ts --limit stages.ctestMs=null
 bun run scripts/e2e-generated-workflow.ts --root R --session s1 \
   --limits-file ./profiles/redis.json \
   --limit sessions.refactor.deadlineMs=7200000
+
+# 换该阶段会话的模型（名字原样交给 agent CLI；非 model 键只接受正数或 null）
+  --limit sessions.testWriter.model=codeagent
 ```
 
 `--limit k=v` 与 `--limit=k=v` 等价；`--limits-file a.json --limits-file b.json` 按序叠加。
@@ -79,6 +82,7 @@ bun run scripts/e2e-generated-workflow.ts --root R --session s1 \
 | `sessions.refactor.deadlineMs` | refactor 会话总预算 | `null` |
 | `sessions.*.stallMs` | 多久没收到任何 SDK 消息判定流死 | `180000` |
 | `sessions.*.maxTurns` | 最大对话轮次 | 48 / 80 |
+| `sessions.*.model` | 该阶段会话用的模型名（网关别名如 `codeagent` 也行）；`null` = 交给 CLI 自己的默认（用户设置 / 环境变量） | `null` |
 | `stages.buildMs` | 单次 BuildWorkflow 在某棵 worktree 上执行 | `null` |
 | `stages.ctestMs` | 单次完整 CTest 套件 | `null` |
 | `stages.testWorkflowMs` | 单侧自驱动 TestWorkflow 运行 | `null` |

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveDeclaredWorkflows } from "../workflow/resolve-declared.js";
 import { createWorktrees } from "./worktree.js";
@@ -37,13 +37,19 @@ export interface PresetWorkflowsSpec {
   readonly builds: readonly PresetBuildSource[];
   /** Repo-relative (or absolute) path to the test workflow source. */
   readonly testEntry: string;
+  /**
+   * Root the entries are resolved against and must stay inside. Defaults to the
+   * repository; a caller whose workflow sources live outside it (judgement
+   * material that must not travel with the environment) sets this instead.
+   */
+  readonly entryRoot?: string;
   readonly workflowId?: string;
   readonly revision?: number;
 }
 
-/** Entries are repo-relative by convention; absolute paths pass through. */
-function resolveEntry(repoPath: string, entry: string): string {
-  return isAbsolute(entry) ? entry : join(repoPath, entry);
+/** Entries are resolved against the entry root; absolute paths must stay inside it. */
+function resolveEntry(entryRoot: string, entry: string): string {
+  return isAbsolute(entry) ? entry : join(entryRoot, entry);
 }
 
 /**
@@ -55,21 +61,22 @@ export function presetWorkflowsStage(spec: PresetWorkflowsSpec): WorkflowsStage 
   return async (ctx, input) => {
     const workflowId = spec.workflowId ?? "preset-test";
     const revision = spec.revision ?? 1;
+    const entryRoot = resolve(spec.entryRoot ?? ctx.repoPath);
     const builds = spec.builds.map((build) => ({
       id: build.id,
-      entry: resolveEntry(ctx.repoPath, build.entry),
+      entry: resolveEntry(entryRoot, build.entry),
       runLocal: build.runLocal ?? false,
       ...(build.workflowId !== undefined ? { workflowId: build.workflowId } : {}),
       ...(build.revision !== undefined ? { revision: build.revision } : {}),
     }));
-    const testEntry = resolveEntry(ctx.repoPath, spec.testEntry);
+    const testEntry = resolveEntry(entryRoot, spec.testEntry);
     const missing = builds.find((build) => !existsSync(build.entry))?.entry ??
       (existsSync(testEntry) ? null : testEntry);
     if (missing !== null) return halt(`preset workflow source missing: ${missing}`);
 
     const resolved = await resolveDeclaredWorkflows({
       workspaceRoot: ctx.repoPath,
-      entryRoot: ctx.repoPath,
+      entryRoot,
       host: input.preflight.host,
       project: input.preflight.project,
       testEntry,

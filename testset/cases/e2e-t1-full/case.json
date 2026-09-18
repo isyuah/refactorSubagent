@@ -1,0 +1,54 @@
+{
+  "id": "e2e-t1-full",
+  "title": "端到端：AI 写判据 + AI 重构，全流程由 AI 驱动",
+  "subject": "e2e",
+  "tags": [
+    "ai",
+    "e2e",
+    "finding",
+    "noisy",
+    "t1"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t1-strtok.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "ai"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict+rubric",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测（2026-09-15 重测，runs/e2e-t1-fixed）：ACCEPTED —— 模型自写 build+test workflow、自写 9 条声明，两侧构建 pass/pass，0 失配，comparison.overall=consistent，管线 10m10s（含 rubric 11m44s）。首次实测的 ABORTED 已查明是宿主策略正则误判注释（非模型问题），修复后重测通过。裁判配置是 2026-09-17 补的：此前 method 写着 verdict+rubric 却没有 expect.rubric，裁判 prompt 的 Rubric 段是 (none)、也没有参考实现清单，故 0.40→0.70 两个分数是在无标准下打出的，与 writer 档不可比",
+    "requireFiles": [
+      ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+    ],
+    "injectedStages": [],
+    "rubric": {
+      "rubric": "../docs/testset/04-rubric.md",
+      "reference": "resources/workflows/judgement"
+    }
+  },
+  "limits": {
+    "sessions.testWriter.deadlineMs": 2700000,
+    "sessions.refactor.deadlineMs": 2400000
+  },
+  "timeoutMs": 7200000
+}

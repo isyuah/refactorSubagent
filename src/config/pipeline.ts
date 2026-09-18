@@ -62,6 +62,13 @@ const BuildSource = z
 const WorkflowsAi = z.object({ mode: z.literal("ai") });
 const WorkflowsPreset = z.object({
   mode: z.literal("preset"),
+  /**
+   * Root the entries below are resolved against and must stay inside. Defaults
+   * to the repository; a caller that keeps its workflow sources outside the
+   * repository (e.g. judgement material injected for verification only) sets
+   * it to the directory those sources live under.
+   */
+  entryRoot: z.string().min(1).optional(),
   builds: z.array(BuildSource).min(1),
   /** Repo-relative or absolute path to the test workflow source. */
   testEntry: z.string().min(1),
@@ -195,6 +202,7 @@ export function buildStageFlow(pipeline: Pipeline): StageFlow {
     flow.workflows = presetWorkflowsStage({
       builds: stages.workflows.builds,
       testEntry: stages.workflows.testEntry,
+      ...(stages.workflows.entryRoot !== undefined ? { entryRoot: stages.workflows.entryRoot } : {}),
       ...(stages.workflows.workflowId !== undefined ? { workflowId: stages.workflows.workflowId } : {}),
       ...(stages.workflows.revision !== undefined ? { revision: stages.workflows.revision } : {}),
     });

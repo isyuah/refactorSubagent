@@ -134,6 +134,7 @@ async function executeRun(
     sessionRoot,
     sessionId,
     ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
+    ...(command.injections.length > 0 ? { injections: command.injections } : {}),
     limitOverrides: overrides,
     flow,
   });

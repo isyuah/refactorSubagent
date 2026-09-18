@@ -29,12 +29,17 @@ function rowStatusText(row: Row, term: Term): string {
   if (row.error !== null) return term.paint("error", "red");
   if (row.evaluation?.status === "passed") return term.paint("pass", "green");
   if (row.evaluation?.status === "pending-rubric") return term.paint("pass*", "yellow");
+  if (row.evaluation?.status === "blocked") return term.paint("blocked", "yellow");
   return term.paint("fail", "red");
 }
 
 function rowDetail(row: Row): string {
   if (row.error !== null) return row.error.replace(/\s+/g, " ").slice(0, 160);
   if (row.status === "running") return `${row.phase} ${row.detail}`.trim().slice(0, 120);
+  if (row.evaluation?.status === "blocked") {
+    const reason = row.evaluation.observed["blockedReason"];
+    return (typeof reason === "string" ? reason : "environment not met").slice(0, 160);
+  }
   if (row.evaluation === null) return "";
   const firstBad = row.evaluation.checks.find((c) => !c.ok);
   if (firstBad !== undefined) return `${firstBad.name}: ${firstBad.detail}`.slice(0, 160);
@@ -102,11 +107,12 @@ export class LiveDisplay {
     }
     const lines: string[] = [];
     lines.push("");
-    const bySubject = new Map<string, { pass: number; fail: number; pending: number }>();
+    const bySubject = new Map<string, { pass: number; fail: number; pending: number; blocked: number }>();
     for (const row of rows) {
-      const bucket = bySubject.get(row.subject) ?? { pass: 0, fail: 0, pending: 0 };
+      const bucket = bySubject.get(row.subject) ?? { pass: 0, fail: 0, pending: 0, blocked: 0 };
       if (row.error !== null || row.evaluation?.status === "failed") bucket.fail++;
       else if (row.evaluation?.status === "pending-rubric") bucket.pending++;
+      else if (row.evaluation?.status === "blocked") bucket.blocked++;
       else if (row.evaluation?.status === "passed") bucket.pass++;
       else bucket.fail++;
       bySubject.set(row.subject, bucket);
@@ -114,7 +120,8 @@ export class LiveDisplay {
     lines.push(this.term.paint("summary", "bold"));
     for (const [subject, bucket] of bySubject) {
       const verdict = bucket.fail === 0 ? this.term.paint("ok", "green") : this.term.paint("fail", "red");
-      lines.push(`  ${Term.fit(subject, 10)} pass=${String(bucket.pass)} fail=${String(bucket.fail)} pending-rubric=${String(bucket.pending)}  ${verdict}`);
+      const blocked = bucket.blocked > 0 ? ` blocked=${String(bucket.blocked)}` : "";
+      lines.push(`  ${Term.fit(subject, 10)} pass=${String(bucket.pass)} fail=${String(bucket.fail)} pending-rubric=${String(bucket.pending)}${blocked}  ${verdict}`);
     }
     lines.push("");
     for (const row of rows) {

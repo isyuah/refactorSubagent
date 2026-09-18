@@ -1,0 +1,55 @@
+{
+  "id": "refactor-t4-errstr",
+  "title": "AI 重构 errstr（判据冻结，只换 refactor 槽）",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "t4",
+    "measured"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t4-errstr.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测（2026-09-15，runs/capability-t2-t6）：ACCEPTED，0 失配，两侧构建 pass，只改 src/uv-common.c；墙钟 5m05s。合并四个近似重复的宏展开为一个查找辅助 + snprintf 兜底"
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 2400000,
+    "sessions.refactor.maxTurns": 60
+  },
+  "timeoutMs": 3600000
+}

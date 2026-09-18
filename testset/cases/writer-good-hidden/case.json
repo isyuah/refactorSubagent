@@ -1,0 +1,56 @@
+{
+  "id": "writer-good-hidden",
+  "title": "writer 写判据（隐藏参考 workflow 与 oracle）+ 行为保持补丁 → ACCEPTED",
+  "subject": "writer",
+  "tags": [
+    "ai",
+    "writer",
+    "hidden",
+    "rubric"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/writer-hidden.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "ai"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/accept-inet-comment.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+rubric",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "refactor"
+    ],
+    "authoritative": true,
+    "requireFiles": [
+      ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+    ],
+    "provisional": false,
+    "note": "实测：ACCEPTED，0 失配；裁判 0.91 —— 看不见参考实现与 oracle 也不误杀（补丁是同一文件上的注释级改动）",
+    "rubric": {
+      "rubric": "../docs/testset/04-rubric.md",
+      "reference": "resources/workflows/judgement"
+    }
+  },
+  "limits": {
+    "sessions.testWriter.deadlineMs": 3600000,
+    "sessions.testWriter.maxTurns": 140
+  },
+  "timeoutMs": 5400000
+}
