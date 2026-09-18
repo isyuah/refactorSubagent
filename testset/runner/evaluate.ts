@@ -22,10 +22,20 @@ export interface Check {
 }
 
 export interface CaseEvaluation {
-  readonly status: "passed" | "failed" | "error" | "pending-rubric";
+  readonly status: "passed" | "failed" | "error" | "pending-rubric" | "blocked";
   readonly checks: readonly Check[];
   readonly observed: Readonly<Record<string, unknown>>;
   readonly rubric: RubricOutcome | null;
+}
+
+/** A case this host cannot run: skipped with a reason, never counted as failed. */
+export function evaluateBlocked(c: SuiteCase, reason: string): CaseEvaluation {
+  return {
+    status: "blocked",
+    checks: [{ name: "environment", ok: false, detail: reason }],
+    observed: { blockedReason: reason },
+    rubric: null,
+  };
 }
 
 function check(name: string, ok: boolean, detail: string): Check {
@@ -109,9 +119,22 @@ export function evaluatePipeline(
   }
 
   for (const rel of expect.requireFiles ?? []) {
-    const path = join(run.clonePath, rel.replace("{session}", run.sessionId));
-    checks.push(check(`file:${rel.replace("{session}", "<session>")}`, existsSync(path),
-      existsSync(path) ? "present" : `missing: ${path}`));
+    const substituted = rel.replace("{session}", run.sessionId);
+    // Run-local workflow sources live under the session root; a case may also
+    // name a file inside the prepared repository. Check both, session first.
+    const candidates = [join(run.sessionRoot, substituted), join(run.repoDir, substituted)];
+    const found = candidates.find((path) => existsSync(path)) ?? null;
+    checks.push(check(`file:${rel.replace("{session}", "<session>")}`, found !== null,
+      found !== null ? `present: ${found}` : `missing: ${candidates.join(" | ")}`));
+  }
+
+  if (expect.replacedFiles !== undefined) {
+    const expected = [...expect.replacedFiles].sort();
+    const actual = [...run.injectionReplaced].sort();
+    const ok = sameSet(expected, actual);
+    checks.push(check("injection-replaced", ok,
+      ok ? `injection overwrote ${String(actual.length)} pre-existing file(s): ${actual.join(", ")}`
+         : `expected=[${expected.join(",")}] observed=[${actual.join(",")}]`));
   }
 
   // The rubric scorer only exists for "verdict+rubric" cases; a missing score is

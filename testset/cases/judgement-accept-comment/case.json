@@ -1,0 +1,55 @@
+{
+  "id": "judgement-accept-comment",
+  "title": "行为保持补丁（仅加注释）必须是 ACCEPTED",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "t1",
+    "control"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t1-strtok.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/m1a-accept.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+attribution",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "failuresForbidden": [
+      "oracle_strtok.exit"
+    ],
+    "provisional": false,
+    "note": "已实测（README §M1a，98/98）",
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ]
+}

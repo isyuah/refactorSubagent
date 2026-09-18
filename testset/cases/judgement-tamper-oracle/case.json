@@ -1,0 +1,56 @@
+{
+  "id": "judgement-tamper-oracle",
+  "title": "候选伪造 oracle 文件 → 注入覆盖后判据仍完好（ACCEPTED，篡改被中和）",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "attribution",
+    "tamper"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t1-strtok.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/tamper-fake-oracle.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "replacedFiles": [
+      "refactor-task/oracle/oracle_strtok.c"
+    ],
+    "provisional": false,
+    "note": "实测（2026-09-17，runs/verify-blind-2）：ACCEPTED，0 失配；injection-replaced 命中 refactor-task/oracle/oracle_strtok.c（伪造件被覆盖）",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ]
+}

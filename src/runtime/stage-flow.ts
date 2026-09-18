@@ -21,6 +21,7 @@ import { FileSessionStore } from "./session-store.js";
 import { detectCProject } from "./project-detector.js";
 import { probeHost } from "./host-preflight.js";
 import { runWorkflowVerification, type WorkflowVerificationOutcome } from "./workflow-pipeline.js";
+import { applyInjections, type InjectionSpec } from "./inject.js";
 import {
   commitCandidateChanges,
   createWorktrees,
@@ -112,6 +113,12 @@ export interface StageFlowRequest {
    * under the session directory and is deleted when the run ends.
    */
   readonly worktreeRoot?: string;
+  /**
+   * Judgement material copied into both worktrees after the candidate commit
+   * and before verification. The refactor session never sees it; the verdict
+   * still comes from the host verification stage.
+   */
+  readonly injections?: readonly InjectionSpec[];
   readonly sessionId: string;
   /** CLI layers on top of the user/project config files (see config/limits). */
   readonly limitOverrides?: LayerOverrides;
@@ -378,6 +385,27 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       summary: summaryLine.slice(0, 500),
     };
     logger.artifact("patch-candidate.json", patch);
+
+    // Judge material comes back only now: the candidate is committed (so the
+    // injection cannot appear in the measured change set) and the refactor
+    // session is over (so it never saw what it is judged by). The verification
+    // stage itself is untouched and stays authoritative.
+    if (req.injections !== undefined && req.injections.length > 0) {
+      const reports = applyInjections(
+        [prepared.worktrees.baselineDir, prepared.worktrees.candidateDir],
+        req.injections,
+      );
+      logger.artifact("injections.json", { injections: reports });
+      for (const report of reports) {
+        logger.info("judge material injected", {
+          source: report.source,
+          dest: report.dest,
+          worktree: report.worktree,
+          files: report.files.length,
+          pre_existing: report.preExisting.length,
+        });
+      }
+    }
 
     logger.phase("VERIFICATION");
     if (declared === null || declared.buildResolutions.length === 0) {

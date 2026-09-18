@@ -1,4 +1,0 @@
-# Oracle sources are digest-pinned by the harness (ctx.fs.snapshot returns sha256
-# of the working-tree bytes). Disable every EOL/encoding transformation so a
-# fresh checkout is byte-identical to the pinned files regardless of core.autocrlf.
-* -text

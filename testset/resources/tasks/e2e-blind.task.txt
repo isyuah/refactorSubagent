@@ -1,0 +1,12 @@
+这份检出是 libuv v1.52.1。你要在同一轮里交两件事。
+
+一、构建与测试流程（这次的判据本体，宿主要靠它验收）
+仓库里没有任何现成的构建/测试 workflow，也没有可抄的参考实现——你写出的 TypeScript 源就是唯一的判据依据。
+- 构建产物要求：build/uv_run_tests_a.exe（静态 runner）与 build/libuv.a。GCC 15 必须带 -Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers，否则 src/win/util.c:630 直接报错；CMake 需要 -DBUILD_TESTING=ON。
+- 测试判据由你自己设计：跑哪些用例、声明哪些期望（两侧一致 equal 与绝对值 both-matches 两种都要有）、以及怎么防止判据材料本身被改。仓库自带的 test/ 套件可用：build/uv_run_tests_a.exe <case>（一个用例一个进程），--list 列出全部用例名。
+- 事实说话：无法从仓库与实测证明的，不要猜；构建或测试失败要如实失败，不要静默跳过。
+
+二、行为保持型重构：只改 src/strtok.c（单符号 uv__strtok）
+允许：合并 str==NULL / str!=NULL 两条赋值分支、把 tmp==NULL 早退提到函数最前、把内层分隔符扫描抽成 static 辅助函数、把 while 循环体改写成提前 return 的平坦结构、去掉冗余局部变量。
+不允许：改变任何可观测行为；修改 test/** 或 include/**；把 uv__strtok 移出 src/strtok.c 或改成 static（test/test-strtok.c 直接 include 该文件，函数必须留在原文件且保持外部链接）。
+必须保持：相邻分隔符产生空 token（"a..b" -> a、""、b）、尾随分隔符产生尾部空 token、前导分隔符产生前导空 token、"..." 产生四个空 token、空串产生一个空 token（非 NULL）、sep=="" 时整串是一个 token、命中分隔符处原地写 '\0'、*itr 依次指向 token 之后并在串尾置 NULL、返回值始终是当前 token 的起始指针。

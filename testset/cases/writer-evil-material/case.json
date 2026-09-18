@@ -1,0 +1,56 @@
+{
+  "id": "writer-evil-material",
+  "title": "writer 写判据 + 破坏性补丁 → 必须 REJECTED（参考答案可见）",
+  "subject": "writer",
+  "tags": [
+    "ai",
+    "writer",
+    "material-visible",
+    "rubric"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t3-inet.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "ai"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/mutant-inet-zero.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+rubric",
+    "state": "REJECTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "refactor"
+    ],
+    "authoritative": true,
+    "requireFiles": [
+      ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+    ],
+    "provisional": false,
+    "note": "实测：REJECTED，失配 oracle_inet.{exit,summary,transcript}；裁判 0.88 —— 判据抓住了 inet 单零组压缩（第一版用例把简报错配成 strtok，测量无效，已修）",
+    "rubric": {
+      "rubric": "../docs/testset/04-rubric.md",
+      "reference": "resources/workflows/judgement"
+    }
+  },
+  "limits": {
+    "sessions.testWriter.deadlineMs": 3600000,
+    "sessions.testWriter.maxTurns": 140
+  },
+  "timeoutMs": 5400000
+}

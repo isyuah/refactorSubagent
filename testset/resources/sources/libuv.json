@@ -1,0 +1,7 @@
+{
+  "id": "libuv",
+  "repo": "../libuv",
+  "ref": "v1.52.1",
+  "commit": "1cfa32ff59c076ffb6ed735bbc8c18361558661f",
+  "note": "upstream libuv v1.52.1; environments are cloned shallowly so the overhead overlay never travels with them"
+}

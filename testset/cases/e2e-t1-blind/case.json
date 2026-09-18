@@ -1,0 +1,56 @@
+{
+  "id": "e2e-t1-blind",
+  "title": "端到端（盲测）：只给简报，判据与构建流程全部由 AI 自建",
+  "subject": "e2e",
+  "tags": [
+    "ai",
+    "e2e",
+    "blind",
+    "noisy",
+    "t1"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/e2e-blind.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "ai"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict+rubric",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测（2026-09-18，runs/e2e-blind-3）：ACCEPTED，0 失配，两侧构建 pass/pass，verification_authoritative=true；AI 盲写 build+test workflow（32 条声明、1 个 declared build），会话 12.4min + 重构 3.3min + 验证 1.2min，用例墙钟 19 min。裁判（claude -p）0.63：牙齿 0.55 / 覆盖 0.35（空 token 家族未覆盖）/ 自锁 0.50（未 snapshot test/**），不误杀 0.85、成对 0.80、工程 0.85、可读 0.90",
+    "requireFiles": [
+      ".refactor/runs/{session}/workflows/test/test-workflow.ts"
+    ],
+    "injectedStages": [],
+    "rubric": {
+      "rubric": "../docs/testset/04-rubric.md",
+      "reference": "resources/workflows/judgement"
+    },
+    "failuresExact": []
+  },
+  "limits": {
+    "sessions.testWriter.deadlineMs": 2700000,
+    "sessions.testWriter.maxTurns": 140,
+    "sessions.refactor.deadlineMs": 2400000
+  },
+  "timeoutMs": 7200000
+}

@@ -1,3 +1,5 @@
+import type { InjectionSpec } from "../runtime/inject.js";
+
 export type CliFormat = "human" | "json";
 
 export interface PreflightCommand {
@@ -64,6 +66,11 @@ export interface RunCommand {
    * (warm build outputs survive) instead of creating and deleting it per run.
    */
   worktreeRoot: string | null;
+  /**
+   * Judgement material copied into both worktrees after the candidate commit
+   * and before verification: `<source>=<dest-inside-worktree>` pairs.
+   */
+  injections: readonly InjectionSpec[];
   format: CliFormat;
 }
 
@@ -140,6 +147,7 @@ function parseRun(args: string[]): RunCommand {
   let session: string | null = null;
   let sessionRoot: string | null = null;
   let worktreeRoot: string | null = null;
+  const injections: { source: string; dest: string }[] = [];
   let format: CliFormat = "human";
   let sawRepo = false;
   for (let index = 0; index < args.length; index++) {
@@ -160,6 +168,15 @@ function parseRun(args: string[]): RunCommand {
       worktreeRoot = nextValue(args, ++index, "--worktree-root");
       continue;
     }
+    if (arg === "--inject") {
+      const pair = nextValue(args, ++index, "--inject");
+      const at = pair.indexOf("=");
+      if (at <= 0 || at === pair.length - 1) {
+        throw new CliUsageError(`--inject expects <source>=<dest>, got '${pair}'`);
+      }
+      injections.push({ source: pair.slice(0, at), dest: pair.slice(at + 1) });
+      continue;
+    }
     if (arg === "--format") {
       format = parseFormat(nextValue(args, ++index, "--format"));
       continue;
@@ -170,7 +187,7 @@ function parseRun(args: string[]): RunCommand {
     sawRepo = true;
   }
   if (task === null) throw new CliUsageError("run requires --task <text>");
-  return { kind: "run", repo, task, session, sessionRoot, worktreeRoot, format };
+  return { kind: "run", repo, task, session, sessionRoot, worktreeRoot, injections, format };
 }
 
 function parsePreflight(args: string[]): PreflightCommand {
@@ -327,7 +344,7 @@ function parseFormat(value: string): CliFormat {
 export const CLI_HELP = `Usage:
   refactor-subagent preflight [repo] [--format human|json]
   refactor-subagent run [repo] --task <text> [--session <id>] [--session-root <dir>]
-                            [--worktree-root <dir>]
+                            [--worktree-root <dir>] [--inject <src>=<dest>]
   refactor-subagent workflow run <entry.ts> [options]
   refactor-subagent workflow build <entry.ts> --id <id> --revision <n> [options]
   refactor-subagent workflow list [--cwd <dir>] [--format human|json]

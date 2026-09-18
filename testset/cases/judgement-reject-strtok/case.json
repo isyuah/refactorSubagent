@@ -1,0 +1,61 @@
+{
+  "id": "judgement-reject-strtok",
+  "title": "破坏性补丁（丢弃空 token）必须 REJECTED，且失配点命中 oracle_strtok",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "t1",
+    "attribution"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t1-strtok.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/m1a-reject.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+attribution",
+    "state": "REJECTED",
+    "failuresRequired": [
+      "oracle_strtok.exit",
+      "oracle_strtok.summary",
+      "oracle_strtok.stdout"
+    ],
+    "provisional": false,
+    "note": "实测冻结（2026-09-15，3 条失配） — 原预测：已实测（docs/02 §12.1：95/98，失配仅 oracle_strtok 三条）",
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "failuresExact": [
+      "oracle_strtok.exit",
+      "oracle_strtok.stdout",
+      "oracle_strtok.summary"
+    ]
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ]
+}

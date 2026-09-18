@@ -32,7 +32,8 @@ export interface RubricOptions {
   readonly command: readonly string[] | null;
   readonly caseId: string;
   readonly caseDir: string;
-  readonly clonePath: string;
+  /** Session root the runner handed the harness (`.refactor/runs` lives here). */
+  readonly sessionRoot: string;
   readonly sessionId: string;
   readonly rubricPath: string;
   readonly referencePath: string | null;
@@ -86,19 +87,17 @@ function contents(path: string, limit = 20000): string {
 }
 
 /** Everything the writer produced, wherever the harness persisted it. */
-export function writerArtifacts(clonePath: string, sessionId: string): { testSource: string; buildSources: string[] } {
-  // Two layouts exist: inside a live clone (.refactor/runs/<session>/...) and in
-  // the preserved copy a finished run leaves behind (<case>/written/<session>/...).
-  const liveRoot = join(clonePath, ".refactor", "runs", sessionId, "workflows");
-  const preservedRoot = join(clonePath, sessionId, "workflows");
-  const workflowsRoot = existsSync(liveRoot) ? liveRoot : existsSync(preservedRoot) ? preservedRoot : liveRoot;
+export function writerArtifacts(sessionRoot: string, sessionId: string): { testSource: string; buildSources: string[] } {
+  // The harness persists run-local workflows under
+  // `<sessionRoot>/.refactor/runs/<session>/workflows/{test,build}`.
+  const workflowsRoot = join(sessionRoot, ".refactor", "runs", sessionId, "workflows");
   const testDir = join(workflowsRoot, "test");
   // Run-local build workflows live next to the test workflow (one .ts plus a
   // .description.json sidecar per entry).
   const buildDirs = [
     join(workflowsRoot, "build"),
-    join(clonePath, ".refactor", "workflows", "build-workflows"),
-    join(clonePath, ".refactor", "build-workflows"),
+    join(sessionRoot, ".refactorsa", "build-workflows"),
+    join(sessionRoot, ".refactor", "build-workflows"),
   ];
   const buildSources: string[] = [];
   for (const dir of buildDirs) {
@@ -115,7 +114,7 @@ export function writerArtifacts(clonePath: string, sessionId: string): { testSou
 
 export async function runRubric(options: RubricOptions): Promise<RubricOutcome> {
   const promptPath = join(options.caseDir, "rubric-prompt.md");
-  const artifacts = writerArtifacts(options.clonePath, options.sessionId);
+  const artifacts = writerArtifacts(options.sessionRoot, options.sessionId);
   const body: string[] = [PROMPT_HEADER, "## Rubric", options.rubricPath === "" ? "(none)" : contents(options.rubricPath, 40000)];
   body.push("## Candidate: declared test workflow");
   body.push("```ts\n" + contents(artifacts.testSource) + "\n```");
