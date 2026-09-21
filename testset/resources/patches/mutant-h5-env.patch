@@ -1,0 +1,43 @@
+diff --git a/src/uv-common.c b/src/uv-common.c
+index e5a7632..0c60a39 100644
+--- a/src/uv-common.c
++++ b/src/uv-common.c
+@@ -943,6 +943,7 @@ void uv_os_free_environ(uv_env_item_t* envitems, int count) {
+ 
+   for (i = 0; i < count; i++) {
+     uv__free(envitems[i].name);
++    uv__free(envitems[i].value);
+   }
+ 
+   uv__free(envitems);
+diff --git a/src/win/util.c b/src/win/util.c
+index fec07b2..cd803f0 100644
+--- a/src/win/util.c
++++ b/src/win/util.c
+@@ -1114,13 +1114,8 @@ int uv__copy_utf16_to_utf8(const WCHAR* utf16buffer, size_t utf16len, char* utf8
+   if (utf8 == NULL || size == NULL)
+     return UV_EINVAL;
+ 
+-  if (*size == 0) {
+-    *size = uv_utf16_length_as_wtf8(utf16buffer, utf16len);
+-    r = UV_ENOBUFS;
+-  } else {
+-    *size -= 1; /* Reserve space for NUL. */
+-    r = uv_utf16_to_wtf8(utf16buffer, utf16len, &utf8, size);
+-  }
++  *size -= 1; /* Reserve space for NUL. */
++  r = uv_utf16_to_wtf8(utf16buffer, utf16len, &utf8, size);
+   if (r == UV_ENOBUFS)
+     *size += 1; /* Add space for NUL. */
+   return r;
+@@ -1246,9 +1241,7 @@ int uv_os_environ(uv_env_item_t** envitems, int* count) {
+     if (uv__convert_utf16_to_utf8(penv, -1, &buf) != 0)
+       goto fail;
+ 
+-    /* Using buf + 1 here because we know that `buf` has length at least 1,
+-     * and some special environment variables on Windows start with a = sign. */
+-    ptr = strchr(buf + 1, '=');
++    ptr = strchr(buf, '=');
+     if (ptr == NULL) {
+       uv__free(buf);
+       goto do_continue;

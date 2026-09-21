@@ -1,0 +1,57 @@
+{
+  "id": "refactor-h5-env",
+  "title": "AI 重构 win/util.c 环境变量族与 UTF-16 转换（跨 TU 所有权契约）",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "h5",
+    "l3",
+    "hard-tier"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h5-env.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-hard"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，0 条失配） — 原预测：uv_os_environ/getenv 的 *size 语义与 uv_os_free_environ 跨 TU 释放契约；oracle 含 64KB 往返。 未实测。",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1-hard",
+      "dest": "refactor-task/oracle-hard"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 3000000,
+    "sessions.refactor.maxTurns": 80
+  },
+  "timeoutMs": 3600000
+}

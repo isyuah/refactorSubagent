@@ -1,0 +1,11 @@
+行为保持型重构：Windows 侧环境变量族与 UTF-16↔UTF-8 转换（libuv v1.52.1）。目标符号都在 src/win/util.c：uv_os_environ（约 1218-1288）、uv_os_getenv（约 1289-1349）、uv_os_setenv / uv_os_unsetenv（约 1351-1401）、uv__convert_utf16_to_utf8 / uv__convert_utf8_to_utf16（约 1065-1108）、uv__copy_utf16_to_utf8（约 1111-1128）。另有一处跨 TU 的搭档：src/uv-common.c:941-949 的 uv_os_free_environ——它和 uv_os_environ 分属不同编译单元，两者一起构成这对 API 的释放契约，改动任一侧都必须让另一侧继续成立。
+
+允许的重构方向示例（任选其一或自行找等价改写）：
+- 把 uv_os_environ 的解析循环拆成"取一条环境块项 → 切分 name/value → 追加到结果"的小 helper，或改用更直白的游标/索引写法；
+- 给 uv_os_getenv 的"重试 + 失败清理"路径命名或合并（统一 goto 收尾、消掉重复的 free）；
+- 把 *size 的簿记提取成 helper，或调整书写顺序让控制流更平（对外呈现的值必须一字不差）；
+- 合并 uv__copy_utf16_to_utf8 / uv__convert_utf16_to_utf8 里重复的错误传播样板、去掉冗余临时变量（每个分支的判定条件与它产生的可观测结果都要保留）。
+
+硬约束：不许改 include/**、test/**、refactor-task/**；不许改公开符号名/签名/链接属性（uv_os_getenv、uv_os_setenv、uv_os_unsetenv、uv_os_environ、uv_os_free_environ 必须保持原样可链接；uv__convert_utf16_to_utf8、uv__convert_utf8_to_utf16、uv__copy_utf16_to_utf8 必须留在 src/win/util.c 且保持外部链接——它们被 src/win 下多个 TU 调用）；不许改任何错误码及其触发条件；不许改对 Win32 API（GetEnvironmentVariableW / SetEnvironmentVariableW / GetEnvironmentStringsW）的调用语义。
+
+判据不会告诉你哪些行为要注意：上游测试套件（test/test-env-vars.c 等）与宿主判据程序都会在 baseline / candidate 两侧逐项比较声明——返回值、size_t 出参（含缓冲不足时它被回填成什么）、缓冲区里被写入的字节以及"不该被触碰"的字节、uv_env_item_t 里 name/value 的内容、uv_os_free_environ 之后进程的分配/释放记账、以及内部转换函数对各种 UTF-16 输入产出的字节序列。请自己实测确认（探测性构建请放在 worktree 之外），不要凭直觉假设"这里看起来是等价的"。

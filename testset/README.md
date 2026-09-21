@@ -19,7 +19,7 @@
 ```bash
 cd <repo-root>
 
-bun testset/run.ts --list                                   # 26 个用例（扫描 cases/*/case.json）
+bun testset/run.ts --list                                   # 44 个用例（扫描 cases/*/case.json）
 bun testset/run.ts --self-test                              # 执行器自检（合成用例，不碰项目）
 bun testset/run.ts --subject judgement --concurrency 2      # 判据本体：离线、不调模型
 bun testset/run.ts --only judgement-accept-comment          # 单个用例
@@ -45,9 +45,13 @@ testset/
 ├─ cases/<id>/           用例：case.json（行为）+ prepare.ts（环境）+ 可选本地材料
 ├─ resources/
 │  ├─ sources/           源与 pin（libuv.json：上游 tag + commit + remote 兜底）
-│  ├─ workflows/         预置 workflow 资源（judgement/manifest.json + build/test 源）
-│  ├─ patches/           候选补丁（行为保持 / 变异 / 篡改）
-│  ├─ judge/             判据材料（oracle 源），验证前注入 worktree
+│  ├─ workflows/         预置判据资源（每档一份 manifest + build/test 源）：
+│  │                     judgement（T1–T6，98 条声明）、judgement-hard（H1–H5，95 条）、
+│  │                     judgement-h8-structural（结构性重构）
+│  ├─ patches/           候选补丁（行为保持 / 变异 / 篡改 / 结构性参考正解）
+│  ├─ judge/             判据材料（oracle 源），验证前注入 worktree：
+│  │                     libuv-1.52.1/oracle（T1–T6，7 个文件）、
+│  │                     libuv-1.52.1-hard/<target>/oracle_*.c（H1–H5，一目标一目录）
 │  ├─ tasks/             任务简报
 │  └─ parts/             语料部分定义（pure/loop/thread/util）
 └─ baseline/             基线重建材料（overlay；见 baseline/README.md）
@@ -116,7 +120,7 @@ harness 用 `entryRoot`（= testset 根）判断入口没有逃出允许的目�
 ```bash
 bun install
 bun testset/run.ts --self-test                             # 执行器自检，不碰项目
-bun testset/run.ts --list                                  # 26 个用例
+bun testset/run.ts --list                                  # 44 个用例
 bun testset/run.ts --subject judgement --concurrency 2     # 离线 10 例，零模型成本（约 15 min）
 bun testset/run.ts --only e2e-t1-blind --rubric-cmd "claude -p" --out runs/blind-1   # 盲测 e2e（要额度）
 ```

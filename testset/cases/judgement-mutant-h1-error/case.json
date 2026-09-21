@@ -1,0 +1,64 @@
+{
+  "id": "judgement-mutant-h1-error",
+  "title": "H1 变异（写路径映射合并回通用表）必须 REJECTED",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "attribution",
+    "mutation",
+    "h1",
+    "hard-tier"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h1-error.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-hard"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/mutant-h1-error.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+attribution",
+    "state": "REJECTED",
+    "failuresRequired": [
+      "h1-error/oracle_error.exit",
+      "h1-error/oracle_error.summary",
+      "h1-error/oracle_error.stdout"
+    ],
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，3 条失配） — failuresRequired 钉住 oracle 三件套（失配集漂移不会让用例变红，所以必须显式要求\"oracle 抓住它\"）",
+    "failuresExact": [
+      "h1-error/oracle_error.exit",
+      "h1-error/oracle_error.stdout",
+      "h1-error/oracle_error.summary"
+    ]
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1-hard",
+      "dest": "refactor-task/oracle-hard"
+    }
+  ],
+  "timeoutMs": 3600000
+}

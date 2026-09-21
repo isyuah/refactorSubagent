@@ -1,0 +1,11 @@
+行为保持型重构：只改 src/threadpool.c（约 430 行），也就是线程池的工作项生命周期与取消协议这一块 —— 公开入口 uv_queue_work / uv_cancel，内部导出 uv__work_submit / uv__work_cancel / uv__work_done / uv__threadpool_cleanup，以及文件内的 worker 主循环、post()、slow_work_thread_threshold()、init_threads() 与 uv__queue_work / uv__queue_done 两个 trampoline。
+
+允许的重构方向（任选，不必全做）：
+1. 把 worker 主循环里"还能不能取活 / 该不该让位给慢 I/O / 收尾回队"的重复样板收进文件内的静态辅助函数，拉平嵌套分支、消掉冗余临时变量，让"先出队、再解锁、跑完再回队"的次序一眼可见；
+2. 把几处隐式握手写清楚：worker 出队时把 wq 自链表示"执行中"、执行完把 work 清空并插回 loop->wq、取消侧"两把锁 + 判据 + 回队"这一段，给魔数和约定补上有名字的常量或注释；uv__work_submit 与 uv_queue_work 的公共初始化路径、uv_cancel 里按请求类型取 loop/wreq 的 switch 也可以合并整理；
+3. 简化 uv__work_cancel 临界区的写法（例如把"回队 + 唤醒 loop"并进同一段临界区），或把取消请求与执行完请求交还给 loop 的两处相同动作收成一个文件内静态辅助；
+4. 归拢 init_threads() 里 UV_THREADPOOL_SIZE 的读取与钳制写法（默认线程数、0、上限、malloc 失败回退），以及 uv__work_done 里 nevents 计数与 metrics 收尾的写法。
+
+硬约束：不许改 include/**、test/**、refactor-task/**；不许改公开符号名/签名/链接属性；不许改可观测行为。
+
+上游用例与宿主判据都在看，请自行实测确认真实行为。

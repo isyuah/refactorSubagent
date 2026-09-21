@@ -1,0 +1,73 @@
+{
+  "id": "judgement-mutant-h6-loop",
+  "title": "H6 变异（环形 pending 队列/backend timeout 被简化）必须 REJECTED",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "attribution",
+    "mutation",
+    "h6",
+    "hard-tier"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h6-loop.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-hard"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/mutant-h6-loop.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+attribution",
+    "state": "REJECTED",
+    "failuresRequired": [
+      "h6-loop/oracle_loop.exit",
+      "h6-loop/oracle_loop.summary",
+      "h6-loop/oracle_loop.stdout"
+    ],
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，12 条失配） — failuresRequired 钉住 oracle 三件套；共享判据下同一变异可能同时触发别的目标 oracle（h6 变异也触发 h4-walk oracle），失配集不是单目标归因",
+    "failuresExact": [
+      "close_order.exit",
+      "close_order.stdout",
+      "close_order.tap",
+      "h4-walk/oracle_walk.exit",
+      "h4-walk/oracle_walk.stdout",
+      "h4-walk/oracle_walk.summary",
+      "h6-loop/oracle_loop.exit",
+      "h6-loop/oracle_loop.stdout",
+      "h6-loop/oracle_loop.summary",
+      "loop_backend_timeout.exit",
+      "loop_backend_timeout.stdout",
+      "loop_backend_timeout.tap"
+    ]
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1-hard",
+      "dest": "refactor-task/oracle-hard"
+    }
+  ],
+  "timeoutMs": 3600000
+}

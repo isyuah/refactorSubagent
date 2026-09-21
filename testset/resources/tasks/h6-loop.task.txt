@@ -1,0 +1,13 @@
+行为保持型重构：只改 src/win/core.c 里的 Windows 事件循环正文（约 400-880 行）。
+
+目标符号：uv__loop_alive / uv_loop_alive、uv_backend_timeout、uv__poll（含超时指数补偿与 UV_METRICS_IDLE_TIME 分支）、uv__process_reqs（含 DELEGATE_STREAM_REQ 分派）、uv_run（三种模式）、uv__insert_pending_req（环形 pending 队列），以及同文件内为它们服务的 uv__process_endgames。这些符号都必须留在 src/win/core.c，名字、签名与外部链接属性不变。
+
+允许的重构方向（示例，任选其一或多条，也可以自己找等价改写）：
+- 把 uv_run 主循环里的重复样板（timeout 计算、poll 前后的 req 回收、stop_flag 复位、metrics 记账）收进文件内的静态辅助，或整理成更平的控制流；
+- 给 uv_backend_timeout / uv__loop_alive 的守卫条件、uv__poll 的超时指数补偿与 UV_METRICS_IDLE_TIME 分支、以及它们中间的魔数（8 次 inline 回收、128 个 OVERLAPPED_ENTRY）命名或加注释；
+- 把 uv__insert_pending_req 的环形记账与 _DEBUG 下的自检收进小辅助（或加注释说明 tail/next_req 的不变式），理顺 next_req 的读写顺序；
+- 拉平 uv__process_reqs / DELEGATE_STREAM_REQ 的嵌套，或把分派逻辑抽成小函数。
+
+硬约束：不许改 include/**、test/**、refactor-task/**；不许改公开符号名/签名/链接属性；不许改可观测行为。
+
+上游用例与宿主判据都在看，请自行实测确认真实行为。

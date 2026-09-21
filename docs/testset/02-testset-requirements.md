@@ -111,6 +111,12 @@ gcc -O0 -g -I . -I include -I src -I refactor-task/oracle \
 
 每个 oracle 的逐条语义（"必须保持不变"的完整清单）见 `01-refactor-targets.md`；机器可读的权威版本是 `testset/cases/*/case.json`（期望值）与 `testset/resources/**`（判据材料与 pin）。
 
+> **加难档（2026-09-21 新增）**：T1–T6 之外另有 H1–H5 五个目标，判据在
+> `testset/resources/workflows/judgement-hard/`（95 条声明：5 个新 oracle + 13 条已校准上游用例，
+> 后者来自 `parts/{loop,util}.json`），外加结构性重构判据 `judgement-h8-structural/`
+> （复用本节这 6 个 oracle + 11 条上游用例）。新 oracle 的清单与"必须保持"要点见
+> `01-refactor-targets.md` 的"加难档"一节。
+
 ## 5. 期望声明模型（写给 TestWorkflow 作者）
 
 宿主语义：`ctx.expect(name, relation, value, pattern?)`，两侧各跑一次、**按位置配对**。baseline 的值只与 candidate 的值比较。

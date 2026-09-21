@@ -148,3 +148,81 @@
 2. **测试源码不可改**：`test/**` 是被测代码的判据（oracle 的另一半）。候选 patch 若触碰 `test/`，本次验证的判据即失效——`02` 里的 TestWorkflow 会用 `ctx.expect` 钉住测试源码的 hash。
 3. **`.c` 被测试 include 的模块不可拆分文件**：`strscpy.c`、`strtok.c`、`idna.c` 三者都属于这一类；函数必须留在原文件且保持外部链接。
 4. **不要为了"修 bug"而改行为**：本次实测出的所有怪行为（空 token、`uv_strerror(0)` 的措辞、单零组不压缩、`size >= len+1`）都是**判据的一部分**；修正它们等于改变可观测行为，应当被 REJECTED。
+
+---
+
+# 加难档（H1–H8，2026-09-21 新增）
+
+T1–T6 是**单文件、38–298 行、任务简报写明"必须保持"清单**的 L1 目标，6/6 实测 ACCEPTED、0 失配——这一档已经饱和（详见 `03-suite-and-runner.md` §11）。H 档按四条轴加难：**改动面**（跨 TU / 跨文件 / 改构建）、**不变量隐蔽度**（自带用例看不见）、**信息量**（简报不再给清单）、**可判性**（需要新 oracle）。
+
+判据统一放在 `testset/resources/workflows/judgement-hard/`（每目标一个 oracle，注入到 `refactor-task/oracle-hard/<target>/`），上游用例只用 `parts/{loop,thread,util}.json` 里已校准 stable-ok 的条目。
+
+| # | 目标 | 规模 | 自带用例看得见吗 | 新 oracle | 难度 |
+|---|---|---|---|---|---|
+| H1 | `src/win/error.c:66-190` 系统错误码映射表 + 写路径分流 | 190 | `error_message` 部分可见 | `oracle_error.c`（320 检查） | ★★★ |
+| H2 | `src/win/fs-fd-hash-inl.h` fd→filemap 哈希 | 195 | 几乎不可见（`fs_fd_hash` 的 stdout 含计时，未进判据） | `oracle_fd_hash.c`（166 检查） | ★★★★ |
+| H3 | `src/timer.c` 堆/队列双路径与到期快照 | 199 | 只看得到边缘 | `oracle_timer.c`（187 检查） | ★★★ |
+| H4 | `src/uv-common.c` 的 `uv_walk` / `uv_loop_close` | 1064 | `walk_handles`/`loop_close` 部分可见 | `oracle_walk.c`（73 检查） | ★★★★ |
+| H5 | `src/win/util.c` 环境变量族 + UTF-16 转换 | 1760 | `env_vars` 只覆盖第一段 | `oracle_env.c`（102 检查） | ★★★★ |
+| H6 | `src/win/core.c` 事件循环（pending 环形队列 / backend timeout / uv_run 模式） | 879 | `loop_*` 部分可见 | `oracle_loop.c` | ★★★★★ |
+| H7 | `src/threadpool.c` 工作项生命周期与取消协议 | 429 | 未校准（cancel 类含竞态） | `oracle_threadpool.c` | ★★★★★ |
+| H8 | **结构性重构**：把 `uv-common.c` 的一块实现拆到新 TU + 改 CMakeLists | — | 间接（链接可见） | 复用既有 6 个 oracle | ★★★★ |
+
+## H1 `src/win/error.c` — 系统错误码映射表
+
+**为什么难**：~110 条 `case` 的映射是平台语义的唯一真源，而**两条路径语义分歧**（`uv_translate_sys_error` vs `uv_translate_write_sys_error`）看起来像可去重的重复代码；`<= 0` 的 passthrough 规则看着多余，删掉会让全库的 success 判定崩。
+
+**oracle**：`oracle_error.c` 逐行冻结 98 个输入 ×（通用路径、写路径）→ 期望值，并单独断言两条路径的分歧集合恰好是两个码（`ERROR_BROKEN_PIPE`→`UV_EPIPE`、`ERROR_NO_DATA`→`UV_EPIPE`）。自包含：自己声明 `int uv_translate_write_sys_error(int);`（`src/win/internal.h:333`），不依赖内部头。
+
+**已实测的 mutant**：把写路径变体合并回通用表 → oracle 5 条失败（`write:no-data-232` 实际 `EAGAIN`、期望 `EPIPE` 等）。
+
+## H2 `src/win/fs-fd-hash-inl.h` — fd→filemap 哈希
+
+**为什么难**：`static` 函数 + 宏展开的碰撞链；组内回填（把组内最后一个元素搬到被删槽位）与"`size % 16 == 0` 才释放整组"两条规则看起来都可以简化；被 `test/test-fs-fd-hash.c:27` 直接 include（不能改名/搬家/static 化）。
+
+**oracle**：166 条检查覆盖空表、跨桶/组边界、满组、跨组回填、清空后再填、16 桶扫描、40 项乱序 churn 到 32 项边界。
+
+**已实测的 mutant**：删掉 `FIND_IN_BUCKET_PTR` 里的首组大小提升（`if (size != 0 && first_group_size == 0) first_group_size = GROUP_SIZE`）→ oracle 19 条失败（满组成员全部查不到）。
+
+## H3 `src/timer.c` — 定时器堆与到期快照
+
+**为什么难**：`uv_timer_stop` 走 heap 还是 queue 取决于句柄是否 active（union 复用）；`uv__run_timers` 的两阶段（先摘到期项、再 `uv_timer_again`、最后回调）保证了"回调里启停不影响本轮名单"；`timer_less_than` 的 `(timeout, start_id)` 双重排序决定同刻定时器的顺序。
+
+**oracle**：187 条检查，全部是触发顺序 / 返回值 / `is_active` / 相对 `loop->time` 的差值，**不含任何墙钟断言**。含 `uv__next_timeout` 的 `-1`/`0`/精确 ms/`INT_MAX` 钳制。
+
+**已实测的 mutant**：把两阶段合成单阶段（上游 1.45 之前的形状）→ oracle 失败；**自带 timer 用例几乎看不见**（只有 `timer_zero_timeout` 会响）。
+
+## H4 `src/uv-common.c` — `uv_walk` / `uv_loop_close`
+
+**为什么难**：`uv_walk` 的"快照 + 旋转"是公开文档化的"遍历中可安全关闭句柄"语义，改成 `uv__queue_foreach` 直遍历在多数场景下也"能用"；`uv_loop_close` 的 `#ifndef NDEBUG` `saved_data` 保存/恢复在 Release 下是死代码，删掉看不出来——但本机 recipe 是 Debug。
+
+**oracle**：73 条检查（关闭中遍历可见性、INTERNAL 句柄过滤、`uv_loop_close` 的 EBUSY 判据、Debug 下 `loop.data` 契约）。
+
+**已实测的 mutant**：三处独立改动（直遍历 / 删 `saved_data` / 放宽 close 判据）→ 6 条失败。
+
+## H5 `src/win/util.c` — 环境变量族与 UTF-16 转换
+
+**为什么难**：`uv_os_environ` 的 name/value 同一块内存、`strchr(buf + 1, '=')` 保住以 `=` 开头的 Windows 特殊变量、释放端在**另一个 TU**（`uv-common.c:941-949` 只 free name）；`uv_os_getenv` 的 `*size` 语义（成功 = 不含 NUL，`UV_ENOBUFS` = 含 NUL）与 `wchar_t fastvar[512]` 溢出后的重试。
+
+**oracle**：102 条检查，含 64KB 值往返、`UV_ENOBUFS` 的 size 语义、特殊变量存在性、以及 UTF-16↔UTF-8 的代理对/嵌入 NUL/非法序列。
+
+**已实测的 mutant**：三处（`strchr(buf, '=')`、释放器顺手 free(value)、utf16 零长拷贝语义）→ oracle 8 条失败；**自带 `env_vars` 只抓到第一处**就断言退出，其余两处只有 oracle 看得见。
+
+## H6 / H7（同批新增，判据与实测见 `03-suite-and-runner.md` §11）
+
+- **H6 `src/win/core.c`**（879 行）：Windows 侧 `uv_run` 正文。最核心的隐含不变量是 `uv__insert_pending_req` 的**环形** pending 队列（处理期间新到的请求必须留到下一轮），其次是 `uv_backend_timeout` 的 0/超时值取舍（空闲/endgame/stop_flag 时必须是 0）与 `uv_run(DEFAULT)` 进循环前先跑一轮 timers。
+  - oracle `oracle_loop.c`（132 检查，只用公开 API）：`uv_loop_alive` 四态、三种 run 模式的返回值与迭代次数、prepare→check 顺序、DEFAULT 首轮回调顺序、backend_timeout 的六种守卫状态、pending 环形队列的投递/复用、fs 请求的 liveness、unref/ref、`uv_loop_close`。
+  - 已实测的 mutant：`uv_backend_timeout` 守卫收成一行 + 删掉首轮 timers（两处"看起来重复"的删除）→ oracle 10 条失败 + 上游 `close_order`/`loop_backend_timeout` 也响。
+  - **注意**：改坏 backend_timeout 会让上游自带用例**挂死**（libuv runner 在 Windows 上不杀超时子进程），所以判据里只声明快速失败的上游用例，循环语义由 oracle 覆盖。
+- **H7 `src/threadpool.c`**（429 行）：`uv_cancel` 的三态返回（未开始成功 / 已开始 `UV_EBUSY` / 已结束 `UV_EINVAL`）依赖 `uv__work_cancel` 的双锁顺序与 `uv__queue_empty(&w->wq) && w->work != NULL` 判据；`uv__cancelled` 这个"只含 abort() 的 static 函数"是**哨兵**，`uv__queue_init(q)` 与 `w->work = NULL` 的**位置**就是协议本身。
+  - oracle `oracle_threadpool.c`（208 检查，3 轮重复）：参数校验、提交→work→after_work 的顺序、三种取消状态、重复 cancel、非 work 请求类型；用信号量构造确定性状态，30 次连续运行 stdout 逐字节一致。
+  - 已实测的 mutant：删掉 `uv__cancelled` 哨兵、改用 `NULL` 当"已取消"标记（"消除代码味道"的典型改法）→ oracle 18 条失败（每个正常完成的请求都被报成 `UV_ECANCELED`）。
+
+## H8 结构性重构（没有单点 oracle）
+
+**为什么难**：改的是**代码形状**而不是某个函数——把 `src/uv-common.c` 里自洽的一块（参考正解取错误名/错误串渲染族，54 行）移进新 TU，并把它注册进 `CMakeLists.txt` 的 `uv_sources`。漏注册 = 链接失败；函数留在原地 = 没做；动了公开符号名/签名 = ABI 变更。
+
+**判据**：复用既有 6 个 oracle（`oracle_errstr` 直接覆盖被移动的族）+ `error_message`/`env_vars`/`loop_*`/`walk_handles` 等上游用例，见 `testset/resources/workflows/judgement-h8-structural/`。
+
+**参考正解**：`testset/resources/patches/structural-split-uvcommon.patch`（离线用例 `judgement-accept-structural` 用它证明"判据接受一个多文件 patch"）。
+

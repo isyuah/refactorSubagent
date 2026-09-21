@@ -1,0 +1,54 @@
+{
+  "id": "judgement-accept-structural",
+  "title": "结构性重构（移出 UV 到新 TU + 改 CMakeLists）必须 ACCEPTED",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "structural",
+    "control"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h8-structural.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-h8-structural"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/structural-split-uvcommon.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，0 条失配） — 原预测：参考正解：把 uv-common.c 的错误名/错误串渲染岛（54 行，4 个 UV_EXTERN 函数 + 一个 static 助手）移入新文件 src/uv-common-errstr.c 并把新 TU 加进 CMakeLists 的 uv_sources。这条用例同时证明两件事：宿主接受\"新增文件 + 改构建脚本\"的多文件 patch；该结构的判据（上游 loop/util 用例 + 6 个 oracle）把它判成 ACCEPTED。",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ],
+  "timeoutMs": 3600000
+}

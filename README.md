@@ -48,7 +48,7 @@ bun run scripts/cli.ts limits <repo>       # 当前生效的超时/资源阈值�
 最短路径：
 
 ```bash
-bun testset/run.ts --list                                  # 26 个用例，按 subject 分组
+bun testset/run.ts --list                                  # 44 个用例，按 subject 分组
 bun testset/run.ts --self-test                             # 执行器自检（合成用例，不碰项目）
 bun testset/run.ts --subject judgement --tag offline       # 离线判据自测（不调模型）
 bun testset/run.ts --only e2e-t1-full --rubric-cmd "<命令>" # 端到端 + 裁判

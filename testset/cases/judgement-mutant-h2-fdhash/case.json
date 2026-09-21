@@ -1,0 +1,64 @@
+{
+  "id": "judgement-mutant-h2-fdhash",
+  "title": "H2 变异（删掉首组大小提升）必须 REJECTED",
+  "subject": "judgement",
+  "tags": [
+    "offline",
+    "no-ai",
+    "attribution",
+    "mutation",
+    "h2",
+    "hard-tier"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h2-fdhash.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-hard"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/mutant-h2-fdhash.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict+attribution",
+    "state": "REJECTED",
+    "failuresRequired": [
+      "h2-fdhash/oracle_fd_hash.exit",
+      "h2-fdhash/oracle_fd_hash.summary",
+      "h2-fdhash/oracle_fd_hash.stdout"
+    ],
+    "injectedStages": [
+      "workflows",
+      "refactor"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，3 条失配） — failuresRequired 钉住 oracle 三件套（失配集漂移不会让用例变红，所以必须显式要求\"oracle 抓住它\"）",
+    "failuresExact": [
+      "h2-fdhash/oracle_fd_hash.exit",
+      "h2-fdhash/oracle_fd_hash.stdout",
+      "h2-fdhash/oracle_fd_hash.summary"
+    ]
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1-hard",
+      "dest": "refactor-task/oracle-hard"
+    }
+  ],
+  "timeoutMs": 3600000
+}
