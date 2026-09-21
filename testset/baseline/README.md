@@ -13,12 +13,14 @@
 
 ## 重建检出（本目录不版本化检出本身）
 
+本地检出是**可选**的：`cloneSource` 在本机没有 `<repo>/libuv` 时，会用 pin 里的 `remote`
+（上游 GitHub）直接浅克隆，所以新机器什么都不用准备。想加速/离线可以自己放一份：
+
 ```bash
-cd E:/Proj/refactorSubagent
 git clone --depth 1 --branch v1.52.1 https://github.com/libuv/libuv.git libuv
 ```
 
-检出只是"本地克隆源"，用例的 prepare 脚本按 `resources/sources/libuv.json` 的 pin 从它浅克隆。
-把检出换成一个新的上游克隆不影响判定——判定依赖的是 pin 的提交内容与 `resources/` 里的材料摘要。
+判定的可信度来自 `resources/sources/libuv.json` 的 `commit` 与 `resources/` 里的材料摘要，
+与本地这份检出无关。
 
 维护约定（改判据材料之后要做的固定动作）见 [`../docs/testset/README.md`](../docs/testset/README.md)。
