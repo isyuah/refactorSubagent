@@ -52,7 +52,8 @@ testset/
 | 字段 | 作用 |
 |---|---|
 | `id` / `title` / `subject` / `tags` | 选择与显示 |
-| `requires.tools` / `requires.recipe` | 依赖声明：探测不过 → **blocked**（跳过，不执行；`--strict-env` 时按失败计） |
+| `requires.platforms` | 可选的平台列表（如 `["win32", "linux"]`），任意一项匹配即可；未声明或空列表不限平台 |
+| `requires.tools` / `requires.recipe` | 平台匹配后仍须满足全部工具和配方；探测不过 → **blocked**（跳过，不执行；`--strict-env` 时按失败计） |
 | `prepare` | 环境脚本（默认 `prepare.ts`，`null` = 不需要）；拿一个目录，在里面准备环境 |
 | `repo` | harness 该在环境目录的哪里跑（默认 `.`） |
 | `task` | 任务简报路径（默认 `resources/tasks/…`，`./x` 表示用例目录内） |
@@ -62,11 +63,12 @@ testset/
 | `expect` | 评价方法（`verdict` / `verdict+attribution` / `verdict+rubric` / `part`）与期望值 |
 | `evaluate.command` | 可选评测命令（裁判），会被 `--rubric-cmd` 覆盖 |
 
-当前 44 个用例：
+当前 45 个用例：
 
 | 用例 | 驱动 | 阶段来源 | 期望 |
 |---|---|---|---|
 | `judgement-accept-comment` | pipeline | preset + 行为保持补丁 | ACCEPTED，0 失配 |
+| `judgement-accept-hard` | pipeline | `judgement-hard` + 行为保持补丁 | ACCEPTED：hard 基线和候选均通过，防止平台差异导致误拒绝 |
 | `judgement-reject-strtok` | pipeline | preset + 破坏补丁 | REJECTED，必须命中 `oracle_strtok.*` |
 | `judgement-mutant-{strscpy,inet,getters,version,errstr}` | pipeline | preset + 对应变异体 | REJECTED，必须命中 `oracle_<name>.*` |
 | `judgement-tamper-tests` | pipeline | preset + 弱化 `test/**` 断言 | REJECTED，必须命中 `test/test-strtok.c.{digest,snapshot}` |
@@ -171,7 +173,9 @@ runs/suite-<时间戳>/
   - `injected_stages` 的语义是 **"这一阶段的来源被配置改写成非默认实现"**；`mode: "ai"` 是内置默认，**不算注入**。所以：判据自测（preset + patch）= `[workflows, refactor]`；重构档（preset + ai）= `[workflows]`；writer 档（ai + patch）= `[refactor]`；e2e（ai + ai）= `[]`。这正好是每类用例"证明自己确实按设计跑"的方式（writer 档看到 `refactor` 被注入、`workflows` 没有，就说明判据确实是模型写的）。
 - **verdict + attribution**（同一实现，多两条）：`failuresRequired ⊆ 实际失配集`，`failuresForbidden ∩ 实际失配集 = ∅`。`failuresExact` 只有在校准冻结之后才填；`--calibrate` 下归因不作为失败依据，只记录。
 - **injection-replaced**（声明了 `expect.replacedFiles` 时）：验证前注入时发现目标位置已有不同内容的文件 → 必须与声明的集合完全一致（这是"篡改被中和"的证据，见 §8.2）。
-- **part**：`strict` 部分要求每条 `stable-ok`（exit 0 且 TAP 行符合期望）；`calibrate` 部分只要求分类完成且无 `error`，分类结果本身是产出。
+- **part**：`strict` 部分要求每条适用用例 `stable-ok`（exit 0 且 TAP 行符合期望）；`calibrate` 部分只要求分类完成且无 `error`，分类结果本身是产出。
+  `cases` 中的字符串表示不限平台；对象形式 `{"name":"environment_creation","requires":{"platforms":["win32"]}}`
+  使用同样的 OR 平台匹配规则。不适用条目及原因单独记录为 `skipped`，不参与行为分类；全部不适用时整例为 blocked。
 - **blocked**：`requires` 不满足（或缺 prepare）→ 该用例不执行，`summary.json` 里 `status=blocked` 且带原因；默认不影响整批退出码，`--strict-env` 时才按失败计。全部选中用例都 blocked 时退出码 2。
 
 ### 7.1 裁判分默认只报告，不判死活
@@ -187,7 +191,9 @@ runs/suite-<时间戳>/
 1. **建目录**：`testset/cases/<id>/case.json` + `prepare.ts`（libuv 用例直接抄现成的一样：`cloneSource("libuv", { into: envDir() })`）。
 2. **要新补丁**：在 scratch 检出里改文件、`git diff > testset/resources/patches/<name>.patch`，并在 `case.json` 里 `stages.refactor = {"mode":"patch","patchFile":"resources/patches/<name>.patch"}`（`git apply --check` 必须先过，工作区行尾是 LF）。
 3. **要新材料**：放进 `resources/`（judge 材料放 `resources/judge/<项目>/` 并在 `inject` 里声明目标位置）。
-4. **声明依赖**：`requires.tools` + `requires.recipe`（本机 recipe：`win-mingw-ninja-debug`）；缺依赖时用例应当是 blocked 而不是红。
+4. **声明依赖**：可选的 `requires.platforms` + `requires.tools` + `requires.recipe`。公共 libuv 用例使用
+   `libuv-ninja-debug`，按系统选择 Windows/MinGW 或 Linux/GCC；平台专属用例必须明确声明平台。
+   显式配方 `win-mingw-ninja-debug` / `linux-gcc-ninja-debug` 同样可用；缺依赖时用例应当是 blocked 而不是红。
 5. **跑一次校准**：`--dry-run --only <id>` 看计划 → `--only <id> --calibrate --out runs/x` → `--freeze runs/x` 把实测失配集冻进 `case.json`（状态与期望不符时会被拒改并单列）。
 6. **语料**：在 `resources/parts/` 加 JSON（`policy.kind` 用 `calibrate`），跑几次确认分类稳定后再考虑升进判据（见 §9）。
 

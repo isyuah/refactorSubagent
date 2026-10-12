@@ -17,10 +17,19 @@ export type Subject = string;
 
 const RequiresFile = z
   .object({
+    platforms: z.array(z.string().min(1)).default([]),
     tools: z.array(z.string().min(1)).default([]),
     recipe: z.string().min(1).nullish(),
   })
   .strict();
+
+const PartCaseFile = z.union([
+  z.string().min(1),
+  z.object({
+    name: z.string().min(1),
+    requires: RequiresFile.pick({ platforms: true }).optional(),
+  }).strict(),
+]);
 
 const RubricFile = z
   .object({ rubric: z.string().min(1), reference: z.string().min(1).nullish() })
@@ -84,6 +93,8 @@ const WorkflowManifest = z
   .strict();
 
 export interface Requires {
+  /** Any listed process.platform is sufficient; empty means unrestricted. */
+  readonly platforms: readonly string[];
   readonly tools: readonly string[];
   /** Named probe (see probe.ts) for checks a tool list cannot express. */
   readonly recipe: string | null;
@@ -151,7 +162,12 @@ export interface Part {
   readonly id: string;
   readonly title: string;
   readonly policy: PartPolicy;
-  readonly cases: readonly string[];
+  readonly cases: readonly PartCase[];
+}
+
+export interface PartCase {
+  readonly name: string;
+  readonly requires: Pick<Requires, "platforms">;
 }
 
 export interface Selection {
@@ -277,7 +293,11 @@ function parseCase(root: string, dir: string, problems: MaterialProblem[]): Suit
     kind: raw.kind,
     dir,
     prepare,
-    requires: { tools: raw.requires?.tools ?? [], recipe: raw.requires?.recipe ?? null },
+    requires: {
+      platforms: raw.requires?.platforms ?? [],
+      tools: raw.requires?.tools ?? [],
+      recipe: raw.requires?.recipe ?? null,
+    },
     repo: raw.repo,
     taskFile,
     stages: resolveStages(raw.stages, root, dir, id, problems),
@@ -286,16 +306,12 @@ function parseCase(root: string, dir: string, problems: MaterialProblem[]): Suit
     timeoutMs: raw.timeoutMs ?? null,
     expect: {
       ...expect,
-      ...(expect.rubric !== undefined
-        ? {
-            rubric: {
-              rubric: resolveResource(root, dir, expect.rubric.rubric),
-              reference: expect.rubric.reference === undefined || expect.rubric.reference === null
-                ? null
-                : resolveResource(root, dir, expect.rubric.reference),
-            },
-          }
-        : {}),
+      rubric: expect.rubric === undefined ? undefined : {
+        rubric: resolveResource(root, dir, expect.rubric.rubric),
+        reference: expect.rubric.reference === undefined || expect.rubric.reference === null
+          ? null
+          : resolveResource(root, dir, expect.rubric.reference),
+      },
     },
     evaluate: raw.evaluate === undefined ? null : { command: raw.evaluate.command ?? null },
     part,
@@ -326,7 +342,14 @@ export function loadSuite(rootInput: string): { suite: Suite; root: string } {
 }
 
 export function loadPart(path: string): Part {
-  return readJson<Part>(path);
+  const raw = readJson<Omit<Part, "cases"> & { cases: unknown }>(path);
+  return {
+    ...raw,
+    cases: z.array(PartCaseFile).parse(raw.cases).map((entry) => ({
+      name: typeof entry === "string" ? entry : entry.name,
+      requires: { platforms: typeof entry === "string" ? [] : entry.requires?.platforms ?? [] },
+    })),
+  };
 }
 
 export function selectCases(suite: Suite, selection: Selection): SuiteCase[] {

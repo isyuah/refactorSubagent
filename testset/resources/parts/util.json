@@ -14,7 +14,10 @@
   "cases": [
     "error_message",
     "env_vars",
-    "environment_creation",
+    {
+      "name": "environment_creation",
+      "requires": { "platforms": ["win32"] }
+    },
     "get_currentexe",
     "cwd_and_chdir",
     "homedir",

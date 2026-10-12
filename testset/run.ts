@@ -12,7 +12,8 @@
  * directory, and it never imports application source: it drives the harness
  * through `scripts/cli.ts`.
  */
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Term, ensureDir, fmtDuration, isTty, nowIso, readJson, timestamp, writeJson } from "./runner/util.js";
@@ -451,7 +452,9 @@ function printList(suite: Suite, cases: readonly SuiteCase[], json: boolean): vo
       const description = suite.subjects[subject];
       process.stdout.write(`\n${subject}${description === undefined ? "" : ` — ${description}`}\n`);
     }
-    const flags = [c.expect.provisional === true ? "provisional" : null, ...c.tags].filter((v) => v !== null).join(" ");
+    const flags = [c.expect.provisional === true ? "provisional" : null,
+      c.requires.platforms.length > 0 ? `platforms=${c.requires.platforms.join(",")}` : null,
+      ...c.tags].filter((v) => v !== null).join(" ");
     process.stdout.write(`  ${Term.fit(c.id, 30)} ${Term.fit(c.expect.method, 20)} ${Term.fit(String(c.expect.state ?? "-"), 9)} ${flags}\n`);
     process.stdout.write(`  ${" ".repeat(30)} ${c.title}\n`);
   }
@@ -468,7 +471,7 @@ function printDryRun(suite: Suite, cases: readonly SuiteCase[], options: Options
   for (const c of cases) {
     const caseDir = join(outDir, c.id);
     process.stdout.write(`▶ ${c.id}  [${c.subject}] ${c.expect.method}${c.expect.provisional === true ? "  (provisional)" : ""}\n`);
-    process.stdout.write(`  requires ${c.requires.tools.join(",") || "(none)"}${c.requires.recipe === null ? "" : ` recipe=${c.requires.recipe}`}\n`);
+    process.stdout.write(`  requires platforms=${c.requires.platforms.join(",") || "all"} tools=${c.requires.tools.join(",") || "(none)"}${c.requires.recipe === null ? "" : ` recipe=${c.requires.recipe}`}\n`);
     process.stdout.write(`  prepare  bun ${c.prepare ?? "(none)"} ${join(caseDir, "env")}\n`);
     if (c.kind === "upstream-part") {
       process.stdout.write(`  part     ${c.part ?? "(missing)"}\n\n`);
@@ -649,17 +652,20 @@ function prepareStub(state: string | null): string {
 }
 
 async function selfTest(term: Term): Promise<number> {
-  const root = join(process.env["TEMP"] ?? process.env["TMP"] ?? ".", `rfr-selftest-${timestamp()}`);
-  const cases: { id: string; state: string | null; requires: string[]; expectState: string }[] = [
+  const root = mkdtempSync(join(tmpdir(), "rfr-selftest-"));
+  const otherPlatform = process.platform === "linux" ? "win32" : "linux";
+  const cases: { id: string; state: string | null; requires: string[]; platforms?: string[]; expectState: string }[] = [
     { id: "synth-pass", state: "ACCEPTED", requires: [], expectState: "ACCEPTED" },
     { id: "synth-fail", state: "REJECTED", requires: [], expectState: "ACCEPTED" },
     { id: "synth-blocked", state: "ACCEPTED", requires: ["definitely-not-a-tool-xyz"], expectState: "ACCEPTED" },
+    { id: "synth-platform-match", state: "ACCEPTED", requires: [], platforms: [otherPlatform, process.platform], expectState: "ACCEPTED" },
+    { id: "synth-platform-blocked", state: "ACCEPTED", requires: [], platforms: [otherPlatform], expectState: "ACCEPTED" },
   ];
   for (const c of cases) {
     const dir = ensureDir(join(root, "cases", c.id));
     writeJson(join(dir, "case.json"), {
       id: c.id, title: `synthetic ${c.id}`, subject: "synthetic",
-      requires: { tools: c.requires },
+      requires: { tools: c.requires, platforms: c.platforms },
       prepare: "prepare.ts",
       repo: "repo",
       task: "./task.txt",
@@ -689,10 +695,11 @@ async function selfTest(term: Term): Promise<number> {
     { dir: root, cli: join(root, "stub-harness.ts") });
   const summary = summarize(suite, suite.cases, rows, outcomes, probe, nowIso());
   const counts = summary["counts"] as { passed: number; failed: number; blocked: number };
-  const ok = counts.passed === 1 && counts.failed === 1 && counts.blocked === 1;
+  const skippedPrepare = !existsSync(join(outDir, "synth-platform-blocked", "env"));
+  const ok = counts.passed === 2 && counts.failed === 1 && counts.blocked === 2 && skippedPrepare;
   process.stdout.write(
     `self-test ${ok ? term.paint("PASS", "green") : term.paint("FAIL", "red")}: ` +
-    `expected pass=1 fail=1 blocked=1, got pass=${String(counts.passed)} fail=${String(counts.failed)} blocked=${String(counts.blocked)}\n`,
+    `expected pass=2 fail=1 blocked=2, got pass=${String(counts.passed)} fail=${String(counts.failed)} blocked=${String(counts.blocked)}; platform-blocked prepare skipped=${String(skippedPrepare)}\n`,
   );
   return ok ? 0 : 1;
 }

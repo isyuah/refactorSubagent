@@ -13,9 +13,10 @@
  *   n == 0            -> returns 0 and writes NOTHING
  *   fits              -> returns strlen(s), writes s plus NUL
  *   does not fit      -> writes exactly n-1 bytes of s, terminates d[n-1] = 0,
- *                        returns UV_E2BIG (-4093)
+ *                        returns UV_E2BIG (-4093 on Windows, -E2BIG on Unix)
  *   bytes beyond the written region are never touched
  */
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include "uv.h"
@@ -25,12 +26,19 @@
 #define ORACLE "strscpy-oracle"
 #define UNTOUCHED 0xAA
 
+/* Pin the error ABI independently of the implementation being tested. */
+#if defined(_WIN32)
+#define EXPECTED_E2BIG (-4093)
+#else
+#define EXPECTED_E2BIG (-E2BIG)
+#endif
+
 int main(void) {
   char d[8];
   ssize_t r;
 
   /* The return code for truncation is part of the observable contract. */
-  check_int(ORACLE, "uv-e2big-value", -4093, (long) UV_E2BIG);
+  check_int(ORACLE, "uv-e2big-value", EXPECTED_E2BIG, (long) UV_E2BIG);
 
   /* n == 0: no write at all, returns 0 (NOT UV_E2BIG). */
   memset(d, UNTOUCHED, sizeof(d));
@@ -41,7 +49,7 @@ int main(void) {
   /* n == 1: one byte of room is not enough for "x" + NUL -> E2BIG, d[0] = 0. */
   memset(d, UNTOUCHED, sizeof(d));
   r = uv__strscpy(d, "x", 1);
-  check_int(ORACLE, "n1-return", -4093, (long) r);
+  check_int(ORACLE, "n1-return", EXPECTED_E2BIG, (long) r);
   check_int(ORACLE, "n1-terminated", 0, (unsigned char) d[0]);
   check_int(ORACLE, "n1-tail-untouched", UNTOUCHED, (unsigned char) d[1]);
 
@@ -68,14 +76,14 @@ int main(void) {
   /* Truncation into 4 bytes: exactly 3 bytes of source + NUL. */
   memset(d, UNTOUCHED, sizeof(d));
   r = uv__strscpy(d, "abcdefghij", 4);
-  check_int(ORACLE, "truncate-return", -4093, (long) r);
+  check_int(ORACLE, "truncate-return", EXPECTED_E2BIG, (long) r);
   check_int(ORACLE, "truncate-bytes", 0, memcmp(d, "abc\0", 4));
   check_int(ORACLE, "truncate-tail-untouched", UNTOUCHED, (unsigned char) d[4]);
 
   /* n == 2 truncation keeps a single character. */
   memset(d, UNTOUCHED, sizeof(d));
   r = uv__strscpy(d, "xy", 2);
-  check_int(ORACLE, "n2-truncate-return", -4093, (long) r);
+  check_int(ORACLE, "n2-truncate-return", EXPECTED_E2BIG, (long) r);
   check_int(ORACLE, "n2-truncate-bytes", 0, memcmp(d, "x\0", 2));
 
   /* Aliasing: d == s must not corrupt the result. */

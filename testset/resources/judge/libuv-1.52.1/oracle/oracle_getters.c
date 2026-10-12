@@ -12,7 +12,7 @@
  *
  * Windows shaping: UV_REQ_TYPE_PRIVATE expands to eight extra members
  * (UV_ACCEPT .. UV_SIGNAL_REQ, include/uv/win.h:356-365), so UV_REQ_TYPE_MAX is
- * 19 here, not the 12 you get on POSIX (include/uv/unix.h:250). uv_req_type_name
+ * 19 on Windows and 11 on POSIX (include/uv/unix.h:250). uv_req_type_name
  * returns NULL for every private (11..18) and out-of-range value.
  */
 #include <stdio.h>
@@ -31,12 +31,12 @@ static const char* const HANDLE_NAMES[19] = {
   NULL             /* UV_HANDLE_TYPE_MAX */
 };
 
-/* UV_REQ_TYPE_MAP + the eight Windows-private members (include/uv.h:179-189,
- * 207-214 + include/uv/win.h:356-365): 0..19. */
-static const char* const REQ_NAMES[20] = {
+/* Keep an independent expected enum shape for each target platform. */
+static const char* const REQ_NAMES[] = {
   NULL,            /* UV_UNKNOWN_REQ */
   "req", "connect", "write", "shutdown", "udp_send", "fs", "work",
   "getaddrinfo", "getnameinfo", "random",
+#if defined(_WIN32)
   NULL,            /* UV_ACCEPT */
   NULL,            /* UV_FS_EVENT_REQ */
   NULL,            /* UV_POLL_REQ */
@@ -45,6 +45,7 @@ static const char* const REQ_NAMES[20] = {
   NULL,            /* UV_UDP_RECV */
   NULL,            /* UV_WAKEUP */
   NULL,            /* UV_SIGNAL_REQ */
+#endif
   NULL             /* UV_REQ_TYPE_MAX */
 };
 

@@ -12,6 +12,7 @@
  *
  * Frozen against: libuv v1.52.1 (commit 1cfa32f), Windows 11 x64, MinGW GCC 15.2.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include "uv.h"
@@ -51,9 +52,16 @@ int main(void) {
   char out[64];
   int rc;
 
+  /* Windows freezes libuv's numeric ABI; Unix follows the system errno ABI. */
+#if defined(_WIN32)
   check_int(ORACLE, "enospec-value", -4055, (long) UV_ENOSPC);
   check_int(ORACLE, "eafnosupport-value", -4089, (long) UV_EAFNOSUPPORT);
   check_int(ORACLE, "einval-value", -4071, (long) UV_EINVAL);
+#else
+  check_int(ORACLE, "enospec-value", -ENOSPC, (long) UV_ENOSPC);
+  check_int(ORACLE, "eafnosupport-value", -EAFNOSUPPORT, (long) UV_EAFNOSUPPORT);
+  check_int(ORACLE, "einval-value", -EINVAL, (long) UV_EINVAL);
+#endif
 
   /* IPv6 rendering (len("2001:db8:0:1:1:1:1:1") == 20). */
   ntop6_case("ntop6-plain", V6_PLAIN, sizeof(out), 0,

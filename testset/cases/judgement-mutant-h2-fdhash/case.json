@@ -12,6 +12,7 @@
   ],
   "kind": "pipeline",
   "requires": {
+    "platforms": ["win32"],
     "tools": [
       "git",
       "cmake",

@@ -39,6 +39,15 @@
 #define MAX_NAMED 32
 #define MAX_LOG 64
 
+/* Unix loops also own an inactive internal child-signal watcher. */
+#if defined(_WIN32)
+#define PRINT_ALL_LINE_COUNT 5
+#define PRINT_INTERNAL_HANDLES "-AI:async"
+#else
+#define PRINT_ALL_LINE_COUNT 6
+#define PRINT_INTERNAL_HANDLES "--I:signal|-AI:async"
+#endif
+
 static int failures;
 
 static void pass(const char* name) {
@@ -204,8 +213,8 @@ static void close_and_reap(uv_handle_t** handles, int count, uv_loop_t* loop) {
 
 typedef struct {
   int lines;
-  char first[64];         /* "[<flags>] <type>" of the first printed line */
-  char transcript[256];   /* "<flags>-<type>|..." for every later line */
+  char internal[128];     /* "<flags>:<type>|..." for internal handles */
+  char transcript[256];   /* "<flags>:<type>|..." for user handles */
   int address_mismatches;
 } print_capture_t;
 
@@ -230,11 +239,10 @@ static void capture_prints(FILE* stream,
     flags[3] = '\0';
     cap->lines++;
 
-    if (cap->lines == 1) {
-      /* The first entry of a freshly initialised loop is its own internal
-       * thread-pool async handle: uv__print_handles() does not filter those
-       * out (unlike uv_walk()). */
-      snprintf(cap->first, sizeof(cap->first), "[%s] %s", flags, type);
+    if (flags[2] == 'I') {
+      size_t used = strlen(cap->internal);
+      snprintf(cap->internal + used, sizeof(cap->internal) - used,
+               "%s%s:%s", used == 0 ? "" : "|", flags, type);
       continue;
     }
 
@@ -573,10 +581,11 @@ int main(void) {
 
     uv_print_all_handles(&loop_print, stream);
     capture_prints(stream, expected, 4, &cap);
-    check_long("print-all-line-count", 5, cap.lines);
+    check_long("print-all-line-count", PRINT_ALL_LINE_COUNT, cap.lines);
     check_str("print-all-order-and-flags",
               "RA-:timer|RA-:async|R--:prepare|-A-:timer", cap.transcript);
-    check_str("print-all-lists-internal-handle", "[-AI] async", cap.first);
+    check_str("print-all-lists-internal-handle",
+              PRINT_INTERNAL_HANDLES, cap.internal);
     check_long("print-all-addresses-match", 0, cap.address_mismatches);
     fclose(stream);
 

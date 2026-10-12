@@ -2,6 +2,9 @@
 
 > 消费方：`E:/Proj/refactorSubagent` 的声明制流程（`runAgentWorkflowVerification` → `runDeclaredWorkflowVerification` → 自驱 TestWorkflow + `ctx.expect` 逐位置比较）。
 > 所有数字与行为都是本机实测（Windows 11 x64 / GCC 15.2 / CMake 4.3.1 / Ninja 1.13.2 / Debug）。
+> 当前共享判据 revision 2 已加入 Windows/Linux 平台选择：workflow 读取 `ctx.facts.host`，
+> C oracle 按编译目标检查错误码 ABI 和请求类型布局，摘要 pin 随材料同步更新。
+> 本文的 `.exe` 命令及历史数字保留 Windows 首次校准语境，其他平台以对应运行批次为证。
 >
 > **2026-09-17 重设计后的路径**：判据 workflow 与 oracle 迁到 `testset/resources/`（工作流入口通过
 > preset 的 `entryRoot` 从库外解析）；oracle 由 harness 在候选提交之后、验证之前注入到两侧 worktree 的

@@ -83,6 +83,9 @@ export function cloneSource(id: string, options: CloneOptions = {}): string {
   // bytes).
   git(["clone", "--no-local", "--depth", "1", "--branch", ref, "--single-branch", "--no-checkout", origin, into], testRoot());
   git(["config", "core.autocrlf", "false"], into);
+  // Candidate commits belong to this disposable test environment, not a host account.
+  git(["config", "user.name", "refactor-testset"], into);
+  git(["config", "user.email", "refactor-testset@example.invalid"], into);
   git(["checkout", "--detach", spec.commit ?? ref], into);
   const head = git(["rev-parse", "HEAD"], into);
   if (spec.commit !== null && head !== spec.commit) {

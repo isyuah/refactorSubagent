@@ -2,8 +2,8 @@
 
 一、构建与测试流程（这次的判据本体，宿主要靠它验收）
 仓库里没有任何现成的构建/测试 workflow，也没有可抄的参考实现——你写出的 TypeScript 源就是唯一的判据依据。
-- 构建产物要求：build/uv_run_tests_a.exe（静态 runner）与 build/libuv.a。GCC 15 必须带 -Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers，否则 src/win/util.c:630 直接报错；CMake 需要 -DBUILD_TESTING=ON。
-- 测试判据由你自己设计：跑哪些用例、声明哪些期望（两侧一致 equal 与绝对值 both-matches 两种都要有）、以及怎么防止判据材料本身被改。仓库自带的 test/ 套件可用：build/uv_run_tests_a.exe <case>（一个用例一个进程），--list 列出全部用例名。
+- 构建产物要求：build/uv_run_tests_a 加上 ctx.facts.host.executable_suffix（静态 runner），以及 build/libuv.a。通过 ctx.facts.host.platform 获取实际系统（win32 或 linux）；CMake 使用 Ninja、GCC、Debug 和 -DBUILD_TESTING=ON。仅 Windows GCC 15 必须带 -Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers，否则 src/win/util.c:630 直接报错。判据编译的系统库及平台 ABI 期望也必须匹配当前系统。
+- 测试判据由你自己设计：跑哪些用例、声明哪些期望（两侧一致 equal 与绝对值 both-matches 两种都要有）、以及怎么防止判据材料本身被改。仓库自带的 test/ 套件可用：静态 runner 加 <case> 参数（一个用例一个进程），--list 列出当前平台的全部用例名。
 - 事实说话：无法从仓库与实测证明的，不要猜；构建或测试失败要如实失败，不要静默跳过。
 
 二、行为保持型重构：只改 src/strtok.c（单符号 uv__strtok）

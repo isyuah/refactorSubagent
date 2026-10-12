@@ -1,0 +1,38 @@
+{
+  "id": "judgement-accept-hard",
+  "title": "hard 判据正对照：行为保持补丁必须 ACCEPTED",
+  "subject": "judgement",
+  "tags": ["offline", "no-ai", "positive", "hard-tier"],
+  "kind": "pipeline",
+  "requires": {
+    "tools": ["git", "cmake", "ninja", "gcc"],
+    "recipe": "libuv-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t1-strtok.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-hard"
+    },
+    "refactor": {
+      "mode": "patch",
+      "patchFile": "resources/patches/m1a-accept.patch"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "injectedStages": ["workflows", "refactor"],
+    "authoritative": true,
+    "note": "防止 hard oracle 的平台差异把正确的基线和行为保持补丁一并误拒绝。"
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1-hard",
+      "dest": "refactor-task/oracle-hard"
+    }
+  ],
+  "timeoutMs": 3600000
+}

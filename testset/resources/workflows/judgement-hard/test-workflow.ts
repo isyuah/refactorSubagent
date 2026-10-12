@@ -34,7 +34,7 @@ const ORACLE_PINS = {
   "h1-error/oracle_error.c": "43f0c23e01a965a5b5fa79210aee41a45174376c3a2f32aa2c4f257359211f8b",
   "h2-fdhash/oracle_fd_hash.c": "8ebd5808e1c5182fd99178970efdc38442e1a351e4582a1a23e0dea86cd7bd48",
   "h3-timer/oracle_timer.c": "7f6e078d808d08dbfd7b70484c09af0b2f66b75a1337308545353e237622d5d3",
-  "h4-walk/oracle_walk.c": "e8295561d3f149cac685a7ba464a9e853cb9abe0f1581adbf7685a86ee228ce0",
+  "h4-walk/oracle_walk.c": "3cb481d82941480803e2c288d314f26a8c733f6c17d0641a986a9665b63600aa",
   "h5-env/oracle_env.c": "b8d332248ac97aa93d22809e7f91a709d443468c6cce4d1eb0ddf16b6c1f814d",
   "h6-loop/oracle_loop.c": "22b226f9574f27721a24521a0870980d625681a8ff6a5333c8f9a828bc3fc928",
   "h7-threadpool/oracle_threadpool.c": "b0b7ee1334ece2f98afd8e34aa43ec7b758ea2f8858c20a1b60cbb80b240dd06",
@@ -42,7 +42,6 @@ const ORACLE_PINS = {
 
 const UPSTREAM_PINS = {
   "test/run-tests.c": "088c0025f897eea64e1530a54d7cae819099f14ecadbc31b90492aa10fdce89d",
-  "test/runner-win.c": "0edf790dcebe3c8a36778b4d864ad437da6a9567421079c589222075c23f928a",
   "test/runner.c": "16b58ebd3bf00a014c8d078712498d5996ff0a3017f64cb79f348e938d08ad2c",
   "test/task.h": "4e987e7f1127d5ec1ad26a98dd17f4dd5635031f4c9faaf449f60bd25ade2707",
   "test/test-list.h": "b9dff249f9871ade6ded915df8afe2ff359069355be42b0e26c48400e9d0062b",
@@ -88,6 +87,19 @@ const ORACLE_LINK_ARGS = [
   "-lws2_32", "-ldbghelp", "-lole32", "-lshell32",
 ];
 
+const WINDOWS_ORACLES = [
+  "h1-error/oracle_error", "h2-fdhash/oracle_fd_hash",
+  "h5-env/oracle_env", "h6-loop/oracle_loop",
+];
+
+const RUNNER_PINS = {
+  win32: { "test/runner-win.c": "0edf790dcebe3c8a36778b4d864ad437da6a9567421079c589222075c23f928a" },
+  linux: {
+    "test/runner-unix.c": "6a713766335da86114eed026564e2620116fcfef77193f017675bc38aa2d3911",
+    "test/runner-unix.h": "4bda95a56e740921f4a2f1e6f9b3bd6a9415b0096bbc1a56218766a237c7e408",
+  },
+};
+
 /* "name=sha256" sorted and joined: stable, diffable, regex-checkable. */
 function canonical(snapshot) {
   const parts = [];
@@ -116,7 +128,18 @@ function outcome(result) {
 }
 
 export default async (ctx) => {
-  await ctx.validator.assertFile("build/uv_run_tests_a.exe", "libuv static test runner");
+  const host = ctx.facts.host;
+  if (!host || !RUNNER_PINS[host.platform]) {
+    throw new Error("libuv judgement requires Windows or Linux host facts");
+  }
+  const isWindows = host.platform === "win32";
+  const suffix = host.executable_suffix;
+  const runner = "build/uv_run_tests_a" + suffix;
+  const upstreamPins = { ...UPSTREAM_PINS, ...RUNNER_PINS[host.platform] };
+  const linkArgs = isWindows ? ORACLE_LINK_ARGS : ["-pthread", "-ldl", "-lrt", "-lm"];
+  const oracles = ORACLES.filter((oracle) => isWindows || !WINDOWS_ORACLES.includes(oracle));
+  const upstreamCases = UPSTREAM_CASES.filter((name) => isWindows || name !== "environment_creation");
+  await ctx.validator.assertFile(runner, "libuv static test runner");
   await ctx.validator.assertFile("build/libuv.a", "libuv static library");
 
   // Layer 0: judgement material.
@@ -130,14 +153,14 @@ export default async (ctx) => {
   );
   ctx.expect("oracle.sources.snapshot", oracleActual);
 
-  for (const file of Object.keys(UPSTREAM_PINS).sort()) {
+  for (const file of Object.keys(upstreamPins).sort()) {
     const actual = canonical(await ctx.fs.snapshot(file));
-    ctx.expect(file + ".digest", "both-matches", actual, "^" + file + "=" + UPSTREAM_PINS[file]);
+    ctx.expect(file + ".digest", "both-matches", actual, "^" + file + "=" + upstreamPins[file]);
     ctx.expect(file + ".snapshot", actual);
   }
 
   const compiledOracles = [];
-  for (const oracle of ORACLES) {
+  for (const oracle of oracles) {
     const compiled = await ctx.process.run({
       program: "gcc",
       args: [
@@ -145,8 +168,8 @@ export default async (ctx) => {
         "-I", ".", "-I", "include", "-I", "src", "-I", "refactor-task/oracle-hard",
         "refactor-task/oracle-hard/" + oracle + ".c",
         "build/libuv.a",
-        "-o", "build/" + oracle.split("/").join("-") + ".exe",
-      ].concat(ORACLE_LINK_ARGS),
+        "-o", "build/" + oracle.split("/").join("-") + suffix,
+      ].concat(linkArgs),
       cwd: ".",
       timeoutMs: 120000,
     });
@@ -155,9 +178,9 @@ export default async (ctx) => {
     ctx.expect(oracle + ".compile", "both-matches", ok ? "0" : outcome(compiled), "^0");
   }
 
-  for (const name of UPSTREAM_CASES) {
+  for (const name of upstreamCases) {
     const run = await ctx.process.run({
-      program: "build/uv_run_tests_a.exe",
+      program: runner,
       args: [name],
       cwd: ".",
       timeoutMs: 60000,
@@ -168,10 +191,10 @@ export default async (ctx) => {
     ctx.expect(name + ".stdout", stdout);
   }
 
-  for (let index = 0; index < ORACLES.length; index++) {
-    const oracle = ORACLES[index];
+  for (let index = 0; index < oracles.length; index++) {
+    const oracle = oracles[index];
     const compiled = compiledOracles[index];
-    const exe = "build/" + oracle.split("/").join("-") + ".exe";
+    const exe = "build/" + oracle.split("/").join("-") + suffix;
     if (compiled.status !== "exited" || compiled.exitCode !== 0) {
       const failure = "oracle-not-built: " + outcome(compiled);
       ctx.expect(oracle + ".exit", "both-matches", failure, "^0");
@@ -195,9 +218,10 @@ export default async (ctx) => {
 
   return {
     declared: {
-      upstream_files: Object.keys(UPSTREAM_PINS).length,
-      upstream_cases: UPSTREAM_CASES.length,
-      oracles: ORACLES.length,
+      platform: host.platform,
+      upstream_files: Object.keys(upstreamPins).length,
+      upstream_cases: upstreamCases.length,
+      oracles: oracles.length,
     },
   };
 };

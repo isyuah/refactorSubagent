@@ -17,7 +17,7 @@
       "ninja",
       "gcc"
     ],
-    "recipe": "win-mingw-ninja-debug"
+    "recipe": "libuv-ninja-debug"
   },
   "prepare": "prepare.ts",
   "repo": ".",

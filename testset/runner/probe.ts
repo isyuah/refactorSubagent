@@ -44,7 +44,7 @@ export interface RequirementVerdict {
 
 function runTool(name: string, args: readonly string[], timeoutMs = 20_000): { code: number | null; stdout: string } {
   const result = spawnSync(name, [...args], { encoding: "utf8", timeout: timeoutMs, shell: false, windowsHide: true });
-  return { code: result.status, stdout: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+  return { code: result.status, stdout: `${result.stdout ?? ""}${result.stderr ?? ""}${result.error?.message ?? ""}` };
 }
 
 function firstLine(text: string): string | null {
@@ -59,43 +59,76 @@ function probeTool(name: string): ToolFact {
   return { available: true, path, version: firstLine(version.stdout) };
 }
 
-/** The flags the libuv build workflow passes; a compiler that rejects them cannot build the task. */
-function probeWinMinGwRecipe(host: HostFacts): RecipeReport {
-  const id = "win-mingw-ninja-debug";
+/** Check a native GCC toolchain, including the flags/libraries used by the workflows. */
+function probeGccNinjaRecipe(host: HostFacts, platform: "win32" | "linux", id: string): RecipeReport {
+  if (host.os !== platform) {
+    return { id, ok: false, detail: `requires platform ${platform}, current platform is ${host.os}` };
+  }
   const gcc = host.tools["gcc"];
   if (gcc === undefined || !gcc.available || gcc.path === null) {
     return { id, ok: false, detail: "gcc is not on PATH" };
   }
+  const cmake = host.tools["cmake"];
+  const ninja = host.tools["ninja"];
+  if (cmake === undefined || !cmake.available || cmake.path === null) return { id, ok: false, detail: "cmake is not on PATH" };
+  if (ninja === undefined || !ninja.available || ninja.path === null) return { id, ok: false, detail: "ninja is not on PATH" };
+  const target = runTool(gcc.path, ["-dumpmachine"]);
+  const targetName = firstLine(target.stdout) ?? "unknown";
+  const targetPattern = platform === "win32" ? /mingw/i : /linux/i;
+  if (target.code !== 0 || !targetPattern.test(targetName)) {
+    return { id, ok: false, detail: `gcc target '${targetName}' is not a native ${platform} toolchain` };
+  }
   const dir = mkdtempSync(join(tmpdir(), "rfr-recipe-"));
   try {
     const source = join(dir, "probe.c");
+    const executable = join(dir, platform === "win32" ? "probe.exe" : "probe");
     writeFileSync(source, "int main(void) { return 0; }\n");
+    const flags = platform === "win32"
+      ? ["-Wno-error=incompatible-pointer-types", "-Wno-error=discarded-qualifiers"]
+      : [];
+    const libraries = platform === "linux" ? ["-pthread", "-ldl", "-lrt", "-lm"] : [];
     const compiled = runTool(gcc.path, [
-      "-Wno-error=incompatible-pointer-types",
-      "-Wno-error=discarded-qualifiers",
-      "-fsyntax-only",
+      ...flags,
       source,
+      "-o", executable,
+      ...libraries,
     ]);
     if (compiled.code !== 0) {
-      return { id, ok: false, detail: `gcc rejects the task's -Wno-error flags: ${firstLine(compiled.stdout) ?? "no output"}` };
+      return { id, ok: false, detail: `gcc compile/link failed: ${firstLine(compiled.stdout) ?? "no output"}` };
+    }
+    const executed = runTool(executable, []);
+    if (executed.code !== 0) {
+      return { id, ok: false, detail: `compiled probe cannot run: ${firstLine(executed.stdout) ?? `exit=${String(executed.code)}`}` };
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-  const cmake = host.tools["cmake"];
-  const ninja = host.tools["ninja"];
-  if (cmake === undefined || cmake.path === null) return { id, ok: false, detail: "cmake is not on PATH" };
-  if (ninja === undefined || ninja.path === null) return { id, ok: false, detail: "ninja is not on PATH" };
   const generators = runTool(cmake.path, ["--help"]);
-  if (!/^\s{2}Ninja\s+=/m.test(generators.stdout)) {
+  if (generators.code !== 0 || !/^\s{2}Ninja\s+=/m.test(generators.stdout)) {
     return { id, ok: false, detail: "cmake does not offer the Ninja generator" };
   }
-  return { id, ok: true, detail: `${gcc.version ?? "gcc"} · ${cmake.version ?? "cmake"} · ${ninja.version ?? "ninja"}` };
+  return { id, ok: true, detail: `${targetName} · ${gcc.version ?? "gcc"} · ${cmake.version ?? "cmake"} · ${ninja.version ?? "ninja"}` };
 }
 
 const RECIPES: Record<string, (host: HostFacts) => RecipeReport> = {
-  "win-mingw-ninja-debug": probeWinMinGwRecipe,
+  "win-mingw-ninja-debug": (host) => probeGccNinjaRecipe(host, "win32", "win-mingw-ninja-debug"),
+  "linux-gcc-ninja-debug": (host) => probeGccNinjaRecipe(host, "linux", "linux-gcc-ninja-debug"),
+  "libuv-ninja-debug": (host) => {
+    const id = "libuv-ninja-debug";
+    if (host.os !== "win32" && host.os !== "linux") {
+      return { id, ok: false, detail: `no libuv build recipe for platform ${host.os}` };
+    }
+    return probeGccNinjaRecipe(host, host.os, id);
+  },
 };
+
+/** Also used to validate a single named recipe against already measured facts. */
+export function probeRecipe(id: string, host: HostFacts): RecipeReport {
+  const probe = Object.hasOwn(RECIPES, id) ? RECIPES[id] : undefined;
+  return probe === undefined
+    ? { id, ok: false, detail: `unknown recipe '${id}'` }
+    : probe(host);
+}
 
 /** Probe once per batch; the tool list is the union of what selected cases ask for. */
 export function probeEnvironment(toolNames: readonly string[], recipeIds: readonly string[]): ProbeReport {
@@ -109,15 +142,15 @@ export function probeEnvironment(toolNames: readonly string[], recipeIds: readon
   };
   const recipes: Record<string, RecipeReport> = {};
   for (const id of [...new Set(recipeIds)].sort()) {
-    const probe = RECIPES[id];
-    recipes[id] = probe === undefined
-      ? { id, ok: false, detail: `unknown recipe '${id}'` }
-      : probe(host);
+    recipes[id] = probeRecipe(id, host);
   }
   return { host, recipes };
 }
 
 export function evaluateRequirement(requires: Requires, report: ProbeReport): RequirementVerdict {
+  if (requires.platforms.length > 0 && !requires.platforms.includes(report.host.os)) {
+    return { ok: false, reason: `platform ${report.host.os} is not supported (requires any of: ${requires.platforms.join(", ")})` };
+  }
   const missing = requires.tools.filter((name) => report.host.tools[name]?.available !== true);
   if (missing.length > 0) return { ok: false, reason: `missing tool(s): ${missing.join(", ")}` };
   if (requires.recipe !== null) {

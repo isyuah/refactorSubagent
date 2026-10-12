@@ -221,19 +221,19 @@ export interface PartRunResult {
   readonly elapsedMs: number;
   readonly buildMs: number;
   readonly cases: readonly PartCaseRun[];
+  readonly skipped: readonly { name: string; reason: string }[];
   readonly counts: Readonly<Record<string, number>>;
   readonly repoDir: string;
   readonly error: string | null;
 }
 
 function runnerBinary(repo: string): string {
-  const exe = join(repo, "build", `${BUILD_TARGET}.exe`);
-  return exists(exe) ? exe : join(repo, "build", BUILD_TARGET);
+  return join(repo, "build", BUILD_TARGET + (process.platform === "win32" ? ".exe" : ""));
 }
 
 /**
- * cmake configure + build, byte-for-byte the same commands the preset build
- * workflow declares (GCC 15 needs the two -Wno-error flags).
+ * Match the preset build workflow's native GCC/Ninja configuration.
+ * Windows GCC 15 needs the two -Wno-error flags; Linux uses default C flags.
  */
 async function buildRunner(ctx: JobContext, repo: string): Promise<{ ok: boolean; error: string | null; ms: number }> {
   const started = Date.now();
@@ -241,8 +241,8 @@ async function buildRunner(ctx: JobContext, repo: string): Promise<{ ok: boolean
 
   const configure = await exec({
     program: "cmake",
-    args: ["-S", ".", "-B", "build", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Debug", "-DBUILD_TESTING=ON",
-           "-DCMAKE_C_FLAGS=-Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers"],
+    args: ["-S", ".", "-B", "build", "-G", "Ninja", "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_BUILD_TYPE=Debug", "-DBUILD_TESTING=ON",
+           ...(process.platform === "win32" ? ["-DCMAKE_C_FLAGS=-Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers"] : [])],
     cwd: repo, timeoutMs: 300_000,
     onOutput: () => ctx.onPhase("configure", `cmake (${String(Math.round((Date.now() - started) / 1000))}s)`),
   });
@@ -285,16 +285,29 @@ export async function runPartCase(
 ): Promise<PartRunResult> {
   const started = Date.now();
   const repoDir = join(ctx.caseDir, "env", c.repo);
+  const selected = part.cases.filter((entry) => caseFilter === null || entry.name.includes(caseFilter));
+  const matchesPlatform = (entry: Part["cases"][number]): boolean =>
+    entry.requires.platforms.length === 0 || entry.requires.platforms.includes(process.platform);
+  const skipped = selected.filter((entry) => !matchesPlatform(entry)).map((entry) => ({
+    name: entry.name,
+    reason: "platform " + process.platform + " is not supported (requires any of: " + entry.requires.platforms.join(", ") + ")",
+  }));
+  const names = selected.filter(matchesPlatform).map((entry) => entry.name);
+  if (names.length === 0) {
+    return {
+      partId: part.id, status: "ok", elapsedMs: Date.now() - started, buildMs: 0,
+      cases: [], skipped, counts: {}, repoDir, error: null,
+    };
+  }
   const build = await buildRunner(ctx, repoDir);
   if (!build.ok) {
     return {
       partId: part.id, status: "build-failed", elapsedMs: Date.now() - started, buildMs: build.ms,
-      cases: [], counts: {}, repoDir, error: build.error,
+      cases: [], skipped, counts: {}, repoDir, error: build.error,
     };
   }
 
   const repeats = ctx.repeats > 0 ? ctx.repeats : part.policy.repeats;
-  const names = caseFilter === null ? part.cases : part.cases.filter((name) => name.includes(caseFilter));
   const results: PartCaseRun[] = [];
   for (const name of names) {
     ctx.onPhase("cases", `${name} (${String(results.length + 1)}/${String(names.length)})`);
@@ -329,6 +342,7 @@ export async function runPartCase(
     elapsedMs: Date.now() - started,
     buildMs: build.ms,
     cases: results,
+    skipped,
     counts,
     repoDir,
     error: null,
