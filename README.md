@@ -10,6 +10,7 @@
 ```text
 refactorSubagent/
 ├─ src/                     harness 本体（状态机、阶段、能力代理、配置）
+├─ shared/                  宿主与测试集共用的进程生命周期管理
 ├─ scripts/cli.ts           命令行入口（run / preflight / workflow / limits / config）
 ├─ tests/                   harness 单元与离线 e2e 测试（bun test）
 ├─ docs/                    设计文档（stage-flow、limits、roadmap…）
@@ -64,3 +65,14 @@ bun testset/run.ts --only e2e-t1-full --rubric-cmd "<命令>" # 端到端 + 裁�
 `bun run typecheck` 单独检查宿主、脚本、测试和 testset 执行器；动态 workflow 材料由宿主的源码策略与运行验证检查。
 Windows/Linux CI 执行 `check` 和 `test:offline`，只按用例声明跳过不适用平台，其余环境缺失一律失败。
 离线证据默认写入较短的 `runs/c-<随机值>/`，也可指定 `--out <新目录>`；CI 使用临时目录以避免 MinGW 长路径问题。
+
+## 进程回收与取消
+
+Workflow worker、capability 工具、CTest 和测试集命令共用进程管理：Windows 使用带 kill-on-close 的 Job Object，
+POSIX 使用独立进程组，工具先发送 TERM，200ms 后仍未退出则发送 KILL。
+负责回收内层进程组的 CLI 有 4s 关闭预算，避免外层先杀掉 CLI 而留下内层工具。
+正常结束、异常、超时和取消都会回收所属子孙进程，并在输出管道排空后返回；退出和排空等待各有独立上限，清理失败会保留诊断。
+
+`runWorkflow`、`runCTest` 和测试集 `exec` 支持 `signal: AbortSignal`；取消前已收到的 capability 事件仍保留在 workflow 结果中。
+CLI、测试集和离线检查入口处理 SIGINT/SIGTERM，宿主显式退出时也会清理已登记的进程。
+这些机制负责进程生命周期，平台隔离仍是后续独立工作。

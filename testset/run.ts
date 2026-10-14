@@ -30,6 +30,9 @@ import {
 import { evaluateBlocked, evaluatePart, evaluatePipeline, type CaseEvaluation } from "./runner/evaluate.js";
 import { programmaticEvidence, runRubric, type RubricOutcome } from "./runner/rubric.js";
 import { LiveDisplay, type Row } from "./runner/display.js";
+import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
+
+installOwnedProcessSignalHandlers();
 
 interface Options {
   /** Test set root (holds cases/ and resources/). */
@@ -788,8 +791,8 @@ async function main(): Promise<number> {
 }
 
 main()
-  .then((code) => process.exit(code))
+  .then((code) => process.exit(process.exitCode ?? code))
   .catch((error: unknown) => {
     process.stderr.write(`runner error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
-    process.exit(3);
+    process.exit(process.exitCode ?? 3);
   });

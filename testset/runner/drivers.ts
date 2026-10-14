@@ -132,6 +132,7 @@ export async function runPipelineCase(
     args,
     cwd: ctx.harnessDir,
     timeoutMs: c.timeoutMs ?? 3_600_000,
+    cooperativeShutdown: true,
     onOutput: () => {
       ctx.onPhase("harness", `session ${sessionId} (${String(Math.round((Date.now() - started) / 1000))}s) · ${lastPhase}`);
     },

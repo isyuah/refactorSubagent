@@ -1,4 +1,3 @@
-import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, resolve } from "node:path";
@@ -11,6 +10,7 @@ import {
 } from "./capability-protocol.js";
 import { checkWorkflowSource } from "./source-policy.js";
 import { LocalCapabilityBroker } from "./capabilities.js";
+import { spawnOwnedProcess } from "../../shared/owned-process.js";
 
 export interface RunWorkflowOptions {
   entry: string;
@@ -20,6 +20,8 @@ export interface RunWorkflowOptions {
   policy?: WorkflowCapabilityPolicy;
   /** Host deadline for the whole workflow run. undefined = no deadline. */
   timeoutMs?: number;
+  /** Caller cancellation also closes broker-owned tools and readiness probes. */
+  signal?: AbortSignal;
 }
 
 /** Execute a source-checked workflow with brokered filesystem/process capabilities. */
@@ -27,6 +29,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
   const entry = resolveEntry(options.entry);
   const checked = checkWorkflowSource(entry);
   if (!checked.ok) return rejected(checked.reason ?? "workflow source rejected");
+  if (options.signal?.aborted) return { ...rejected("workflow cancelled"), status: "failed" };
 
   const worker = fileURLToPath(new URL("./worker.ts", import.meta.url));
   const cwd = resolve(options.cwd);
@@ -36,23 +39,29 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
     project: options.facts?.project,
     policy: options.policy,
   });
-  const child = spawn(process.execPath, ["run", worker, entry, cwd], {
+  const owned = spawnOwnedProcess({
+    program: process.execPath,
+    args: ["run", worker, entry, cwd],
     cwd,
     env: process.env,
-    stdio: ["pipe", "pipe", "pipe"],
-    shell: false,
-    windowsHide: true,
-    detached: process.platform !== "win32",
   });
+  const child = owned.child;
 
   const protocolNoise: Buffer[] = [];
   const stderr: Buffer[] = [];
   let protocolBuffer = "";
   let finalEnvelope: WorkerEnvelope | null = null;
-  let timedOut = false;
-  let requestChain = Promise.resolve();
+  let stopped: "timeout" | "cancelled" | "transport" | null = null;
+  let transportError: string | null = null;
+  let cleanupError: string | null = null;
+  const requests = new Set<Promise<void>>();
+  const stop = (reason: typeof stopped): void => {
+    stopped ??= reason;
+    void broker.close().catch((error) => { cleanupError = errorMessage(error); });
+    void owned.stop();
+  };
 
-  child.stdout.on("data", (chunk: Buffer) => {
+  child.stdout!.on("data", (chunk: Buffer) => {
     protocolBuffer += chunk.toString("utf8");
     for (;;) {
       const newline = protocolBuffer.indexOf("\n");
@@ -68,10 +77,17 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
         continue;
       }
       if (isCapabilityRequest(value)) {
-        requestChain = requestChain.then(async () => {
+        // Requests are correlated by id. A long wait/run must not block a stop
+        // for the same process; synchronous mutations still run in arrival order.
+        const task = (async () => {
           const response = await broker.handle(value);
-          if (child.stdin.writable) child.stdin.write(`${JSON.stringify(response)}\n`);
+          if (child.stdin?.writable && !child.stdin.destroyed) child.stdin.write(`${JSON.stringify(response)}\n`);
+        })().catch((error) => {
+          transportError = errorMessage(error);
+          stop("transport");
         });
+        requests.add(task);
+        void task.then(() => requests.delete(task));
       } else if (isWorkerEnvelope(value)) {
         finalEnvelope = value;
       } else {
@@ -79,50 +95,62 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
       }
     }
   });
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-  child.stdin.write(`${JSON.stringify({
-    input: options.input ?? null,
-    facts: options.facts ?? {},
-    policy: options.policy,
-  } satisfies WorkerPayload)}\n`);
+  child.stderr!.on("data", (chunk: Buffer) => stderr.push(chunk));
+  try {
+    child.stdin!.write(`${JSON.stringify({
+      input: options.input ?? null,
+      facts: options.facts ?? {},
+      policy: options.policy,
+    } satisfies WorkerPayload)}\n`);
+  } catch (error) {
+    transportError = errorMessage(error);
+    stop("transport");
+  }
 
   const timer = options.timeoutMs === undefined
     ? null
     : setTimeout(() => {
-        timedOut = true;
-        terminateTree(child.pid);
+        stop("timeout");
       }, options.timeoutMs);
-  const exit = await new Promise<{ code: number | null; signal: string | null; error: Error | null }>((resolveExit) => {
-    child.once("error", (error) => resolveExit({ code: null, signal: null, error }));
-    child.once("close", (code, signal) => resolveExit({ code, signal, error: null }));
-  });
+  const cancelled = () => stop("cancelled");
+  options.signal?.addEventListener("abort", cancelled, { once: true });
+  if (options.signal?.aborted) cancelled();
+  const exit = await owned.exited;
   if (timer !== null) clearTimeout(timer);
+  options.signal?.removeEventListener("abort", cancelled);
+  try { await broker.close(); } catch (error) { cleanupError = errorMessage(error); }
+  await Promise.all(requests);
   const completedEnvelope = finalEnvelope as WorkerEnvelope | null;
   const out = Buffer.concat(protocolNoise).toString("utf8");
   const err = Buffer.concat(stderr).toString("utf8");
-  const events = completedEnvelope?.events ?? [];
+  const events = broker.getEvents();
   const expectations = completedEnvelope?.expectations ?? [];
-  if (timedOut) {
+  if (stopped === "timeout") {
     return {
       status: "timeout",
       exitCode: null,
       result: null,
       stdout: out,
       stderr: err,
-      failure: `workflow exceeded timeout ${options.timeoutMs}ms`,
+      failure: [`workflow exceeded timeout ${options.timeoutMs}ms`, cleanupError, exit.error?.message]
+        .filter((message) => message != null).join("; "),
       events,
       plan: broker.getPlan(),
       expectations,
     };
   }
-  if (exit.error !== null) {
+  if (stopped === "cancelled" || transportError !== null || cleanupError !== null || exit.error !== null) {
     return {
       status: "failed",
       exitCode: null,
       result: null,
       stdout: out,
       stderr: err,
-      failure: exit.error.message,
+      failure: stopped === "cancelled"
+        ? ["workflow cancelled", cleanupError, transportError, exit.error?.message]
+          .filter((message) => message != null).join("; ")
+        : [cleanupError, transportError, exit.error?.message]
+          .filter((message) => message != null).join("; "),
       events,
       plan: broker.getPlan(),
       expectations,
@@ -175,20 +203,8 @@ function rejected(reason: string): WorkflowRunResult {
   };
 }
 
-function terminateTree(pid: number | undefined): void {
-  if (pid === undefined) return;
-  try {
-    if (process.platform === "win32") {
-      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-    } else {
-      process.kill(-pid, "SIGTERM");
-    }
-  } catch {
-    // The process may have exited between timeout and cleanup.
-  }
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function readJsonInput(path: string): unknown {

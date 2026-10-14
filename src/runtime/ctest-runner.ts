@@ -1,5 +1,5 @@
-import { spawn, execFileSync } from "node:child_process";
 import { Buffer } from "node:buffer";
+import { spawnOwnedProcess } from "../../shared/owned-process.js";
 import type {
   CTestFailure,
   CTestSuiteResult,
@@ -15,6 +15,7 @@ export interface CTestRunOptions {
   onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
   /** Optional fail-closed assertion for declared top-level tests. */
   requiredTopLevelTests?: readonly string[];
+  signal?: AbortSignal;
 }
 
 export interface ParsedCTestOutput {
@@ -28,6 +29,7 @@ export interface ParsedCTestOutput {
 export async function runCTest(
   options: CTestRunOptions,
 ): Promise<CTestSuiteResult> {
+  if (options.signal?.aborted) return resultError("ctest cancelled", "environment");
   const ctest = options.host.tools.ctest;
   if (!ctest?.available || ctest.path === null) {
     return resultError("ctest is not available in HostPreflight", "environment");
@@ -44,37 +46,39 @@ export async function runCTest(
   if (options.spec.parallelism !== null) args.push("-j", String(options.spec.parallelism));
 
   const started = Date.now();
-  const child = spawn(ctest.path, args, {
+  const owned = spawnOwnedProcess({
+    program: ctest.path,
+    args,
     cwd: options.repoDir,
     env: { ...process.env, ...options.spec.environment },
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-    detached: process.platform !== "win32",
+    stdin: "ignore",
   });
+  const child = owned.child;
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => {
+  child.stdout!.on("data", (chunk: Buffer) => {
     stdout.push(chunk);
     options.onOutput?.("stdout", chunk.toString("utf8"));
   });
-  child.stderr.on("data", (chunk: Buffer) => {
+  child.stderr!.on("data", (chunk: Buffer) => {
     stderr.push(chunk);
     options.onOutput?.("stderr", chunk.toString("utf8"));
   });
 
-  let timedOut = false;
+  let stopped: "timeout" | "cancelled" | null = null;
   const timer = options.spec.timeout_ms === null
     ? null
     : setTimeout(() => {
-        timedOut = true;
-        terminateTree(child.pid);
+        stopped ??= "timeout";
+        void owned.stop();
       }, options.spec.timeout_ms);
 
-  const exit = await new Promise<{ code: number | null; error: Error | null }>((resolve) => {
-    child.once("error", (error) => resolve({ code: null, error }));
-    child.once("close", (code) => resolve({ code, error: null }));
-  });
+  const cancelled = () => { stopped ??= "cancelled"; void owned.stop(); };
+  options.signal?.addEventListener("abort", cancelled, { once: true });
+  if (options.signal?.aborted) cancelled();
+  const exit = await owned.exited;
   if (timer !== null) clearTimeout(timer);
+  options.signal?.removeEventListener("abort", cancelled);
 
   const out = Buffer.concat(stdout).toString("utf8");
   const err = Buffer.concat(stderr).toString("utf8");
@@ -90,37 +94,40 @@ export async function runCTest(
     stdout_b64: Buffer.from(out).toString("base64"),
     stderr_b64: Buffer.from(err).toString("base64"),
   };
-  const missingRequired = (options.requiredTopLevelTests ?? [])
-    .filter((name) => !parsed.topLevelTests.includes(name));
-  if (missingRequired.length > 0) {
-    return {
-      ...common,
-      status: "error",
-      exit_code: exit.error === null ? exit.code : null,
-      failure: {
-        category: "environment",
-        explanation: `required CTest test(s) were not observed: ${missingRequired.join(", ")}`,
-      },
-    };
-  }
-
-  if (timedOut) {
+  if (stopped === "timeout") {
     return {
       ...common,
       status: "timeout",
       exit_code: null,
       failure: {
         category: "environment",
-        explanation: `ctest exceeded timeout ${options.spec.timeout_ms}ms; process tree was terminated`,
+        explanation: `ctest exceeded timeout ${options.spec.timeout_ms}ms${exit.error === null ? "; process tree was terminated" : `; ${exit.error.message}`}`,
       },
     };
   }
-  if (exit.error !== null) {
+  if (stopped === "cancelled" || exit.error !== null) {
     return {
       ...common,
       status: "error",
       exit_code: null,
-      failure: { category: "environment", explanation: exit.error.message },
+      failure: {
+        category: "environment",
+        explanation: [stopped === "cancelled" ? "ctest cancelled" : null, exit.error?.message]
+          .filter((message) => message != null).join("; "),
+      },
+    };
+  }
+  const missingRequired = (options.requiredTopLevelTests ?? [])
+    .filter((name) => !parsed.topLevelTests.includes(name));
+  if (missingRequired.length > 0) {
+    return {
+      ...common,
+      status: "error",
+      exit_code: exit.code,
+      failure: {
+        category: "environment",
+        explanation: `required CTest test(s) were not observed: ${missingRequired.join(", ")}`,
+      },
     };
   }
 
@@ -152,7 +159,6 @@ export function parseCTestOutput(output: string): ParsedCTestOutput {
     topLevelTests: topLevel.map((test) => test.name),
   };
 }
-
 function parseTopLevelTests(output: string): Array<{ name: string; status: string }> {
   const tests: Array<{ name: string; status: string }> = [];
   const pattern = /^\s*\d+\/\d+\s+Test\s+#\d+:\s+(.+?)\s+\.*\s*\*{0,3}\s*([A-Za-z ]+?)\s+\d+(?:\.\d+)?\s*sec\s*$/gm;
@@ -236,20 +242,4 @@ function resultError(explanation: string, category: "environment" | "unknown"): 
     stderr_b64: Buffer.from(explanation).toString("base64"),
     failure: { category, explanation },
   };
-}
-
-function terminateTree(pid: number | undefined): void {
-  if (pid === undefined) return;
-  try {
-    if (process.platform === "win32") {
-      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-    } else {
-      process.kill(-pid, "SIGTERM");
-    }
-  } catch {
-    // The process may have exited between timeout and cleanup.
-  }
 }
