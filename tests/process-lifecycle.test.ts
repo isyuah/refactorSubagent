@@ -304,11 +304,11 @@ describe("owned process lifecycle", () => {
         repoDir: f.root, host, requiredTopLevelTests: ["stubborn"],
         spec: {
           kind: "ctest-suite-spec", version: 1, build_dir: ".", configuration: "Debug",
-          extra_args: [], environment: {}, parallelism: null, timeout_ms: windows ? 30_000 : 1000,
+          extra_args: [], environment: {}, parallelism: null, timeout_ms: windows ? 30_000 : 5000,
         },
-      }), f.cleanup);
+      }), f.cleanup, windows ? 60_000 : 8000);
       expect(result.status).toBe("timeout");
-      expect(f.pids()).toHaveLength(1);
+      expect(f.pids(), Buffer.from(result.stdout_b64, "base64").toString("utf8")).toHaveLength(1);
       expect(f.pids().some(alive)).toBeFalse();
     } finally { await f.dispose(); }
   }, caseTimeout);

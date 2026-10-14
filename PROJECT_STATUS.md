@@ -498,6 +498,10 @@ Windows 离线运行之后补上了 POSIX 嵌套 CLI 的关闭宽限；Windows J
 探测改为读取 `cmake -E capabilities` 的 JSON 生成器列表，并校验返回结构与精确的 `Ninja` 名称。
 新增回归以独立进程的启动环境设置默认生成器，修复前失败、修复后通过；本机平台测试 6 pass / 0 fail，严格类型检查通过。
 
+同一修复提交的 Ubuntu PR 任务通过，但 push 任务的 CTest 回收回归在 1s 期限结束时尚未写出工具 PID。
+该回归的 Linux 测试期限调整为 5s，结果等待上限为 8s，保留超时优先级、实际工具启动和进程回收断言，并在 PID 断言失败时打印 CTest 输出。
+WSL Ubuntu 24.04 的该项回归已通过（约 5.2s），严格类型检查通过；此调整仅涉及测试的时间预算。
+
 修复提交后的完整远程结果由 [PR #3 Checks](https://github.com/isyuah/refactorSubagent/pull/3/checks) 记录。
 
 ## 9. 已知限制与风险
