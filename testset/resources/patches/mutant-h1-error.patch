@@ -1,0 +1,24 @@
+diff --git a/src/win/error.c b/src/win/error.c
+index 7abf906..efe1af0 100644
+--- a/src/win/error.c
++++ b/src/win/error.c
+@@ -174,10 +174,13 @@ int uv_translate_sys_error(int sys_errno) {
+ }
+ 
+ int uv_translate_write_sys_error(int sys_errno) {
+-  switch (sys_errno) {
+-    case ERROR_BROKEN_PIPE:                 return UV_EPIPE;
+-    case ERROR_NO_DATA:                     return UV_EPIPE;
+-    default:
+-      return uv_translate_sys_error(sys_errno);
+-  }
++  int uv_errno = uv_translate_sys_error(sys_errno);
++
++  /* On the write path only the peer going away matters. The generic table
++   * already classifies every pipe code, so all that is left is promoting the
++   * read-side EOF it produces for a closed pipe. */
++  if (uv_errno == UV_EOF)
++    return UV_EPIPE;
++
++  return uv_errno;
+ }

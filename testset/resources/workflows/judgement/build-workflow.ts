@@ -20,6 +20,12 @@ export const workflowKind = "workflow-driven";
  * a missing artifact as a build failure and never reaches a verdict.
  */
 export default async (ctx) => {
+  const host = ctx.facts.host;
+  if (!host) throw new Error("host facts are required for the libuv build");
+  if (host.platform !== "win32" && host.platform !== "linux") {
+    throw new Error("no libuv build recipe for platform " + host.platform);
+  }
+  const runner = "build/uv_run_tests_a" + host.executable_suffix;
   const required = ["cmake", "ninja", "gcc"];
   const unavailable = [];
   for (const tool of required) {
@@ -35,10 +41,12 @@ export default async (ctx) => {
       "-S", ".",
       "-B", "build",
       "-G", "Ninja",
+      "-DCMAKE_C_COMPILER=gcc",
       "-DCMAKE_BUILD_TYPE=Debug",
       "-DBUILD_TESTING=ON",
-      "-DCMAKE_C_FLAGS=-Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers",
-    ],
+    ].concat(host.platform === "win32"
+      ? ["-DCMAKE_C_FLAGS=-Wno-error=incompatible-pointer-types -Wno-error=discarded-qualifiers"]
+      : []),
     cwd: ".",
     timeoutMs: 300000,
   });
@@ -67,13 +75,13 @@ export default async (ctx) => {
   // Observed hazard: the linked runner disappeared once within a minute of a
   // successful build (external tooling). Re-running the target is idempotent
   // and costs about a second when everything is up to date.
-  if (!(await ctx.fs.exists("build/uv_run_tests_a.exe"))) {
+  if (!(await ctx.fs.exists(runner))) {
     const rebuilt = await compile();
     if (rebuilt.status !== "exited" || rebuilt.exitCode !== 0) {
       throw new Error("cmake rebuild failed: " + (rebuilt.stderr || rebuilt.stdout || "").trim().slice(-1000));
     }
   }
 
-  await ctx.validator.assertFile("build/uv_run_tests_a.exe", "libuv static test runner");
+  await ctx.validator.assertFile(runner, "libuv static test runner");
   await ctx.validator.assertFile("build/libuv.a", "libuv static library");
 };

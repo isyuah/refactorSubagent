@@ -1,0 +1,58 @@
+{
+  "id": "refactor-h6-loop",
+  "title": "AI 重构 win/core.c 事件循环：pending 请求环形队列与 backend timeout",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "h6",
+    "l4",
+    "hard-tier"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "platforms": ["win32"],
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h6-loop.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-hard"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，0 条失配） — 原预测：Windows 侧 uv_run 正文；oracle 覆盖 loop_alive/backend_timeout/run 模式与请求回收语义。 未实测。",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1-hard",
+      "dest": "refactor-task/oracle-hard"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 3000000,
+    "sessions.refactor.maxTurns": 80
+  },
+  "timeoutMs": 3600000
+}

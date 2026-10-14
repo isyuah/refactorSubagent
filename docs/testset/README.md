@@ -54,7 +54,7 @@ refactorSubagent/
 
 ```bash
 cd E:/Proj/refactorSubagent
-bun testset/run.ts --list                                  # 26 个用例，按 subject 分组
+bun testset/run.ts --list                                  # 44 个用例，按 subject 分组
 bun testset/run.ts --self-test                             # 执行器自检（合成用例，不碰项目）
 bun testset/run.ts --subject judgement --concurrency 2     # 判据本体：离线、不调模型
 bun testset/run.ts --only refactor-t1-strtok --rubric-cmd "claude -p"

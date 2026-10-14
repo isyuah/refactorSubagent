@@ -1,8 +1,8 @@
 # Behavior-Preserving Refactoring Agent：项目现状与后续路线
 
-> 文档日期：2026-09-10（§1–§11 为当前状态；§12 起为历史验证记录，见文末附录）
+> 文档日期：2026-10-14（§1–§11 为当前状态；带日期的验证记录对应各自里程碑，历史架构见文末附录）
 >
-> 当前定位：面向 C 代码的行为保持型重构原型。闭环已在 Windows + MinGW + Claude Agent SDK 环境完成真实端到端验证（含首个 `ACCEPTED`），尚未达到可直接适配任意 C 工程的生产级完成度。
+> 当前定位：面向 C 代码的行为保持型重构原型。闭环已在 Windows + MinGW + Claude Agent SDK 环境完成真实端到端验证（含首个 `ACCEPTED`）；已补齐 Windows/Linux 工程检查与 CI 配置，并统一进程超时、取消和回收。验证记录见 §8.5–§8.6，平台级宿主隔离仍待实现。
 
 ## 1. 项目目标
 
@@ -59,6 +59,7 @@ deny 规则挡住（实测有效），其余破坏性命令靠"环境可弃 + �
 ### 2.1 项目运行时
 
 - TypeScript / Bun
+- TypeScript 5.7.3：宿主、脚本、工程测试和测试集执行器的严格类型检查
 - Zod：Artifact 与配置的运行时 Schema 校验
 - `@anthropic-ai/claude-agent-sdk` 0.3.259：驱动 Claude Code
 - pino：运行日志
@@ -81,6 +82,9 @@ deny 规则挡住（实测有效），其余破坏性命令靠"环境可弃 + �
 - Git 2.53
 - Claude Code CLI
 
+新增 Linux 验证环境：WSL Ubuntu 24.04、Bun 1.3.14、GCC 13.3.0、CMake 3.28.3、Ninja 1.11.1。
+CI 矩阵为 Ubuntu 24.04 / Windows Server 2022，固定 Bun 1.3.14；已触发远程任务，首轮结果与探测修复见 §8.6。
+
 项目已经处理 Windows 下的几个实际边界：
 
 - native Claude 可执行文件与 `claude.cmd` 的启动入口差异；
@@ -89,7 +93,7 @@ deny 规则挡住（实测有效），其余破坏性命令靠"环境可弃 + �
 - `mkdir -p` 不是 `cmd.exe` 语法；
 - Windows 进程 argv 不能包含 NUL 字节；
 - `where.exe` 和部分工具版本命令启动缓慢，HostPreflight 不能串行依赖它们；
-- 进程树终止使用 `taskkill /T /F`。
+- 进程树由 Windows Job Object 管理，覆盖根进程先退出、子孙仍占用管道的情况。
 
 ## 3. 代码结构
 
@@ -172,6 +176,7 @@ src/
 
 scripts/
 ├─ cli.ts                        统一 CLI（preflight / workflow / config / limits）
+├─ check-offline.ts              按平台筛选后的严格离线检查入口
 ├─ demo.ts                       状态机基础演示
 ├─ demo-libuv.ts                 libuv CMake 基准
 ├─ e2e-cmake.ts                  CMake 冒烟
@@ -179,7 +184,12 @@ scripts/
 ├─ resume-verification.ts        从持久化产物续跑验证段
 └─ e2e-dashboard.ts              启动观测 WebUI
 
-tests/                           22 个测试文件（详见 §8）
+shared/
+├─ owned-process.ts              进程组 / Job 的所有权、回收与宿主退出处理
+└─ windows-process-host.ts        进入 Job 后启动目标、经 IPC 回报实际退出结果
+
+testset/                         用例材料、平台探测、CLI 执行与判定
+tests/                           32 个测试文件（验证证据见 §8.5–§8.6）
 examples/trim-app/               C 基线项目 + safe/broken 变体
 ```
 
@@ -373,9 +383,23 @@ Windows 下 Driver 优先使用 `CLAUDE_CODE_EXECUTABLE`，否则查找 `%APPDAT
 `~/.refactor/pipeline.json` < `<repo>/.refactor/pipeline.json` < `--pipeline-file` < `--stage`，
 合并顺序与阈值完全一致；`limits` 是引擎的第一个域，`pipeline` 是第二个。
 
+### 7.1 进程生命周期（2026-10-14）
+
+Workflow worker、capability 工具、CTest 和测试集命令共用 `spawnOwnedProcess`：
+Windows helper 先加入 kill-on-close Job，再启动真实目标；POSIX 使用独立进程组，TERM 后等待 200ms，再按需 KILL。
+负责关闭内层进程组的 CLI 有独立的 4s 宽限，防止外层与内层相同的 200ms 预算产生回收竞态。
+回收后的进程退出等待上限为 2s，管道排空等待上限为 1s；清理失败进入结果诊断。
+
+broker 的 `close()` 幂等、并行回收所属工具，并取消 file/TCP readiness。
+capability 请求按 id 并发处理，等待进程不会阻塞同一进程的 stop；正常返回、异常、超时和取消均关闭 broker。
+没有最终 worker envelope 时，宿主已收到的 capability 事件仍保留。
+
+`runWorkflow`、`runCTest`、测试集 `exec` 接受 `AbortSignal`；CLI、测试集和离线入口处理 SIGINT/SIGTERM，
+宿主显式退出时也回收仍登记的进程。已提前取消的调用不会启动工具；CTest 超时优先于必需测试缺失的判定。
+
 ## 8. 已执行验证
 
-本节只记录**当前架构**下的证据；历史架构的验证记录见文末附录。
+本节记录**当前架构**下各里程碑的证据；2026-10-14 的结果见 §8.5–§8.6，§8.1–§8.4 不视作本轮验证。历史架构见文末附录。
 
 ### 8.1 工程检查（2026-09-10）
 
@@ -445,6 +469,41 @@ injected_stages=["workflows","refactor"] verification_authoritative=true
 的 REJECTED 用例即回归证据（修复前该用例为 ACCEPTED）。同时给自驱动路径的
 `WorkflowVerificationOutcome` 补上 `expectationComparison`，判定结果不再只存在于 artifact 里。
 
+### 8.5 工程检查、CI 与进程回收（2026-10-14）
+
+第一批已提交为 `b7078ef`：恢复严格类型检查，提供 `check` / `test:offline`，
+保存重判所需的注入替换证据，并新增 Windows/Linux CI 与证据上传。
+第二批统一进程生命周期，新增 12 项真实进程回归，覆盖宿主退出、成功/异常回收、超时、取消 readiness、嵌套 CLI 取消、
+并发 wait/stop、父进程退出后子孙占用管道，以及 stdin/环境/实际退出码的传递。
+
+| 环境 | `bun run check` | 严格离线检查 |
+|---|---|---|
+| Windows 11 | 类型检查、180 pass / 0 fail、执行器自检通过 | 23 pass / 0 fail |
+| WSL Ubuntu 24.04 | 类型检查、180 pass / 0 fail、执行器自检通过 | 19 pass / 0 fail，4 个平台跳过 |
+
+工程证据：`runs/check-20261014-final2-win.txt`、`runs/check-20261014-final2-linux.txt`；Linux 验证前已逐文件确认关键运行源码与 Windows 一致。
+Windows 离线证据：`runs/w3/summary.json`、`runs/offline-20261014-final-win.txt`。H4 存在一条非阻断的冻结归因标签差异，功能判定仍为 REJECTED。
+Linux 离线证据：`runs/offline-20261014-final-linux.txt`、`runs/offline-20261014-final-linux-summary.json`；完整环境保存在 WSL 缓存的 `runs/l3/`。H4/H7 有两条非阻断归因差异，功能判定均为 REJECTED，未修改冻结期望或判据。
+Windows 离线运行之后补上了 POSIX 嵌套 CLI 的关闭宽限；Windows Job 路径未改变，两端最新工程检查及嵌套取消回归均已通过。
+原始嵌套超时复现修复前留下存活工具，修复后 `toolStillAlive=false`；证据为 `runs/nested-timeout-fixed-20261014-linux.txt`。
+本轮本地检查未调用收费模型；以上为本地证据，远程结果与后续探测修复见 §8.6。
+
+### 8.6 GitHub 首轮 CI 与默认 Ninja 探测修复（2026-10-14）
+
+[PR #3](https://github.com/isyuah/refactorSubagent/pull/3) 已建立。[首轮 PR CI](https://github.com/isyuah/refactorSubagent/actions/runs/38525276824)
+的 Ubuntu 24.04 工程检查和严格离线套件均通过；Windows Server 2022 工程检查通过，严格离线检查在配方探测阶段失败：
+`cmake does not offer the Ninja generator`。
+
+本机以 `CMAKE_GENERATOR=Ninja` 重现：CMake 的 `--help` 会将默认生成器写为 `* Ninja`，原正则只识别两个空格开头的 `Ninja`。
+探测改为读取 `cmake -E capabilities` 的 JSON 生成器列表，并校验返回结构与精确的 `Ninja` 名称。
+新增回归以独立进程的启动环境设置默认生成器，修复前失败、修复后通过；本机平台测试 6 pass / 0 fail，严格类型检查通过。
+
+同一修复提交的 Ubuntu PR 任务通过，但 push 任务的 CTest 回收回归在 1s 期限结束时尚未写出工具 PID。
+该回归的 Linux 测试期限调整为 5s，结果等待上限为 8s，保留超时优先级、实际工具启动和进程回收断言，并在 PID 断言失败时打印 CTest 输出。
+WSL Ubuntu 24.04 的该项回归已通过（约 5.2s），严格类型检查通过；此调整仅涉及测试的时间预算。
+
+修复提交后的完整远程结果由 [PR #3 Checks](https://github.com/isyuah/refactorSubagent/pull/3/checks) 记录。
+
 ## 9. 已知限制与风险
 
 ### 9.1 权限边界依赖宿主目录，不是 OS 沙箱
@@ -456,6 +515,8 @@ injected_stages=["workflows","refactor"] verification_authoritative=true
 一次性环境，以及**宿主不信任会话状态**（重新测量 diff、重跑权威 workflow、
 期望差分由程序裁决）。生产环境必须叠加平台级隔离：Linux 上的 SDK sandbox /
 容器、只读挂载、网络禁用、资源配额。这一项在本轮改动后从"建议"升级为**前置条件**。
+
+进程组和 Job Object 负责生命周期，尚未提供文件、网络或权限隔离。POSIX 宿主被强制终止时也不能依赖 JavaScript 退出回调完成回收。
 
 ### 9.2 行为观测范围仍不完整
 
@@ -475,7 +536,8 @@ Session state 支持 reopen；AI 会话本身、构建缓存与临时目录的�
 
 ### 9.6 尚未适配任意 C 工程
 
-稳定路径是 CMake 与显式源文件项目；Make / MSVC solution / 自定义构建脚本主要依赖探测结果阻断。完整 libuv 官方套件在当前 Windows 主机上受网络与文件监听环境影响保持非绿色。
+稳定路径是 CMake 与显式源文件项目；Make / MSVC solution / 自定义构建脚本主要依赖探测结果阻断。
+历史 Windows 完整 libuv 官方套件运行存在网络与文件监听环境失败；本轮离线目标用例的通过不能替代完整官方套件验证。
 
 ## 10. 后续路线
 
@@ -487,7 +549,7 @@ Session state 支持 reopen；AI 会话本身、构建缓存与临时目录的�
 4. **程序化测试输入生成**：边界整数、空/超长字符串、控制字符、非 UTF-8 字节、缺失文件与环境变量；Agent 负责领域输入，程序负责边界补齐与去重。
 5. **恢复与审批**：模型轮次/构建过程的无损恢复；workflow 危险能力的审批通道（见 [`docs/roadmap-approval-mode.md`](docs/roadmap-approval-mode.md)，已记录未实现）。
 6. **再考虑多语言**：需先稳定 `LanguageAdapter` / `BuildAdapter` / `ObservationAdapter` / `Comparator` / `DependencyController` 抽象。第一批可考虑 C++。
-7. **按阶段的能力评估**：阶段槽已经可替换（§6.1），下一步是在此之上加"裁判"环节（对 workflow 编写能力打分并给理由）与固定测试集（离线判据自测），用于长期比较模型与配置。注意：`verify` 槽可注入，但注入的运行一律记为**非权威**。
+7. **持续校准能力评估**：已有固定测试集、按平台探测与筛选、CLI 执行、冻结/重判和裁判接口（见 `docs/testset/`），继续积累模型与配置的可比较证据。`verify` 槽可注入，但注入的运行一律记为**非权威**。
 
 已放弃的方向（不再推进）：
 

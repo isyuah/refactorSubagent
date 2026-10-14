@@ -1,0 +1,58 @@
+{
+  "id": "refactor-h2-fdhash",
+  "title": "AI 重构 win/fs-fd-hash-inl.h：fd→filemap 哈希（碰撞链/组回填/组释放时机）",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "h2",
+    "l3",
+    "hard-tier"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "platforms": ["win32"],
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "win-mingw-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h2-fdhash.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-hard"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，0 条失配） — 原预测：被 test/test-fs-fd-hash.c 直接 include 的内部头；oracle 166 条检查覆盖组回填与组释放边界。 未实测。",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1-hard",
+      "dest": "refactor-task/oracle-hard"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 3000000,
+    "sessions.refactor.maxTurns": 80
+  },
+  "timeoutMs": 3600000
+}

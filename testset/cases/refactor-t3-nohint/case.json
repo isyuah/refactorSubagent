@@ -1,0 +1,57 @@
+{
+  "id": "refactor-t3-nohint",
+  "title": "AI 重构 inet.c：简报不给\"必须保持\"清单（难度基线对照）",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "t3",
+    "nohint",
+    "difficulty-probe"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "libuv-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t3-inet-nohint.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，0 条失配） — 原预测：难度对照题：目标、判据、oracle 与 refactor-t3-inet 完全一致，唯一变量是任务简报里删掉了\"必须保持\"清单。t3 是上一批里改动面最大的目标（298 行、4 个 static 函数），若这档仍全过，说明加难必须靠代码复杂度而不是题面信息量。",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 2400000,
+    "sessions.refactor.maxTurns": 60
+  },
+  "timeoutMs": 3600000
+}

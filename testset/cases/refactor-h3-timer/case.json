@@ -1,0 +1,57 @@
+{
+  "id": "refactor-h3-timer",
+  "title": "AI 重构 timer.c：堆/队列双路径与到期快照语义",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "h3",
+    "l2",
+    "hard-tier"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "libuv-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h3-timer.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-hard"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，0 条失配） — 原预测：uv_timer_* 公开 API；oracle 断言触发顺序/返回值/相对关系，不依赖墙钟。 未实测。",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1-hard",
+      "dest": "refactor-task/oracle-hard"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 3000000,
+    "sessions.refactor.maxTurns": 80
+  },
+  "timeoutMs": 3600000
+}

@@ -1,0 +1,5 @@
+行为保持型重构：只改 src/inet.c 的 4 个 static 内部函数（inet_ntop4 / inet_ntop6 / inet_pton4 / inet_pton6），公开入口 uv_inet_ntop / uv_inet_pton 的签名与链接属性不动。目标是在不改变任何可观测行为的前提下改善可维护性：抽公共辅助、提炼重复的填充循环、把状态机拉平、合并重复的收尾语句、删除冗余变量。
+
+不允许：改 include/**、test/**、refactor-task/**；改 src/strscpy.c 或 src/uv-common.c；改公开符号的名字/签名/链接属性；改动任何返回值（错误码）及其触发条件。
+
+判据不会告诉你哪些行为要注意：上游测试套件与宿主判据都会在 baseline / candidate 两侧逐位置比较声明，渲染结果、缓冲区长度规则与"失败时缓冲区是否被写入"、可接受/拒绝的输入集合、family 与 zone 后缀的处理都在观测范围内。请自己实测确认（探测性构建请放在 worktree 之外），不要凭直觉假设"这里看起来是等价的"。

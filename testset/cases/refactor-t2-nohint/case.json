@@ -1,0 +1,57 @@
+{
+  "id": "refactor-t2-nohint",
+  "title": "AI 重构 strscpy：简报不给\"必须保持\"清单（难度基线对照）",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "t2",
+    "nohint",
+    "difficulty-probe"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "libuv-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/t2-strscpy-nohint.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，0 条失配） — 原预测：难度对照题：目标、判据、oracle 与 refactor-t2-strscpy 完全一致，唯一变量是任务简报里删掉了\"必须保持\"清单。用来区分\"难度低是因为代码简单\"还是\"因为出题方把不变量清单送给了模型\"。",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 2400000,
+    "sessions.refactor.maxTurns": 60
+  },
+  "timeoutMs": 3600000
+}

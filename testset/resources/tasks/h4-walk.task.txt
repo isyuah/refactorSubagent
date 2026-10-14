@@ -1,0 +1,7 @@
+行为保持型重构：只改 src/uv-common.c 里的句柄表 / 队列这一段（约 550–620 行的 uv_walk 与 uv__print_handles 及其两个公开包装 uv_print_all_handles / uv_print_active_handles，约 878 行的 uv_loop_close，以及同文件里的 uv_ref / uv_unref / uv_has_ref）。目标是在不改变任何可观测行为的前提下改善可维护性。
+
+允许的重构方向（示例，仅为示例）：把那几处"该不该把这个句柄交给回调 / 该不该因此拒绝关闭"的判断提炼成有名字的小 helper；合并或重排条件判断、降低嵌套层级（前提是你能证明等价）；精简重复的遍历样板、删掉只被用一次的中间变量；整理诊断输出的格式化语句（输出内容本身不动）。
+
+不允许：改 include/**、test/**、refactor-task/**；改 src/uv-common.c 以外的源文件；改公开符号的名字、签名与链接属性（uv_walk / uv_loop_close / uv_print_all_handles / uv_print_active_handles / uv_ref / uv_unref / uv_has_ref 都必须保持原样）；改动任何返回值（含错误码）及其触发条件；改动任何可观测行为。
+
+上游测试套件与宿主判据都在两侧（baseline / candidate）观测真实行为，请自行实测确认（探测性构建请放在 worktree 之外），不要凭直觉假设"这里看起来是等价的"。

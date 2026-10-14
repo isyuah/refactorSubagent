@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
-import {
-  execFileSync,
-  spawn,
-  type ChildProcess,
-} from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+import { spawnOwnedProcess, type OwnedProcess, type ProcessExit } from "../../shared/owned-process.js";
 import {
   existsSync,
   lstatSync,
@@ -55,12 +52,6 @@ const SYSTEM_ENV_KEYS = new Set([
   "LC_ALL",
 ]);
 
-type ProcessExit = {
-  readonly code: number | null;
-  readonly signal: string | null;
-  readonly error: Error | null;
-};
-
 export interface CapabilityHost {
   readonly workspaceRoot: string;
   readonly host?: HostPreflight;
@@ -74,7 +65,7 @@ export interface CapabilityBroker {
 }
 
 interface RunningProcess {
-  readonly child: ChildProcess;
+  readonly owned: OwnedProcess;
   readonly startedAt: number;
   readonly spec: ProcessStartSpec;
   readonly stdout: Buffer[];
@@ -99,6 +90,9 @@ export class LocalCapabilityBroker implements CapabilityBroker {
   private readonly running = new Map<string, RunningProcess>();
   private nextProcessId = 1;
   private closed = false;
+  private closePromise: Promise<void> | null = null;
+  private readonly lifetime = new AbortController();
+  private readonly events: WorkflowEvent[] = [];
 
   constructor(options: CapabilityHost) {
     const requestedRoot = resolve(options.workspaceRoot);
@@ -138,6 +132,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       durationMs: Date.now() - started,
       error,
     };
+    this.events.push(event);
     return {
       type: "capability-response",
       id: request.id,
@@ -147,10 +142,22 @@ export class LocalCapabilityBroker implements CapabilityBroker {
     };
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise !== null) return this.closePromise;
     this.closed = true;
-    for (const id of [...this.running.keys()]) await this.stopProcess({ id });
+    this.lifetime.abort(new Error("capability broker is closed"));
+    const owned = [...this.running.values()].map((running) => running.owned);
+    this.closePromise = Promise.all([...this.running.keys()].map((id) => this.stopProcess({ id })))
+      .then(async () => {
+        const errors = (await Promise.all(owned.map((process) => process.exited)))
+          .flatMap((exit) => exit.error === null ? [] : [exit.error.message]);
+        if (errors.length > 0) throw new Error(`process cleanup failed: ${errors.join("; ")}`);
+      });
+    return this.closePromise;
+  }
+
+  getEvents(): WorkflowEvent[] {
+    return [...this.events];
   }
 
   private async dispatch(request: CapabilityRequest): Promise<unknown> {
@@ -431,28 +438,27 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       throw new Error(`process cwd is not a directory: ${normalized.cwd ?? "."}`);
     }
     const env = this.buildEnv(normalized.env);
-    let child: ChildProcess;
+    let owned: OwnedProcess;
     try {
-      child = spawn(program, normalized.args, {
+      owned = spawnOwnedProcess({
+        program,
+        args: normalized.args ?? [],
         cwd,
         env,
-        shell: false,
-        windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: process.platform !== "win32",
       });
     } catch (cause) {
       throw new Error(`failed to spawn '${normalized.program}': ${errorMessage(cause)}`);
     }
 
     const id = `p${String(this.nextProcessId++)}`;
+    const child = owned.child;
     const running: RunningProcess = {
-      child,
+      owned,
       startedAt: Date.now(),
       spec: normalized,
       stdout: [],
       stderr: [],
-      exit: createExitPromise(child),
+      exit: owned.exited,
       timeoutTimer: null,
       resultPromise: null,
       outputBytes: 0,
@@ -466,9 +472,13 @@ export class LocalCapabilityBroker implements CapabilityBroker {
     if (normalized.timeoutMs !== undefined) {
       running.timeoutTimer = setTimeout(() => {
         running.timedOut = true;
-        terminateTree(child.pid);
+        void owned.stop();
       }, normalized.timeoutMs);
     }
+    void running.exit.then(() => {
+      if (running.timeoutTimer !== null) clearTimeout(running.timeoutTimer);
+      running.timeoutTimer = null;
+    });
 
     if (normalized.stdinBase64 !== undefined) {
       child.stdin?.end(Buffer.from(normalized.stdinBase64, "base64"));
@@ -476,7 +486,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       child.stdin?.end();
     }
     try {
-      await waitReady(normalized.ready, this.workspaceRoot, this.policy, child);
+      await waitReady(normalized.ready, this.workspaceRoot, this.policy, owned, this.lifetime.signal);
     } catch (cause) {
       await this.stopProcess({ id });
       throw cause;
@@ -502,12 +512,18 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       ? null
       : setTimeout(() => {
           waitTimedOut = true;
-          terminateTree(running.child.pid);
+          void running.owned.stop();
         }, timeoutMs);
     const exit = await running.exit;
     if (waitTimer !== null) clearTimeout(waitTimer);
     if (running.timeoutTimer !== null) clearTimeout(running.timeoutTimer);
     this.running.delete(id);
+
+    const failure = running.outputLimit
+      ? `process output exceeded ${running.spec.maxOutputBytes} bytes`
+      : running.timedOut || waitTimedOut
+        ? `process exceeded timeout ${timeoutMs ?? running.spec.timeoutMs}ms`
+        : null;
 
     const status: ProcessResult["status"] = running.outputLimit
       ? "output_limit"
@@ -525,11 +541,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       stdoutBase64: Buffer.concat(running.stdout).toString("base64"),
       stderrBase64: Buffer.concat(running.stderr).toString("base64"),
       durationMs: Date.now() - running.startedAt,
-      error: running.outputLimit
-        ? `process output exceeded ${running.spec.maxOutputBytes} bytes`
-        : running.timedOut || waitTimedOut
-          ? `process exceeded timeout ${timeoutMs ?? running.spec.timeoutMs}ms`
-          : exit.error?.message ?? null,
+      error: [failure, exit.error?.message].filter((message) => message != null).join("; ") || null,
     };
   }
 
@@ -547,7 +559,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       };
     }
     running.stopRequested = true;
-    terminateTree(running.child.pid);
+    void running.owned.stop();
     return this.waitProcess(handle);
   }
 
@@ -641,19 +653,6 @@ export class LocalCapabilityBroker implements CapabilityBroker {
   }
 }
 
-function createExitPromise(child: ChildProcess): Promise<ProcessExit> {
-  return new Promise((resolveExit) => {
-    let settled = false;
-    const settle = (value: ProcessExit): void => {
-      if (settled) return;
-      settled = true;
-      resolveExit(value);
-    };
-    child.once("error", (error) => settle({ code: null, signal: null, error }));
-    child.once("close", (code, signal) => settle({ code, signal, error: null }));
-  });
-}
-
 function appendOutput(running: RunningProcess, target: Buffer[], chunk: Buffer): void {
   if (running.outputLimit) return;
   const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -663,43 +662,47 @@ function appendOutput(running: RunningProcess, target: Buffer[], chunk: Buffer):
   running.outputBytes += bytes.length;
   if (running.outputBytes > max) {
     running.outputLimit = true;
-    terminateTree(running.child.pid);
+    void running.owned.stop();
   }
 }
 
-function waitReady(
+async function waitReady(
   probe: WorkflowReadyProbe | undefined,
   workspaceRoot: string,
   policy: Required<WorkflowCapabilityPolicy>,
-  child: ChildProcess,
+  owned: OwnedProcess,
+  lifetime: AbortSignal,
 ): Promise<void> {
-  if (probe === undefined || probe.kind === "none") return Promise.resolve();
+  if (probe === undefined || probe.kind === "none") return;
   const timeoutMs = probe.timeoutMs ?? policy.readyTimeoutMs;
   const started = Date.now();
-  if (probe.kind === "file") {
-    const path = resolveInside(workspaceRoot, probe.path, "ready probe path");
-    assertRealPathInside(workspaceRoot, path, "ready probe path");
-    if (!matchesAnyGlob(relativeWorkspacePath(workspaceRoot, path), policy.readableGlobs)) {
-      return Promise.reject(new Error(`ready probe path is not readable: ${probe.path}`));
-    }
-    return poll(
-      async () => existsSync(path),
-      () => `file ready probe timed out after ${timeoutMs}ms: ${probe.path}`,
-      timeoutMs,
-      started,
-    );
-  }
-  return poll(
-    async () => {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        throw new Error(`process exited before TCP ready probe on ${probe.host}:${String(probe.port)}`);
+  const readiness = new AbortController();
+  const closed = () => readiness.abort(lifetime.reason);
+  lifetime.addEventListener("abort", closed, { once: true });
+  if (lifetime.aborted) closed();
+  void owned.exited.then((exit) => readiness.abort(exit.error ?? new Error("process exited before ready probe")));
+  try {
+    if (probe.kind === "file") {
+      const path = resolveInside(workspaceRoot, probe.path, "ready probe path");
+      assertRealPathInside(workspaceRoot, path, "ready probe path");
+      if (!matchesAnyGlob(relativeWorkspacePath(workspaceRoot, path), policy.readableGlobs)) {
+        throw new Error(`ready probe path is not readable: ${probe.path}`);
       }
-      return canConnect(probe.host, probe.port);
-    },
-    () => `TCP ready probe timed out after ${timeoutMs}ms: ${probe.host}:${String(probe.port)}`,
-    timeoutMs,
-    started,
-  );
+      return await poll(
+        async () => existsSync(path),
+        () => `file ready probe timed out after ${timeoutMs}ms: ${probe.path}`,
+        timeoutMs, started, readiness.signal,
+      );
+    }
+    return await poll(
+      () => canConnect(probe.host, probe.port, readiness.signal),
+      () => `TCP ready probe timed out after ${timeoutMs}ms: ${probe.host}:${String(probe.port)}`,
+      timeoutMs, started, readiness.signal,
+    );
+  } finally {
+    lifetime.removeEventListener("abort", closed);
+    readiness.abort();
+  }
 }
 
 async function poll(
@@ -707,27 +710,36 @@ async function poll(
   timeoutMessage: () => string,
   timeoutMs: number,
   started: number,
+  signal: AbortSignal,
 ): Promise<void> {
   while (Date.now() - started < timeoutMs) {
-    if (await check()) return;
-    await delay(25);
+    signal.throwIfAborted();
+    const ready = await check();
+    signal.throwIfAborted();
+    if (ready) return;
+    await delay(25, undefined, { signal });
   }
   throw new Error(timeoutMessage());
 }
 
-function canConnect(host: string, port: number): Promise<boolean> {
+function canConnect(host: string, port: number, signal: AbortSignal): Promise<boolean> {
   return new Promise((resolveConnection) => {
     const socket = createConnection({ host, port });
     let settled = false;
+    const timer = setTimeout(() => done(false), 100);
+    const aborted = () => done(false);
     const done = (value: boolean): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", aborted);
       socket.destroy();
       resolveConnection(value);
     };
     socket.once("connect", () => done(true));
     socket.once("error", () => done(false));
-    socket.setTimeout(100, () => done(false));
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) aborted();
   });
 }
 
@@ -809,22 +821,6 @@ function globToRegExp(glob: string): RegExp {
     }
   }
   return new RegExp(`^${expression}$`);
-}
-
-function terminateTree(pid: number | undefined): void {
-  if (pid === undefined) return;
-  try {
-    if (process.platform === "win32") {
-      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-    } else {
-      process.kill(-pid, "SIGTERM");
-    }
-  } catch {
-    // The process may have exited between timeout and cleanup.
-  }
 }
 
 function normalizeProcessSpec(
@@ -984,10 +980,6 @@ function isReadyProbe(value: unknown): value is WorkflowReadyProbe {
     typeof record.host === "string" &&
     typeof record.port === "number" &&
     (record.timeoutMs === undefined || typeof record.timeoutMs === "number");
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 function errorMessage(error: unknown): string {

@@ -1,0 +1,57 @@
+{
+  "id": "refactor-h8-structural",
+  "title": "AI 结构性重构：把 uv-common.c 的一块实现拆到新 TU 并改 CMakeLists",
+  "subject": "refactor",
+  "tags": [
+    "ai",
+    "refactor",
+    "h8",
+    "structural",
+    "multi-file"
+  ],
+  "kind": "pipeline",
+  "requires": {
+    "tools": [
+      "git",
+      "cmake",
+      "ninja",
+      "gcc"
+    ],
+    "recipe": "libuv-ninja-debug"
+  },
+  "prepare": "prepare.ts",
+  "repo": ".",
+  "task": "resources/tasks/h8-structural.task.txt",
+  "stages": {
+    "workflows": {
+      "mode": "preset",
+      "resource": "workflows/judgement-h8-structural"
+    },
+    "refactor": {
+      "mode": "ai"
+    }
+  },
+  "expect": {
+    "method": "verdict",
+    "state": "ACCEPTED",
+    "failuresRequired": [],
+    "injectedStages": [
+      "workflows"
+    ],
+    "authoritative": true,
+    "provisional": false,
+    "note": "实测冻结（2026-09-21，0 条失配） — 原预测：首条\"结构性\"重构用例：改动面跨文件（新 TU + CMakeLists.txt），判据由既有 oracle 与 loop/util 上游用例组成。参考正解见 judgement-accept-structural（离线 patch 档，同判据 ACCEPTED）。未实测。",
+    "failuresExact": []
+  },
+  "inject": [
+    {
+      "source": "resources/judge/libuv-1.52.1/oracle",
+      "dest": "refactor-task/oracle"
+    }
+  ],
+  "limits": {
+    "sessions.refactor.deadlineMs": 3000000,
+    "sessions.refactor.maxTurns": 80
+  },
+  "timeoutMs": 3600000
+}

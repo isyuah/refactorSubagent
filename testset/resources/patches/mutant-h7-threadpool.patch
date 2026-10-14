@@ -1,0 +1,38 @@
+diff --git a/src/threadpool.c b/src/threadpool.c
+index 2a129a5..ec7b6ee 100644
+--- a/src/threadpool.c
++++ b/src/threadpool.c
+@@ -46,10 +46,6 @@ static unsigned int slow_work_thread_threshold(void) {
+   return (nthreads + 1) / 2;
+ }
+ 
+-static void uv__cancelled(struct uv__work* w) {
+-  abort();
+-}
+-
+ 
+ /* To avoid deadlock with uv_cancel() it's crucial that the worker
+  * never holds the global mutex and the loop-local mutex at the same time.
+@@ -306,7 +302,9 @@ static int uv__work_cancel(uv_loop_t* loop, uv_req_t* req, struct uv__work* w) {
+   if (!cancelled)
+     return UV_EBUSY;
+ 
+-  w->work = uv__cancelled;
++  /* Hand the request back to the loop in the same "no work function left"
++     state the worker leaves behind once it has executed a request. */
++  w->work = NULL;
+   uv_mutex_lock(&loop->wq_mutex);
+   uv__queue_insert_tail(&loop->wq, &w->wq);
+   uv_async_send(&loop->wq_async);
+@@ -336,7 +334,10 @@ void uv__work_done(uv_async_t* handle) {
+     uv__queue_remove(q);
+ 
+     w = container_of(q, struct uv__work, wq);
+-    err = (w->work == uv__cancelled) ? UV_ECANCELED : 0;
++    /* The pool clears |w->work| when it queues a request that actually ran,
++       so a cleared pointer here means the request never left the queue: it
++       was cancelled. */
++    err = (w->work == NULL) ? UV_ECANCELED : 0;
+     w->done(w, err);
+     nevents++;
+   }

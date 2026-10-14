@@ -32,20 +32,23 @@ import {
   resolvePipeline,
 } from "../src/config/pipeline.js";
 import { runStageFlow } from "../src/runtime/stage-flow.js";
+import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
+
+installOwnedProcessSignalHandlers();
 
 try {
   const { overrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
   const { overrides: pipelineOverrides, remaining: argv } = extractPipelineArgs(remaining);
   const command = parseCliArgs(argv);
   const exitCode = await execute(command, overrides, pipelineOverrides);
-  if (exitCode !== 0) process.exitCode = exitCode;
+  if (exitCode !== 0) process.exitCode ??= exitCode;
 } catch (cause) {
   if (cause instanceof CliUsageError) {
     console.error(`error: ${cause.message}\n\n${CLI_HELP}`);
-    process.exitCode = 2;
+    process.exitCode ??= 2;
   } else {
     console.error(cause instanceof Error ? cause.stack ?? cause.message : String(cause));
-    process.exitCode = 1;
+    process.exitCode ??= 1;
   }
 }
 

@@ -52,7 +52,8 @@ testset/
 | 字段 | 作用 |
 |---|---|
 | `id` / `title` / `subject` / `tags` | 选择与显示 |
-| `requires.tools` / `requires.recipe` | 依赖声明：探测不过 → **blocked**（跳过，不执行；`--strict-env` 时按失败计） |
+| `requires.platforms` | 可选的平台列表（如 `["win32", "linux"]`），任意一项匹配即可；未声明或空列表不限平台 |
+| `requires.tools` / `requires.recipe` | 平台匹配后仍须满足全部工具和配方；探测不过 → **blocked**（跳过，不执行；`--strict-env` 时按失败计） |
 | `prepare` | 环境脚本（默认 `prepare.ts`，`null` = 不需要）；拿一个目录，在里面准备环境 |
 | `repo` | harness 该在环境目录的哪里跑（默认 `.`） |
 | `task` | 任务简报路径（默认 `resources/tasks/…`，`./x` 表示用例目录内） |
@@ -62,17 +63,23 @@ testset/
 | `expect` | 评价方法（`verdict` / `verdict+attribution` / `verdict+rubric` / `part`）与期望值 |
 | `evaluate.command` | 可选评测命令（裁判），会被 `--rubric-cmd` 覆盖 |
 
-当前 26 个用例：
+当前 45 个用例：
 
 | 用例 | 驱动 | 阶段来源 | 期望 |
 |---|---|---|---|
 | `judgement-accept-comment` | pipeline | preset + 行为保持补丁 | ACCEPTED，0 失配 |
+| `judgement-accept-hard` | pipeline | `judgement-hard` + 行为保持补丁 | ACCEPTED：hard 基线和候选均通过，防止平台差异导致误拒绝 |
 | `judgement-reject-strtok` | pipeline | preset + 破坏补丁 | REJECTED，必须命中 `oracle_strtok.*` |
 | `judgement-mutant-{strscpy,inet,getters,version,errstr}` | pipeline | preset + 对应变异体 | REJECTED，必须命中 `oracle_<name>.*` |
 | `judgement-tamper-tests` | pipeline | preset + 弱化 `test/**` 断言 | REJECTED，必须命中 `test/test-strtok.c.{digest,snapshot}` |
 | `judgement-tamper-drop-case` | pipeline | preset + 从 `test-list.h` 删用例 | REJECTED，必须命中 `test/test-list.h.digest` + `strtok.exit` |
 | `judgement-tamper-oracle` | pipeline | preset + 伪造 oracle 文件 | **ACCEPTED**：注入覆盖伪造件，`injection-replaced` 必须命中该路径 |
 | `refactor-t1-strtok` … `refactor-t6-version` | pipeline | preset + **ai** | ACCEPTED，provenance = `[workflows]` |
+| `refactor-t{2,3}-nohint` | pipeline | preset（同 T2/T3）+ **ai** | 难度对照：简报不给"必须保持"清单，实测仍 ACCEPTED（见 §11.1） |
+| `refactor-h{1..5}-*` | pipeline | `workflows/judgement-hard` + **ai** | ACCEPTED（或失败 = 难度信号），判据含各自 oracle |
+| `judgement-mutant-h{1..5}-*` | pipeline | `judgement-hard` + 对应变异体 | REJECTED，失配集中在 `oracle_*`（见 §11.3） |
+| `judgement-accept-structural` | pipeline | `judgement-h8-structural` + 参考正解 patch | ACCEPTED：证明宿主接受"新增文件 + 改 CMakeLists"的多文件 patch |
+| `refactor-h8-structural` | pipeline | `judgement-h8-structural` + **ai** | AI 自己做结构性重构，期望 ACCEPTED |
 | `writer-{good,evil}-{material,hidden}` | pipeline | **ai** workflows + 已知补丁 | 好补丁 ACCEPTED / 坏补丁 REJECTED（全部用例都是盲的，见 §8.2） |
 | `e2e-t1-full` / `e2e-t1-blind` | pipeline | ai workflows + ai refactor | 端到端，程序化 + 裁判；两条用例现在只差任务文本与期望 |
 | `corpus-pure` | upstream-part | 环境里的检出 + 构建 | strict：14 条逐条 exit 0 + TAP |
@@ -166,7 +173,9 @@ runs/suite-<时间戳>/
   - `injected_stages` 的语义是 **"这一阶段的来源被配置改写成非默认实现"**；`mode: "ai"` 是内置默认，**不算注入**。所以：判据自测（preset + patch）= `[workflows, refactor]`；重构档（preset + ai）= `[workflows]`；writer 档（ai + patch）= `[refactor]`；e2e（ai + ai）= `[]`。这正好是每类用例"证明自己确实按设计跑"的方式（writer 档看到 `refactor` 被注入、`workflows` 没有，就说明判据确实是模型写的）。
 - **verdict + attribution**（同一实现，多两条）：`failuresRequired ⊆ 实际失配集`，`failuresForbidden ∩ 实际失配集 = ∅`。`failuresExact` 只有在校准冻结之后才填；`--calibrate` 下归因不作为失败依据，只记录。
 - **injection-replaced**（声明了 `expect.replacedFiles` 时）：验证前注入时发现目标位置已有不同内容的文件 → 必须与声明的集合完全一致（这是"篡改被中和"的证据，见 §8.2）。
-- **part**：`strict` 部分要求每条 `stable-ok`（exit 0 且 TAP 行符合期望）；`calibrate` 部分只要求分类完成且无 `error`，分类结果本身是产出。
+- **part**：`strict` 部分要求每条适用用例 `stable-ok`（exit 0 且 TAP 行符合期望）；`calibrate` 部分只要求分类完成且无 `error`，分类结果本身是产出。
+  `cases` 中的字符串表示不限平台；对象形式 `{"name":"environment_creation","requires":{"platforms":["win32"]}}`
+  使用同样的 OR 平台匹配规则。不适用条目及原因单独记录为 `skipped`，不参与行为分类；全部不适用时整例为 blocked。
 - **blocked**：`requires` 不满足（或缺 prepare）→ 该用例不执行，`summary.json` 里 `status=blocked` 且带原因；默认不影响整批退出码，`--strict-env` 时才按失败计。全部选中用例都 blocked 时退出码 2。
 
 ### 7.1 裁判分默认只报告，不判死活
@@ -182,7 +191,9 @@ runs/suite-<时间戳>/
 1. **建目录**：`testset/cases/<id>/case.json` + `prepare.ts`（libuv 用例直接抄现成的一样：`cloneSource("libuv", { into: envDir() })`）。
 2. **要新补丁**：在 scratch 检出里改文件、`git diff > testset/resources/patches/<name>.patch`，并在 `case.json` 里 `stages.refactor = {"mode":"patch","patchFile":"resources/patches/<name>.patch"}`（`git apply --check` 必须先过，工作区行尾是 LF）。
 3. **要新材料**：放进 `resources/`（judge 材料放 `resources/judge/<项目>/` 并在 `inject` 里声明目标位置）。
-4. **声明依赖**：`requires.tools` + `requires.recipe`（本机 recipe：`win-mingw-ninja-debug`）；缺依赖时用例应当是 blocked 而不是红。
+4. **声明依赖**：可选的 `requires.platforms` + `requires.tools` + `requires.recipe`。公共 libuv 用例使用
+   `libuv-ninja-debug`，按系统选择 Windows/MinGW 或 Linux/GCC；平台专属用例必须明确声明平台。
+   显式配方 `win-mingw-ninja-debug` / `linux-gcc-ninja-debug` 同样可用；缺依赖时用例应当是 blocked 而不是红。
 5. **跑一次校准**：`--dry-run --only <id>` 看计划 → `--only <id> --calibrate --out runs/x` → `--freeze runs/x` 把实测失配集冻进 `case.json`（状态与期望不符时会被拒改并单列）。
 6. **语料**：在 `resources/parts/` 加 JSON（`policy.kind` 用 `calibrate`），跑几次确认分类稳定后再考虑升进判据（见 §9）。
 
@@ -412,3 +423,151 @@ bun testset/run.ts --subject judgement --tag offline --concurrency 4 --build-cac
 3. 增加声明后同步更新 `PINS.json`、`testset/libuv-testset.json`，并重跑一次 `judgement-*` 用例确认判据本身仍自洽。
 
 在那之前，它们以 `corpus-*` 用例的形式存在：跑起来、看得见分类，但不参与任何 ACCEPT/REJECT 判定。
+
+---
+
+## 11. 加难档：H 档目标与难度校准（2026-09-21）
+
+### 11.1 为什么加难：两批实测证据
+
+**证据 A — T1–T6 已经饱和。** 六条重构用例（单文件、38–298 行、任务简报写明"必须保持"清单）
+在 `runs/capability-t2-t6` 等批次里 **6/6 ACCEPTED、0 失配**，墙钟 3–6 分钟；
+`refactor` 这一档从来没有产出过一次真实 REJECTED。一个所有模型都能过的档位测不出能力差异。
+
+**证据 B — 把"必须保持"清单删掉，并没有让任务变难。** 新增两条对照用例
+（`refactor-t2-nohint` / `refactor-t3-nohint`：目标、判据、oracle 与 T2/T3 完全一致，
+**唯一变量是简报里删掉了不变量清单**），实测：
+
+| 用例 | 简报 | 结果 | 墙钟 |
+|---|---|---|---|
+| `refactor-t2-nohint` | 无清单 | **ACCEPTED**，0 失配 | 3m33s |
+| `refactor-t3-nohint` | 无清单 | **ACCEPTED**，0 失配 | 7m09s |
+
+结论：当前难度低**不是**"出题方泄漏了不变量清单"造成的（模型自己也能把行为保住），
+而是**代码本身的复杂度不够**。加难必须落在改动面、不变量隐蔽度与可判性上（见 `01-refactor-targets.md` 的 H 档）。
+对照用例的期望已 `--freeze`（`runs/nohint-1`）。
+
+### 11.2 H 档的组织方式
+
+- 判据资源：**每档一个独立目录**，旧 `workflows/judgement`（98 条声明）一字未动：
+  - `workflows/judgement-hard/`：H1–H7（共享一份 build-workflow、一份 test-workflow，7 个 oracle + 5 条上游用例）
+  - `workflows/judgement-h8-structural/`：结构性重构（既有 6 个 oracle + 11 条 loop/util 上游用例）
+- 判据材料：`resources/judge/libuv-1.52.1-hard/<target>/oracle_<name>.c`，
+  逐目标子目录 → 注入到 `refactor-task/oracle-hard/<target>/`；
+  目录快照 + sha256 进 `ORACLE_PINS`（新增/改动 oracle 只影响本档用例，不牵动旧 16 条）。
+- 上游观测面只用 `parts/{loop,util}.json` 里**已校准 stable-ok** 的条目，而且**只挑"快速失败"的那些**：
+  `error_message` / `env_vars` / `environment_creation` / `close_order` / `loop_backend_timeout`。
+  能"挂起"的用例（`run_once`、`loop_close`、`walk_handles`、`timer_run_once`、`idle_check` 等）**故意不声明**：
+  在 Windows 上 libuv 自带 runner 超时后并不会杀掉子进程（`test/runner.c:269` 的注释假设它杀了，
+  `test/runner-win.c:205-207` 只返回 `WAIT_TIMEOUT`），挂起的子进程会一直持有继承来的 stdout 句柄，
+  宿主就会一直等下去（判据挂死到用例超时）。这些语义改由 oracle 覆盖——oracle 是被写成"失败"而不是"挂起"的。
+  这条是实测踩出来的：H6 的变异体第一次就是把判据挂住的那个组合（见 §11.4）。
+- 用例成对出现：`refactor-h<k>-*`（AI 档，判定能力）+ `judgement-mutant-h<k>-*`（离线档，0 模型成本，证明 oracle 有牙）。
+- 共享判据的代价：一个变异可能同时触发别的目标的 oracle（H6 的变异也点亮了 `h4-walk/oracle_walk`），
+  所以失配集是"按声明"归因，不是"按目标"归因；`failuresRequired` 只钉住本目标的 oracle 三件套。
+
+### 11.3 离线 mutant 实测（判据牙齿）
+
+每条 mutant 都是"看起来像合理清理"的改法，跑法与旧 `judgement-mutant-*` 一致
+（`stages.refactor.mode = patch`，判据冻结）。
+
+| 用例 | mutant 改了什么 | 结果 | 失配数 |
+|---|---|---|---|
+| `judgement-mutant-h1-error` | 写路径变体合并回通用表 | **REJECTED** | 3（全部是 oracle；上游 `error_message` **看不见**这条变异） |
+| `judgement-mutant-h2-fdhash` | 删掉首组大小提升（满组查不到） | **REJECTED** | 3（全部是 oracle） |
+| `judgement-mutant-h3-timer` | `uv__run_timers` 两阶段合成单阶段 | **REJECTED** | 3（全部是 oracle；自带 timer 用例**看不见**） |
+| `judgement-mutant-h4-walk` | uv_walk 直遍历 + 删 `saved_data` + 放宽 close 判据 | **REJECTED** | 6（3 条 oracle + 上游 `loop_close` 的 3 条——改 close 判据时自带套件也响） |
+| `judgement-mutant-h5-env` | `strchr(buf, '=')`（吃掉 `=` 开头的特殊变量）+ 释放器顺手 free(value) + utf16 零长拷贝语义 | **REJECTED** | 6（上游 `env_vars` 只看见第一处） |
+| `judgement-mutant-h6-loop` | `uv_backend_timeout` 守卫收成一行委托 + 删掉 `uv_run` 首轮 timers | **REJECTED** | 12（上游 `close_order`/`loop_backend_timeout` 各 3 条 + h4/h6 oracle 各 3 条） |
+| `judgement-mutant-h7-threadpool` | 删掉 `uv__cancelled` 哨兵、用 `NULL` 当"已取消"标记 | **REJECTED** | 6（h6 + h7 oracle；上游 fs 类观测也被牵动） |
+
+7/7 离线变异体全部被拒——`--freeze` 之后每条还额外用 `failuresRequired` 钉住本目标 oracle 的三件套
+（`failuresExact` 只是 advisory，见 `evaluate.ts` 的 hard 判定集合）。
+
+### 11.4 观察到的环境抖动（一次）与它的失败方向
+
+首跑 `judgement-accept-structural` 时（2026-09-21）判据在上游用例 `walk_handles` 上失配：
+
+```text
+baseline: ok 1 - walk_handles
+candidate: not ok 1 - walk_handles
+           # Process `walk_handles` failed to start.
+```
+
+libuv 的 Windows runner 为每个用例 spawn 一个子进程（`test/runner-win.c:73` 起：
+`GetTempFileNameW` + `CreateFileW(FILE_FLAG_DELETE_ON_CLOSE)` + `CreateProcessW`），
+失败时只打印上面那行。同批其它 12 条上游用例与 5 个 oracle 两侧都正常，
+且随后 14 次两侧完整跑（`runs/hard-mutants-2` 5 条 × 两侧、`judgement-accept-structural` 复跑 ×2）
+再无复现——**结论：这是一次性环境抖动（临时文件/进程创建），不是判据缺陷**。
+
+值得记录的是**失败方向**：抖动被表达成一条 `both-matches` 声明失配 ⇒ 用例 REJECTED ⇒ 不会被误判成
+ACCEPTED。也就是说，这类抖动只会造成"假阴性"，不会造成"假阳性"；对以"自动接受"为终态的 harness 来说，
+这是正确的方向。（对照 `docs/testset/03` §10.1 记录的另一类构建产物抖动，当时的处置同样是"什么都不改"。）
+
+参考正解在该抖动不复现后复跑：**ACCEPTED**（`runs/hard-ai-1`，143 s），
+证明判据接受"新增文件 + 改 CMakeLists"的多文件 patch，而且宿主的改动集测量把新文件一并带走。
+
+### 11.5 一个必须知道的坑：上游 runner 在 Windows 上不杀超时用例
+
+H6 的变异体（改 `uv_backend_timeout` 守卫）在首次验证时把**整个用例挂死**在 `CANDIDATE_TEST_WORKFLOW`：
+判据的上游用例 `run_once` 起来后再也不退出。现场证据（实测）：
+
+```text
+进程： …\worktrees\candidate\build\uv_run_tests_a.exe run_once run_once
+创建于 10:26:35，10:30:45 仍在运行（4 分钟+），父进程（runner）已被宿主超时杀掉
+```
+
+根因在**上游测试框架**，不在被测代码：
+
+- `libuv/test/runner.c:265-271` 在 `process_wait` 返回 `-2`（超时）时 `goto out`，注释写着
+  "Don't have to clean up the process, process_wait() has killed it."；
+- 而 Windows 实现 `libuv/test/runner-win.c:199-207` 在 `WaitForMultipleObjects` 超时后**只是 `return -2`**，
+  并没有 `TerminateProcess`；`runner.c` 的收尾循环只清理 helper 进程，不含 main 进程。
+- 于是挂起的子进程活下来，继续持有 runner 的 stdout/stderr 句柄；宿主的 `ctx.process.run` 等的是
+  "进程结束 + 管道关闭"，管道永不关闭 ⇒ 判据卡死到用例超时（本档 `timeoutMs` 是 3600 s）。
+
+因此**能挂起的上游用例不得进判据**（§11.2 的清单就是这么定的）。挂起只可能由"候选把事件循环的
+睡眠逻辑改坏"触发——而这正是 H6 的题面，所以要靠 oracle 覆盖同一条语义（`oracle_loop` 用 watchdog
+定时器把自己从死等里拉出来，失败而不是挂起）。
+
+### 11.6 宿主侧的两条同源缺陷（本轮顺带确认，尚未修）
+
+两次挂死都指向同一个根因族：**宿主杀进程只杀直接子进程，且不确认死亡**。
+
+1. `src/workflow/runner.ts`（workflow 子进程）从不 `broker.close()`：超时只 `terminateTree(worker.pid)`，
+   被托管的构建/测试进程（宿主侧子进程）继续存活并写 worktree（`build-executor.ts:190` 是唯一会 close 的调用点）。
+2. 本文 §11.5：宿主对上游 case 的超时只杀 runner，孙进程存活且持有句柄 ⇒ `process.run` 永不返回。
+
+两条都可以用同一类修法解决（等进程退出而不是等管道 EOF；终止进程树并回读确认；`finally` 里 close broker），
+但那是 harness 本体（`src/`）的改动，不在本轮"测试集扩档"的范围内，先记录与复现现场。
+
+### 11.7 AI 档实测（"有解"与难度信号）
+
+同一模型（`deepseek/deepseek-v4.1-flash`，经本机网关）、同一判据、`--concurrency 2~3`：
+
+| 用例 | 目标 | oracle 检查 | 结果 | 墙钟 |
+|---|---|---|---|---|
+| `refactor-h4-walk` | `uv-common.c` 的 uv_walk / loop_close | 73 | **ACCEPTED**，0 失配 | 3m54s |
+| `refactor-h5-env` | `win/util.c` 环境变量 + UTF-16 | 102 | **ACCEPTED** | 8m55s |
+| `refactor-h3-timer` | `timer.c` 堆/复用/快照 | 187 | **ACCEPTED** | 7m20s |
+| `refactor-h6-loop` | `win/core.c` 事件循环 | 132 | **ACCEPTED** | 9m27s |
+| `refactor-h7-threadpool` | `threadpool.c` 取消协议 | 208 | **ACCEPTED** | 13m07s |
+| `refactor-h1-error` | `win/error.c` 映射表 | 320 | **ACCEPTED** | 5m45s |
+| `refactor-h2-fdhash` | `win/fs-fd-hash-inl.h` | 166 | **ACCEPTED** | 4m56s |
+| `refactor-h8-structural` | 拆文件 + 改 CMakeLists | （既有 6 oracle） | **ACCEPTED** | 6m16s |
+
+**难度结论（与预期相反，但这就是实测）**：H 档把**成本**抬上去了（3m54s–13m07s，vs T1–T6 的 3m20s–6m12s；
+模型会自己去跑整套上游套件自验），把**判据密度**抬上去了（7 个 oracle / 320 条检查 vs 6 / 174），
+但**没有把一次通过率降下来**：9/9 全部 ACCEPTED，包括事件循环与线程池取消协议这两个 L4 目标，
+以及跨文件的结构性重构。
+
+下一步要真正制造区分度，得换轴（按预期收益排序）：
+
+1. **去掉"训练数据熟悉度"**：libuv v1.52.1 是公开代码，模型很可能记得这些函数的行为（这也解释了
+   §11.1 里"删掉清单照样保住行为"）。换成**非公开/改写过的代码**：Redis 抽取模块（需新工程，见
+   `docs/testset` 里 Redis 路线的评估）或自出题（从想要的失败模式反推代码）。
+2. **拉长改动链**：跨模块提取 API + 同步 N 个调用点（H8 只动了一个 TU 和一个构建列表，是这条轴的最小形态）。
+3. **收紧预算**：`limits.sessions.refactor.maxTurns` / `deadlineMs` 降到当前实际用量的 1/3——
+   现在两个 13 分钟的会话说明预算给得极宽，测的是"肯不肯干"而不是"能不能干"。
+4. **多维约束同时满足**：行为 + 分配次数（h5 的 oracle 已经装了分配器钩子）/ 构建产物形状 / 调用次数。
+5. **blind 档**：模型自建判据（`e2e-t1-blind` 的形态），当前 0.63 的裁判分是唯一真正的区分点。

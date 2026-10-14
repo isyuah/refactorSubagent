@@ -1,0 +1,13 @@
+diff --git a/src/win/fs-fd-hash-inl.h b/src/win/fs-fd-hash-inl.h
+index 94b4c3c..deed0fe 100644
+--- a/src/win/fs-fd-hash-inl.h
++++ b/src/win/fs-fd-hash-inl.h
+@@ -108,8 +108,6 @@ static void uv__fd_hash_init(void) {
+ #define FIND_IN_BUCKET_PTR()                                                 \
+   do {                                                                       \
+     size_t first_group_size = bucket_ptr->size % UV__FD_HASH_GROUP_SIZE;     \
+-    if (bucket_ptr->size != 0 && first_group_size == 0)                      \
+-      first_group_size = UV__FD_HASH_GROUP_SIZE;                             \
+     group_ptr = bucket_ptr->data;                                            \
+     FIND_IN_GROUP_PTR(first_group_size);                                     \
+     for (group_ptr = group_ptr->next;                                        \

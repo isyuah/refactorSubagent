@@ -1,0 +1,5 @@
+行为保持型重构：只改 src/timer.c（约 200 行）。公开入口 uv_timer_init / uv_timer_start / uv_timer_stop / uv_timer_again / uv_timer_set_repeat / uv_timer_get_repeat / uv_timer_get_due_in，以及被 src/win/core.c 与 src/unix/core.c 直接调用的内部导出 uv__next_timeout / uv__run_timers / uv__timer_close，都必须留在 src/timer.c 并保持外部链接。目标是在不改变任何可观测行为的前提下让这段代码更易维护：把重复的堆/队列样板收进文件内的静态辅助、收拢 start 与 again 的公共路径、给难懂的分支与魔数（-1 / INT_MAX / (uint64_t)-1 这类钳制）加名字或注释、消除冗余临时变量与重复的 container_of 样板、拉平嵌套结构。
+
+不允许：改 include/**、test/**、refactor-task/**；改公开符号的名字/签名/链接属性；把 uv__next_timeout / uv__run_timers / uv__timer_close 移出 src/timer.c 或改成 static；改动任何返回值（错误码）及其触发条件。
+
+判据不会告诉你哪些行为要注意：上游测试套件与宿主判据都在看同一份代码 —— 定时器的触发顺序、回调执行期间句柄与队列的状态、重复定时器的再武装时机、uv_timer_get_due_in 与 uv__next_timeout 的取值与钳制、stop/again 作用在未启动/已到期/正在回调的句柄上的效果都在观测范围内。请自己实测确认（探测性构建请放在 worktree 之外），不要凭直觉假设"这里看起来是等价的"。

@@ -177,6 +177,15 @@ export function evaluatePart(
   part: Part,
   run: PartRunResult,
 ): CaseEvaluation {
+  // Older saved corpus results predate per-case platform requirements.
+  const skipped = run.skipped ?? [];
+  if (run.status === "ok" && run.cases.length === 0 && skipped.length > 0) {
+    const blocked = evaluateBlocked(c, skipped.map((entry) => entry.name + ": " + entry.reason).join("; "));
+    return {
+      ...blocked,
+      observed: { ...blocked.observed, part: part.id, policy: part.policy.kind, counts: run.counts, cases: [], skipped },
+    };
+  }
   const checks: Check[] = [];
   checks.push(check("build", run.status !== "build-failed",
     run.status === "build-failed"
@@ -186,6 +195,10 @@ export function evaluatePart(
   const counts = run.counts;
   const summary = Object.entries(counts).map(([k, v]) => `${k}=${String(v)}`).join(" ");
   checks.push(check("cases-ran", run.cases.length > 0, `${String(run.cases.length)} case(s): ${summary}`));
+  if (skipped.length > 0) {
+    checks.push(check("platform-skips", true,
+      skipped.map((entry) => entry.name + ": " + entry.reason).join("; ")));
+  }
 
   if (part.policy.kind === "strict") {
     const bad = run.cases.filter((r) => r.classification !== "stable-ok");
@@ -209,6 +222,7 @@ export function evaluatePart(
       policy: part.policy.kind,
       counts,
       cases: run.cases.map((r) => ({ name: r.name, classification: r.classification, detail: r.detail })),
+      skipped,
       buildMs: run.buildMs,
     },
     rubric: null,

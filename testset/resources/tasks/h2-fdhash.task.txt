@@ -1,0 +1,5 @@
+行为保持型重构：只改 src/win/fs-fd-hash-inl.h（fd → 文件映射信息的哈希表，UV_FS_O_FILEMAP 路径专用，约 200 行）。目标是改善可维护性而不是加功能，例如：抽公共辅助或把宏展开成 static 函数、为桶/组相关结构体与中间值起更清楚的名字、合并重复的条件与语句、调整 add / remove 内部的语句顺序——但每一步都必须真的等价。
+
+不允许：改 include/**、test/**、refactor-task/**；改 src/win/fs.c 里的 13 处调用点；改公开符号的名字/签名/链接属性；改错误码或任何可观测行为。该头文件被上游用例 test/test-fs-fd-hash.c 直接 include，所以 uv__fd_hash_init / get / add / remove 必须保持 static 且留在本文件，UV__FD_HASH_SIZE / UV__FD_HASH_GROUP_SIZE 与 struct uv__fd_info_s / uv__fd_hash_entry_s 也不得删除或改语义。多线程不在目标内（锁保持原样）。
+
+判据不会告诉你哪些行为必须保持：上游测试套件与宿主判据都在 baseline / candidate 两侧逐位置比较声明，哪些 fd 查得到、查不到、查到的是哪一条记录都在观测范围内。请自己写探测程序实测确认（探测性构建请放在 worktree 之外，不要碰仓库里的 libuv/），不要凭直觉假设某处看起来冗余的分支/条件是死代码。

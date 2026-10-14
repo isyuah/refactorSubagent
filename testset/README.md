@@ -19,7 +19,7 @@
 ```bash
 cd <repo-root>
 
-bun testset/run.ts --list                                   # 26 个用例（扫描 cases/*/case.json）
+bun testset/run.ts --list                                   # 45 个用例（扫描 cases/*/case.json）
 bun testset/run.ts --self-test                              # 执行器自检（合成用例，不碰项目）
 bun testset/run.ts --subject judgement --concurrency 2      # 判据本体：离线、不调模型
 bun testset/run.ts --only judgement-accept-comment          # 单个用例
@@ -45,9 +45,13 @@ testset/
 ├─ cases/<id>/           用例：case.json（行为）+ prepare.ts（环境）+ 可选本地材料
 ├─ resources/
 │  ├─ sources/           源与 pin（libuv.json：上游 tag + commit + remote 兜底）
-│  ├─ workflows/         预置 workflow 资源（judgement/manifest.json + build/test 源）
-│  ├─ patches/           候选补丁（行为保持 / 变异 / 篡改）
-│  ├─ judge/             判据材料（oracle 源），验证前注入 worktree
+│  ├─ workflows/         预置判据资源（每档一份 manifest + build/test 源）：
+│  │                     judgement（T1–T6，98 条声明）、judgement-hard（H1–H5，95 条）、
+│  │                     judgement-h8-structural（结构性重构）
+│  ├─ patches/           候选补丁（行为保持 / 变异 / 篡改 / 结构性参考正解）
+│  ├─ judge/             判据材料（oracle 源），验证前注入 worktree：
+│  │                     libuv-1.52.1/oracle（T1–T6，7 个文件）、
+│  │                     libuv-1.52.1-hard/<target>/oracle_*.c（H1–H5，一目标一目录）
 │  ├─ tasks/             任务简报
 │  └─ parts/             语料部分定义（pure/loop/thread/util）
 └─ baseline/             基线重建材料（overlay；见 baseline/README.md）
@@ -65,7 +69,7 @@ testset/
   "subject": "refactor",
   "tags": ["ai", "refactor", "t1", "measured"],
   "kind": "pipeline",
-  "requires": { "tools": ["git", "cmake", "ninja", "gcc"], "recipe": "win-mingw-ninja-debug" },
+  "requires": { "tools": ["git", "cmake", "ninja", "gcc"], "recipe": "libuv-ninja-debug" },
   "prepare": "prepare.ts",                       // 相对用例目录；null = 不需要环境
   "repo": ".",                                   // 环境目录里 harness 该在哪儿跑
   "task": "resources/tasks/t1-strtok.task.txt",  // 相对 testset 根，"./x" 表示用例目录内
@@ -85,7 +89,9 @@ testset/
 
 - **`prepare.ts` 只做一件事**：拿到一个目录（argv[2]，也是 cwd），在里面把环境准备好，不返回值。
   常用助手在 `runner/case-api.ts`（`cloneSource`、`git`、`blocked`）。
-- **依赖不满足 = blocked**：`requires.tools` 缺失或 `recipe` 探针不过 → 该用例跳过（不算失败，
+- **平台要求是并集**：可选的 `requires.platforms` 使用系统标识，例如 `["win32", "linux"]`；匹配任意一项即可。
+  未声明或空列表表示不限平台。平台匹配后仍需满足全部工具和配方要求。
+- **依赖不满足 = blocked**：平台不匹配、`requires.tools` 缺失或 `recipe` 探针不过 → 该用例跳过（不算失败，
   汇总里单列；`--strict-env` 时按失败计）。prepare 自己也可以二次判定：写 `env/blocked.json` 或退出码 78。
 - **prepare 失败 = error**：现场保留（`prepare.json` / `prepare.stdout.txt` / `prepare.stderr.txt`），
   整批退出码 1。
@@ -109,30 +115,44 @@ harness 用 `entryRoot`（= testset 根）判断入口没有逃出允许的目�
 |---|---|---|
 | `bun` ≥ 1.3 | 跑 `run.ts` 与 harness | 跑不起来 |
 | `git` | 浅克隆源（本地无检出时从 `sources/*.json` 的 `remote` 拉） | 全部 libuv 用例 error |
-| `cmake` + `ninja` + `gcc`（Windows 上是 MinGW-w64） | recipe `win-mingw-ninja-debug` 探针 + 两侧构建 | 判据/重构类用例 blocked |
+| `cmake` + `ninja` + `gcc`（Windows 上是 MinGW-w64，Linux 上是原生 GCC） | recipe `libuv-ninja-debug` 探针 + 两侧构建 | 判据/重构类用例 blocked |
 | 网络 | 首次克隆 libuv（≈7 MB）+ 模型网关 | 环境准备失败 / 会话失败 |
 | Claude Code CLI（`claude` 在 PATH，或 `CLAUDE_CODE_EXECUTABLE` 指向兼容 CLI）+ 你的网关配置 | AI 档会话与裁判 | 只有离线用例能跑 |
 
 ```bash
 bun install
 bun testset/run.ts --self-test                             # 执行器自检，不碰项目
-bun testset/run.ts --list                                  # 26 个用例
-bun testset/run.ts --subject judgement --concurrency 2     # 离线 10 例，零模型成本（约 15 min）
+bun testset/run.ts --list                                  # 45 个用例
+bun testset/run.ts --subject judgement --concurrency 2     # 离线 19 例，零模型成本；Linux 跳过 4 个 Windows 专属项
 bun testset/run.ts --only e2e-t1-blind --rubric-cmd "claude -p" --out runs/blind-1   # 盲测 e2e（要额度）
 ```
 
-- 其它平台（Linux/macOS）现在会被判 **blocked**（`requires.recipe` 只有 Windows/MinGW 版）；
-  要支持得先加一条 recipe（`runner/probe.ts`）。
+- `libuv-ninja-debug` 按系统选择 Windows/MinGW 或 Linux/GCC 配方。也可显式声明
+  `win-mingw-ninja-debug` 或 `linux-gcc-ninja-debug`；这两条配方会检查宿主系统、GCC target、
+  编译/链接/运行一个小程序，以及 CMake 的 Ninja generator。
+- H1/H2/H5/H6 的重构与变异用例声明 `platforms: ["win32"]`；其他用例不限制平台。
+  macOS 尚无构建配方，依赖 `libuv-ninja-debug` 的用例会明确 blocked，不会被计为通过。
+- corpus 的 `cases` 可以继续写用例名，也可以写 `{"name":"environment_creation","requires":{"platforms":["win32"]}}`。
+  不适用的条目及原因记录在 `part-result.json` 的 `skipped` 中；Linux 的 util 部分运行 9 条、跳过这 1 条。
+  浅克隆出来的测试仓库使用测试专用的本地 Git 身份，不要求宿主设置全局作者信息。
+- 共享 workflow 使用 `ctx.facts.host.platform`、`executable_suffix` 选择产物路径、系统链接库和平台判据。
+  Linux 的 hard 判据运行 H3/H4/H7 的 oracle；Windows 运行完整 H1–H7，`environment_creation` 也仅在 Windows 运行。
+  C oracle 使用编译器的平台宏分别检查错误码 ABI 和请求类型枚举布局。
+  `judgement-accept-hard` 是 hard 判据的正对照，要求正确基线与行为保持补丁均通过，避免平台差异造成误拒绝。
 - 想换某阶段用的模型/程序：`--limit sessions.<stage>.model=<名字>`；整程序则设
   `CLAUDE_CODE_EXECUTABLE=<兼容 CLI 的路径>`（见 `docs/limits.md`）。
 - 结果永远落在 `--out`（默认 `runs/suite-<时间戳>/`）；已有旧结果的目录要 `--force` 才会覆盖。
+- Windows/MinGW 建议使用较短的输出目录（如 `--out runs/win-1`）。
+  实测生成的依赖文件路径达到 260 字符时，GCC 会报 `opening dependency file ...: No such file or directory`；
+  缩短输出目录即可重跑，原失败证据应保留。
 
 ## 维护约定
 
 - **判据材料只改 `resources/`**（`judge/**`、`workflows/**`、`patches/**`）。oracle 的 sha256 被
   `resources/workflows/judgement/test-workflow.ts` 里的 `ORACLE_PINS` 钉住：改了 oracle 必须同步
   那一份 pin，否则所有判据档用例都会以"判据被改动"失败（这是设计如此，fail-closed）。
-- **冻结期望**：`--freeze runs/<批>` 把实测失配集写回 `cases/*/case.json` 的 `expect.failuresExact`
+- **冻结期望**：baseline/candidate 必须在相同系统和工具链下比较；已有历史记录来自 Windows，其他平台需重新校准。
+  `--freeze runs/<批>` 把实测失配集写回 `cases/*/case.json` 的 `expect.failuresExact`
   并清掉 `provisional`；状态与期望不符的用例会被拒改并单列出来。
 - **裁判是外部命令**：`--rubric-cmd "<cmd>"`（用例里的 `evaluate.command` 为默认值），prompt 由
   runner 组装后通过 `RUBRIC_PROMPT_FILE` 传入；默认只记录分数，`--rubric-min` 才当门槛。

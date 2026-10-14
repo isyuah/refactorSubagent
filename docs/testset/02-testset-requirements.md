@@ -2,6 +2,9 @@
 
 > 消费方：`E:/Proj/refactorSubagent` 的声明制流程（`runAgentWorkflowVerification` → `runDeclaredWorkflowVerification` → 自驱 TestWorkflow + `ctx.expect` 逐位置比较）。
 > 所有数字与行为都是本机实测（Windows 11 x64 / GCC 15.2 / CMake 4.3.1 / Ninja 1.13.2 / Debug）。
+> 当前共享判据 revision 2 已加入 Windows/Linux 平台选择：workflow 读取 `ctx.facts.host`，
+> C oracle 按编译目标检查错误码 ABI 和请求类型布局，摘要 pin 随材料同步更新。
+> 本文的 `.exe` 命令及历史数字保留 Windows 首次校准语境，其他平台以对应运行批次为证。
 >
 > **2026-09-17 重设计后的路径**：判据 workflow 与 oracle 迁到 `testset/resources/`（工作流入口通过
 > preset 的 `entryRoot` 从库外解析）；oracle 由 harness 在候选提交之后、验证之前注入到两侧 worktree 的
@@ -110,6 +113,12 @@ gcc -O0 -g -I . -I include -I src -I refactor-task/oracle \
 | `oracle_version` | `src/version.c` | 6 | 同上 |
 
 每个 oracle 的逐条语义（"必须保持不变"的完整清单）见 `01-refactor-targets.md`；机器可读的权威版本是 `testset/cases/*/case.json`（期望值）与 `testset/resources/**`（判据材料与 pin）。
+
+> **加难档（2026-09-21 新增）**：T1–T6 之外另有 H1–H5 五个目标，判据在
+> `testset/resources/workflows/judgement-hard/`（95 条声明：5 个新 oracle + 13 条已校准上游用例，
+> 后者来自 `parts/{loop,util}.json`），外加结构性重构判据 `judgement-h8-structural/`
+> （复用本节这 6 个 oracle + 11 条上游用例）。新 oracle 的清单与"必须保持"要点见
+> `01-refactor-targets.md` 的"加难档"一节。
 
 ## 5. 期望声明模型（写给 TestWorkflow 作者）
 
