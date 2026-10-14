@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStageFlow } from "../src/runtime/stage-flow.js";
 import { patchRefactorStage, presetWorkflowsStage } from "../src/runtime/stage-presets.js";
+import type { InjectionReport } from "../src/runtime/inject.js";
 
 /**
  * End-to-end through the real pipeline, with the two AI stages replaced by
@@ -242,7 +243,7 @@ describe("stage flow with preset stages", () => {
 
     const injected = JSON.parse(
       readFileSync(join(result.logDir, "artifacts", "injections.json"), "utf8"),
-    ) as { injections: { dest: string; files: { path: string; sha256: string }[] }[] };
+    ) as { injections: InjectionReport[] };
     expect(injected.injections).toHaveLength(2);
     for (const report of injected.injections) {
       expect(report.dest).toBe("judge");

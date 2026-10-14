@@ -24,7 +24,7 @@ import {
 import { describeProbe, evaluateRequirement, probeEnvironment, type ProbeReport } from "./runner/probe.js";
 import { prepareEnvironment } from "./runner/env.js";
 import {
-  dropEnvironment, readTask, runPartCase, runPipelineCase,
+  dropEnvironment, readInjectionReplaced, readTask, runPartCase, runPipelineCase,
   type JobContext, type PartRunResult, type PipelineRunResult,
 } from "./runner/drivers.js";
 import { evaluateBlocked, evaluatePart, evaluatePipeline, type CaseEvaluation } from "./runner/evaluate.js";
@@ -275,6 +275,7 @@ async function executeCase(c: SuiteCase, ctx: JobContext, options: Options): Pro
     summary: run.summary,
     mismatches: run.mismatches,
     comparisonErrors: run.comparisonErrors,
+    injectionReplaced: run.injectionReplaced,
     envDir: run.envDir,
     logDir: run.logDir,
     comparisonPath: run.comparisonPath,
@@ -569,6 +570,8 @@ async function reevaluateRun(suiteRoot: string, runDir: string, term: Term, opti
       summary: PipelineRunResult["summary"];
       mismatches: string[];
       comparisonErrors: string[];
+      injectionReplaced?: string[];
+      harnessPhase?: string;
       envDir: string | null;
       logDir: string | null;
       comparisonPath: string | null;
@@ -597,6 +600,8 @@ async function reevaluateRun(suiteRoot: string, runDir: string, term: Term, opti
       comparisonPath: stored.comparisonPath,
       mismatches: stored.mismatches,
       comparisonErrors: stored.comparisonErrors,
+      injectionReplaced: stored.injectionReplaced ?? readInjectionReplaced(stored.logDir),
+      harnessPhase: stored.harnessPhase ?? "unknown",
       pipelinePath: stored.pipelinePath ?? join(caseDir, "pipeline.json"),
       error: stored.error,
     };
@@ -775,7 +780,7 @@ async function main(): Promise<number> {
   display.finish(rows, outDir);
   if (options.json) process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
 
-  const counts = summary["counts"] as { passed: number; failed: number; blocked: number; errored: number };
+  const counts = summary["counts"] as { passed: number; failed: number; blocked: number; pendingRubric: number; errored: number };
   const failed = counts.failed + (options.strictEnv ? counts.blocked : 0);
   if (failed > 0 || counts.errored > 0) return 1;
   if (counts.passed + counts.pendingRubric + counts.blocked === 0) return 2;

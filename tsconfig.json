@@ -9,5 +9,5 @@
     "types": ["bun-types"],
     "noEmit": true
   },
-  "include": ["src", "scripts", "tests"]
+  "include": ["src", "scripts", "tests", "testset/run.ts", "testset/runner"]
 }

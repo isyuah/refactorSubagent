@@ -165,11 +165,7 @@ export async function runPipelineCase(
       mismatches = (comparison.declarations ?? []).filter((d) => !d.matched).map((d) => d.name);
       comparisonErrors = comparison.errors ?? [];
     }
-    const injectionsPath = join(logDir, "artifacts", "injections.json");
-    if (exists(injectionsPath)) {
-      const record = readJson<{ injections?: { preExisting?: string[] }[] }>(injectionsPath);
-      injectionReplaced = (record.injections ?? []).flatMap((entry) => entry.preExisting ?? []);
-    }
+    injectionReplaced = readInjectionReplaced(logDir);
   }
 
   return {
@@ -192,6 +188,15 @@ export async function runPipelineCase(
     pipelinePath,
     error: result.error,
   };
+}
+
+/** Recover injection evidence from both new and legacy saved runs. */
+export function readInjectionReplaced(logDir: string | null): string[] {
+  if (logDir === null) return [];
+  const path = join(logDir, "artifacts", "injections.json");
+  if (!exists(path)) return [];
+  const record = readJson<{ injections?: { preExisting?: string[] }[] }>(path);
+  return (record.injections ?? []).flatMap((entry) => entry.preExisting ?? []);
 }
 
 /** Delete the prepared environment (--drop-env); the evidence outside it stays. */

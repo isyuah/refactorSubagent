@@ -27,7 +27,8 @@ refactorSubagent/
 
 ```bash
 bun install
-bun test                                   # harness 全量测试（离线，含真 gcc/git）
+bun run check                              # 类型检查 + 工程测试 + 执行器自检
+bun run test:offline                        # 当前平台适用的离线用例，缺工具/配方会失败
 bun run scripts/cli.ts preflight           # 探测主机与项目
 bun run scripts/cli.ts run <repo> --task "<重构任务>" --session s1
 bun run scripts/cli.ts limits <repo>       # 当前生效的超时/资源阈值及其来源
@@ -48,7 +49,7 @@ bun run scripts/cli.ts limits <repo>       # 当前生效的超时/资源阈值�
 最短路径：
 
 ```bash
-bun testset/run.ts --list                                  # 44 个用例，按 subject 分组
+bun testset/run.ts --list                                  # 45 个用例，按 subject 分组
 bun testset/run.ts --self-test                             # 执行器自检（合成用例，不碰项目）
 bun testset/run.ts --subject judgement --tag offline       # 离线判据自测（不调模型）
 bun testset/run.ts --only e2e-t1-full --rubric-cmd "<命令>" # 端到端 + 裁判
@@ -59,3 +60,7 @@ bun testset/run.ts --only e2e-t1-full --rubric-cmd "<命令>" # 端到端 + 裁�
 判据材料在验证前才注入 worktree（候选看不到）。
 
 测试集只用 CLI 调用 harness（`bun scripts/cli.ts run …`），不 import 应用源码。
+
+`bun run typecheck` 单独检查宿主、脚本、测试和 testset 执行器；动态 workflow 材料由宿主的源码策略与运行验证检查。
+Windows/Linux CI 执行 `check` 和 `test:offline`，只按用例声明跳过不适用平台，其余环境缺失一律失败。
+离线证据默认写入较短的 `runs/c-<随机值>/`，也可指定 `--out <新目录>`；CI 使用临时目录以避免 MinGW 长路径问题。
