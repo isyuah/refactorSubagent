@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { evaluateRequirement, probeRecipe, type HostFacts, type ProbeReport } from "../testset/runner/probe.js";
 import { runPartCase } from "../testset/runner/drivers.js";
 import { evaluatePart } from "../testset/runner/evaluate.js";
@@ -75,6 +76,22 @@ describe("testset platform requirements", () => {
     expect(missingCompiler.detail).toContain("gcc");
     expect(probeRecipe("libuv-ninja-debug", host("darwin")).ok).toBe(false);
   });
+
+  const nativeToolchainAvailable = ["win32", "linux"].includes(process.platform)
+    && ["gcc", "cmake", "ninja"].every((tool) => Bun.which(tool) !== null);
+  test.skipIf(!nativeToolchainAvailable)("native GCC/Ninja recipe accepts Ninja as the default generator", () => {
+    const probeModule = fileURLToPath(new URL("../testset/runner/probe.ts", import.meta.url));
+    const script = "import { probeEnvironment } from " + JSON.stringify(probeModule)
+      + '; console.log(JSON.stringify(probeEnvironment(["gcc", "cmake", "ninja"], ["libuv-ninja-debug"]).recipes["libuv-ninja-debug"]));';
+    // Give the probe its environment at process startup, matching a CI host.
+    const result = Bun.spawnSync([process.execPath, "-e", script], {
+      env: { ...process.env, CMAKE_GENERATOR: "Ninja" },
+      stdout: "pipe", stderr: "pipe", timeout: 60_000,
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const recipe = JSON.parse(result.stdout.toString()) as { ok: boolean; detail: string };
+    expect(recipe.ok, recipe.detail).toBe(true);
+  }, 60_000);
 
   test("platform-only upstream cases are blocked before building their runner", async () => {
     const root = mkdtempSync(join(tmpdir(), "rfr-part-platform-"));

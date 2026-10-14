@@ -10,7 +10,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import type { Requires } from "./suite.js";
+
+const CMakeCapabilities = z.object({
+  generators: z.array(z.object({ name: z.string() })),
+});
 
 export interface ToolFact {
   readonly available: boolean;
@@ -103,9 +108,17 @@ function probeGccNinjaRecipe(host: HostFacts, platform: "win32" | "linux", id: s
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-  const generators = runTool(cmake.path, ["--help"]);
-  if (generators.code !== 0 || !/^\s{2}Ninja\s+=/m.test(generators.stdout)) {
-    return { id, ok: false, detail: "cmake does not offer the Ninja generator" };
+  const generators = runTool(cmake.path, ["-E", "capabilities"]);
+  if (generators.code !== 0) {
+    return { id, ok: false, detail: "cmake capabilities probe failed: " + (firstLine(generators.stdout) ?? "no output") };
+  }
+  try {
+    const capabilities = CMakeCapabilities.parse(JSON.parse(generators.stdout));
+    if (!capabilities.generators.some((generator) => generator.name === "Ninja")) {
+      return { id, ok: false, detail: "cmake does not offer the Ninja generator" };
+    }
+  } catch {
+    return { id, ok: false, detail: "cmake -E capabilities returned invalid generator metadata" };
   }
   return { id, ok: true, detail: `${targetName} · ${gcc.version ?? "gcc"} · ${cmake.version ?? "cmake"} · ${ninja.version ?? "ninja"}` };
 }

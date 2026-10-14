@@ -2,7 +2,7 @@
 
 > 文档日期：2026-10-14（§1–§11 为当前状态；带日期的验证记录对应各自里程碑，历史架构见文末附录）
 >
-> 当前定位：面向 C 代码的行为保持型重构原型。闭环已在 Windows + MinGW + Claude Agent SDK 环境完成真实端到端验证（含首个 `ACCEPTED`）；已补齐 Windows/Linux 工程检查与 CI 配置，并统一进程超时、取消和回收。最新验证见 §8.5，平台级宿主隔离仍待实现。
+> 当前定位：面向 C 代码的行为保持型重构原型。闭环已在 Windows + MinGW + Claude Agent SDK 环境完成真实端到端验证（含首个 `ACCEPTED`）；已补齐 Windows/Linux 工程检查与 CI 配置，并统一进程超时、取消和回收。验证记录见 §8.5–§8.6，平台级宿主隔离仍待实现。
 
 ## 1. 项目目标
 
@@ -83,7 +83,7 @@ deny 规则挡住（实测有效），其余破坏性命令靠"环境可弃 + �
 - Claude Code CLI
 
 新增 Linux 验证环境：WSL Ubuntu 24.04、Bun 1.3.14、GCC 13.3.0、CMake 3.28.3、Ninja 1.11.1。
-CI 矩阵为 Ubuntu 24.04 / Windows Server 2022，固定 Bun 1.3.14；配置已实现，远程任务尚未执行。
+CI 矩阵为 Ubuntu 24.04 / Windows Server 2022，固定 Bun 1.3.14；已触发远程任务，首轮结果与探测修复见 §8.6。
 
 项目已经处理 Windows 下的几个实际边界：
 
@@ -189,7 +189,7 @@ shared/
 └─ windows-process-host.ts        进入 Job 后启动目标、经 IPC 回报实际退出结果
 
 testset/                         用例材料、平台探测、CLI 执行与判定
-tests/                           32 个测试文件（最新证据见 §8.5）
+tests/                           32 个测试文件（验证证据见 §8.5–§8.6）
 examples/trim-app/               C 基线项目 + safe/broken 变体
 ```
 
@@ -399,7 +399,7 @@ capability 请求按 id 并发处理，等待进程不会阻塞同一进程的 s
 
 ## 8. 已执行验证
 
-本节记录**当前架构**下各里程碑的证据；2026-10-14 的最新结果见 §8.5，§8.1–§8.4 不视作本轮验证。历史架构见文末附录。
+本节记录**当前架构**下各里程碑的证据；2026-10-14 的结果见 §8.5–§8.6，§8.1–§8.4 不视作本轮验证。历史架构见文末附录。
 
 ### 8.1 工程检查（2026-09-10）
 
@@ -486,7 +486,19 @@ Windows 离线证据：`runs/w3/summary.json`、`runs/offline-20261014-final-win
 Linux 离线证据：`runs/offline-20261014-final-linux.txt`、`runs/offline-20261014-final-linux-summary.json`；完整环境保存在 WSL 缓存的 `runs/l3/`。H4/H7 有两条非阻断归因差异，功能判定均为 REJECTED，未修改冻结期望或判据。
 Windows 离线运行之后补上了 POSIX 嵌套 CLI 的关闭宽限；Windows Job 路径未改变，两端最新工程检查及嵌套取消回归均已通过。
 原始嵌套超时复现修复前留下存活工具，修复后 `toolStillAlive=false`；证据为 `runs/nested-timeout-fixed-20261014-linux.txt`。
-本轮未调用收费模型；CI 配置尚未在 GitHub 运行，不把本地通过等同于远程 CI 通过。
+本轮本地检查未调用收费模型；以上为本地证据，远程结果与后续探测修复见 §8.6。
+
+### 8.6 GitHub 首轮 CI 与默认 Ninja 探测修复（2026-10-14）
+
+[PR #3](https://github.com/isyuah/refactorSubagent/pull/3) 已建立。[首轮 PR CI](https://github.com/isyuah/refactorSubagent/actions/runs/38525276824)
+的 Ubuntu 24.04 工程检查和严格离线套件均通过；Windows Server 2022 工程检查通过，严格离线检查在配方探测阶段失败：
+`cmake does not offer the Ninja generator`。
+
+本机以 `CMAKE_GENERATOR=Ninja` 重现：CMake 的 `--help` 会将默认生成器写为 `* Ninja`，原正则只识别两个空格开头的 `Ninja`。
+探测改为读取 `cmake -E capabilities` 的 JSON 生成器列表，并校验返回结构与精确的 `Ninja` 名称。
+新增回归以独立进程的启动环境设置默认生成器，修复前失败、修复后通过；本机平台测试 6 pass / 0 fail，严格类型检查通过。
+
+修复提交后的完整远程结果由 [PR #3 Checks](https://github.com/isyuah/refactorSubagent/pull/3/checks) 记录。
 
 ## 9. 已知限制与风险
 
