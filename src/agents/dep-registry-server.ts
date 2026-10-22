@@ -4,13 +4,14 @@ import type {
   DependencyRegistry,
   InspectQuery,
 } from "./dep-registry.js";
+import { VerificationAnalysisInput, type VerificationAnalysisStore } from "./verification-analysis.js";
 
 /**
  * dep-registry MCP server binding. Exposes the host-side dependency registry
  * (inspect/declare/generate) as tools the test-writer session can call.
  *
- * The heavy logic lives in dep-registry.ts (unit-tested without Claude); this
- * file only adapts tool arguments/results to the MCP surface.
+ * Registry state lives in dep-registry.ts; the optional advisory report store
+ * lives in verification-analysis.ts. This file adapts arguments/results only.
  */
 
 const InspectInput = z.object({
@@ -26,11 +27,13 @@ const GenerateInput = z.object({
   name: z.string().min(1).max(128),
   description: z.string().max(1024).optional().default(""),
   content: z.string().min(1),
+  materials: z.array(z.object({ path: z.string().min(1), content: z.string() }).strict()).optional(),
 });
 
 export interface DependencyMcpServerOptions {
   readonly registry: DependencyRegistry;
   readonly serverName?: string;
+  readonly verificationAnalysis?: VerificationAnalysisStore;
 }
 
 /**
@@ -45,6 +48,7 @@ export function createDependencyMcpServer(
   options: DependencyMcpServerOptions,
 ): McpSdkServerConfigWithInstance {
   const registry = options.registry;
+  const verificationAnalysis = options.verificationAnalysis;
   const name = options.serverName ?? "dep-registry";
 
   return createSdkMcpServer({
@@ -120,7 +124,10 @@ export function createDependencyMcpServer(
         description:
           "Materialize a workflow-driven BuildWorkflow source. Provide a short " +
           "name, a description of what it builds and produces, and the complete " +
-          "TypeScript source. The host validates the source before writing; on " +
+          "TypeScript source. Optional materials [{path, content}] register fixed " +
+          "auxiliary sources or fixtures under build/verification/; the host hashes " +
+          "them and distributes identical inputs to baseline and candidate. " +
+          "The host validates source and material paths before writing; on " +
           "failure no file is created and the error is returned. Returns the " +
           "assigned workflow id for use in declareDependency.",
         inputSchema: GenerateInput.shape,
@@ -131,6 +138,7 @@ export function createDependencyMcpServer(
               name: parsed.name,
               description: parsed.description,
               content: parsed.content,
+              ...(parsed.materials !== undefined ? { materials: parsed.materials } : {}),
             });
             return {
               content: [{
@@ -140,6 +148,7 @@ export function createDependencyMcpServer(
                   `  workflow_id: ${result.workflowId}`,
                   `  revision: ${String(result.revision)}`,
                   `  lines: ${String(result.lineCount)}`,
+                  `  materials: ${JSON.stringify(result.materials)}`,
                   result.description.length > 0 ? `  description: ${result.description}` : "",
                 ].filter((line) => line.length > 0).join("\n"),
               }],
@@ -155,6 +164,32 @@ export function createDependencyMcpServer(
           }
         },
       },
+      ...(verificationAnalysis !== undefined ? [{
+        name: "submitVerificationAnalysis",
+        description:
+          "Save verification-scout's source investigation for this session. Report the " +
+          "recommended scope, required behavior observations, dependency treatment, evidence, limits, " +
+          "and open questions. For a test-double, identify its existing seam, simulated " +
+          "behavior, real implementation to retain, and lost integration coverage. " +
+          "Use source references with repository-relative paths and symbols/lines; label " +
+          "preflight facts and inferences separately. Artifact usage belongs to build-writer. " +
+          "Returns the accepted report and saved path. A corrected submission replaces " +
+          "the previous report during authoring; it does not register a workflow or material.",
+        inputSchema: VerificationAnalysisInput.shape,
+        handler: async (args: Record<string, unknown>) => {
+          try {
+            const result = verificationAnalysis.submit(args);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text" as const, text: `submitVerificationAnalysis failed: ${errorMessage(error)}` }],
+              isError: true,
+            };
+          }
+        },
+      }] : []),
     ],
   });
 }

@@ -120,8 +120,10 @@ export async function runTestSide(
     timeoutMs: options.timeoutMs,
   });
   return {
-    status: result.status,
-    failure: result.failure,
+    status: result.status === "pass" && result.expectations.length === 0 ? "failed" : result.status,
+    failure: result.status === "pass" && result.expectations.length === 0
+      ? "test workflow completed without any observations (ctx.expect)"
+      : result.failure,
     expectations: result.expectations,
     events: result.events,
   };

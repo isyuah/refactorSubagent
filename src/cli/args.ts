@@ -351,11 +351,11 @@ export const CLI_HELP = `Usage:
   refactor-subagent config [--project | --user]
   refactor-subagent limits [repo] [--format human|json]
 
-The run command executes the whole pipeline: preflight and analysis on the
-host, the test-writer session, the candidate worktrees, the refactor session,
+The run command executes the whole pipeline: host preflight facts, the
+test-writer's verification strategy, the candidate worktrees, the refactor session,
 then differential build + test execution and the verdict. Where each stage's
 INPUT comes from is configuration (see "Stage sources" below); by default every
-stage is AI-driven.
+authoring/refactor stage is AI-driven.
 
 Stage sources (accepted by "run"), later wins:
   --pipeline-file <path>      Extra pipeline layer, merged in order (repeatable)

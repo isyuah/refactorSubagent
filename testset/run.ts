@@ -29,6 +29,8 @@ import {
 } from "./runner/drivers.js";
 import { evaluateBlocked, evaluatePart, evaluatePipeline, type CaseEvaluation } from "./runner/evaluate.js";
 import { programmaticEvidence, runRubric, type RubricOutcome } from "./runner/rubric.js";
+import { runScoutCase, evaluateScout, ScoutRunSchema } from "./runner/scout-driver.js";
+import { runScoutRubric } from "./runner/scout-rubric.js";
 import { LiveDisplay, type Row } from "./runner/display.js";
 import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
 
@@ -55,6 +57,7 @@ interface Options {
   color: boolean;
   rubricCommand: string | null;
   rubricMin: number | null;
+  scoutModel: string | null;
   partFilter: string | null;
   frozen: string | null;
   reevaluate: string | null;
@@ -68,7 +71,7 @@ const HELP = `Usage: bun testset/run.ts [options]
 Selection:
   --only a,b            run exactly these case ids
   --exclude <substr>    drop case ids containing the substring (repeatable)
-  --subject judgement   subjects: judgement | refactor | writer | e2e | corpus
+  --subject judgement   subjects: judgement | refactor | writer | scout | e2e | corpus
   --tag offline         tag filter (repeatable/comma list)
   --filter <text>       free text over id/title/tags
   --part-filter <text>  corpus only: sub-case name filter
@@ -94,6 +97,7 @@ Execution:
   --force               erase a previous attempt in each selected case's output dir
   --rubric-cmd "<cmd>"  evaluation command, overrides evaluate.command in case.json
   --rubric-min <score>  fail a case below this rubric score (default: advisory)
+  --scout-model <name>  isolated scout model override (scout default min score: 0.8)
   --json                machine-readable list/summary output
   --no-color            plain output
 `;
@@ -122,6 +126,7 @@ function parseArgs(argv: readonly string[]): Options {
     color: true,
     rubricCommand: null,
     rubricMin: null,
+    scoutModel: null,
     partFilter: null,
     frozen: null,
     reevaluate: null,
@@ -159,10 +164,14 @@ function parseArgs(argv: readonly string[]): Options {
     else if (arg === "--no-color") options.color = false;
     else if (arg === "--rubric-cmd") options.rubricCommand = value();
     else if (arg === "--rubric-min") options.rubricMin = Number(value());
+    else if (arg === "--scout-model") options.scoutModel = value();
     else if (arg === "--help" || arg === "-h") {
       process.stdout.write(HELP);
       process.exit(0);
     } else throw new Error(`unknown option '${arg}' (try --help)`);
+  }
+  if (options.rubricMin !== null && (!Number.isFinite(options.rubricMin) || options.rubricMin < 0 || options.rubricMin > 1)) {
+    throw new Error("--rubric-min must be between 0 and 1");
   }
   return options;
 }
@@ -180,6 +189,9 @@ const RUNNER_OUTPUTS = [
   "env", "session", "prepare.json", "pipeline.json", "part-result.json",
   "run-result.json", "harness.stdout.txt", "harness.stderr.txt",
   "rubric-prompt.md", "rubric.stdout.txt", "rubric.stderr.txt", "rubric.json",
+  "prepare.stdout.txt", "prepare.stderr.txt",
+  "scout-request.json", "scout-input.json", "scout-analysis.json", "scout-result.json",
+  "scout-summary.txt", "scout-reference.json", "scout-rubric.md",
 ];
 
 /**
@@ -255,6 +267,21 @@ async function executeCase(c: SuiteCase, ctx: JobContext, options: Options): Pro
   });
   if (prepared.status === "blocked") return blockedOutcome(c, caseDir, prepared.reason ?? "environment not met");
   if (prepared.status !== "prepared") throw new Error(`prepare failed: ${prepared.reason ?? "unknown"}`);
+
+  if (c.kind === "scout") {
+    const run = await runScoutCase(ctx, c, readTask(c), options.scoutModel);
+    let rubric: RubricOutcome | null = null;
+    if (evaluateScout(run, null).status !== "failed" && run.result !== null) {
+      ctx.onPhase("rubric", "scout evidence assessment");
+      rubric = await runScoutRubric({
+        c, caseDir, result: run.result, command: options.rubricCommand ?? c.evaluate?.command ?? null,
+        minScore: options.rubricMin,
+      });
+    }
+    if (options.dropEnv) rmSync(prepared.envDir, { recursive: true, force: true });
+    return { evaluation: evaluateScout(run, rubric), caseDir, logDir: join(caseDir, "session"), comparisonPath: null,
+      extra: { scoutInput: join(caseDir, "scout-input.json"), scoutResult: join(caseDir, "scout-result.json") } };
+  }
 
   if (c.kind === "upstream-part") {
     if (c.part === null) throw new Error(`case ${c.id}: part definition missing`);
@@ -482,6 +509,12 @@ function printDryRun(suite: Suite, cases: readonly SuiteCase[], options: Options
       continue;
     }
     process.stdout.write(`  repo     ${join(caseDir, "env", c.repo)}\n`);
+    if (c.kind === "scout") {
+      process.stdout.write(`  scout    bun ${join(resolve(suite.root, ".."), "scripts", "eval-scout.ts")} <scout-request.json>\n`);
+      process.stdout.write(`  budget   ${JSON.stringify({ ...c.scout, ...(options.scoutModel ? { model: options.scoutModel } : {}) })}\n`);
+      process.stdout.write(`  judge    ${options.rubricCommand ?? c.evaluate?.command ?? "(pending; no scorer)"}; min=${options.rubricMin ?? 0.8}; critical fact at 0 fails\n\n`);
+      continue;
+    }
     process.stdout.write(`  config   ${join(caseDir, "pipeline.json")}\n`);
     process.stdout.write(`           ${JSON.stringify(materializePipeline(suite, c).stages)}\n`);
     for (const injection of c.inject) {
@@ -531,6 +564,7 @@ function freezeExpectations(suiteRoot: string, runDir: string, term: Term): numb
   let frozen = 0;
   const skipped: string[] = [];
   for (const c of suite.cases) {
+    if (c.kind === "scout") continue; // Model advice must never freeze its own reference.
     const seen = observed.get(c.id);
     if (seen === undefined || seen.blocked) continue;
     if (c.expect.state !== undefined && seen.state !== c.expect.state) {
@@ -587,6 +621,28 @@ async function reevaluateRun(suiteRoot: string, runDir: string, term: Term, opti
       rows.push({ id: c.id, subject: c.subject, status: "settled", phase: "", detail: "", startedAt: 0, elapsedMs: 0, evaluation: outcome.evaluation, error: null });
       continue;
     }
+    if (c.kind === "scout") {
+      try {
+        const run = ScoutRunSchema.parse(readJson(resultPath));
+        let rubric: RubricOutcome | null = null;
+        if (evaluateScout(run, null).status !== "failed" && run.result !== null) {
+          // Re-scoring invokes a command only when explicitly supplied here.
+          rubric = await runScoutRubric({ c, caseDir, result: run.result, command: options.rubricCommand,
+            minScore: options.rubricMin, reuseScore: options.rubricCommand === null });
+        }
+        const evaluation = evaluateScout(run, rubric);
+        if (evaluation.status === "failed") counts.failed++;
+        else if (evaluation.status === "pending-rubric") counts.pendingRubric++;
+        else counts.passed++;
+        rows.push({ id: c.id, subject: c.subject, status: "settled", phase: "", detail: "", startedAt: 0,
+          elapsedMs: run.elapsedMs, evaluation, error: null });
+      } catch (cause) {
+        counts.errored++;
+        rows.push({ id: c.id, subject: c.subject, status: "settled", phase: "", detail: "", startedAt: 0,
+          elapsedMs: 0, evaluation: null, error: cause instanceof Error ? cause.message : String(cause) });
+      }
+      continue;
+    }
     const envDir = stored.envDir !== null && existsSync(stored.envDir) ? stored.envDir : join(caseDir, "written");
     const run: PipelineRunResult = {
       status: stored.status,
@@ -615,7 +671,11 @@ async function reevaluateRun(suiteRoot: string, runDir: string, term: Term, opti
     else counts.passed++;
     rows.push({ id: c.id, subject: c.subject, status: "settled", phase: "", detail: "", startedAt: 0, elapsedMs: 0, evaluation, error: null });
   }
-  const summary = { suite: { root: suite.root }, startedAt: nowIso(), endedAt: nowIso(), counts, cases: rows.map((row) => ({ id: row.id, subject: row.subject, status: row.evaluation?.status ?? "not-run", checks: row.evaluation?.checks ?? [] })) };
+  const summary = { suite: { root: suite.root }, startedAt: nowIso(), endedAt: nowIso(), counts, cases: rows.map((row) => ({
+    id: row.id, subject: row.subject, status: row.error ? "error" : row.evaluation?.status ?? "not-run",
+    checks: row.evaluation?.checks ?? [], observed: row.evaluation?.observed ?? null,
+    rubric: row.evaluation?.rubric ?? null, error: row.error,
+  })) };
   writeJson(join(runDir, "summary.reevaluated.json"), summary);
   const display = new LiveDisplay(term, isTty() && !options.json);
   display.finish(rows, join(runDir, "summary.reevaluated.json"));
@@ -695,7 +755,7 @@ async function selfTest(term: Term): Promise<number> {
   const options: Options = {
     suitePath: root, out: outDir, concurrency: 2, list: false, dryRun: false, selfTest: false,
     calibrate: false, repeats: 0, rebuild: false, dropEnv: false, strictEnv: false, force: false, json: true,
-    color: false, rubricCommand: null, rubricMin: null, partFilter: null, frozen: null, reevaluate: null,
+    color: false, rubricCommand: null, rubricMin: null, scoutModel: null, partFilter: null, frozen: null, reevaluate: null,
     selection: { only: [], exclude: [], subjects: [], tags: [], filter: null },
   };
   const probe = probeEnvironment(["definitely-not-a-tool-xyz"], []);

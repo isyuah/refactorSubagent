@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   LocalDependencyRegistry,
   validateBuildWorkflowSource,
 } from "../src/agents/dep-registry.js";
+import { readVerificationMaterials } from "../src/workflow/verification-materials.js";
 
 const VALID_WORKFLOW_KIND = `export const workflowKind = "workflow-driven";
 `;
@@ -71,6 +72,49 @@ describe("validateBuildWorkflowSource", () => {
 });
 
 describe("LocalDependencyRegistry.generate", () => {
+  test("an interrupted source/material registration cannot be reused, and regeneration repairs it", async () => {
+    const { reg, root, sessionRoot } = makeRegistry("partial-write");
+    const input = { name: "partial", description: "", content: VALID_BUILD_SOURCE, materials: [{ path: "build/verification/probe.c", content: "int main(void) { return 0; }\n" }] };
+    const first = await reg.generate(input);
+    const entry = (await reg.resolveBuildEntry(first.workflowId))!.entry;
+    const sidecar = `${entry}.materials.json`;
+    unlinkSync(sidecar);
+    mkdirSync(sidecar); // force an actual write failure after the source write
+    await expect(reg.generate({ ...input, content: VALID_BUILD_SOURCE + "\n// replacement\n" })).rejects.toThrow();
+    expect((await reg.knownBuildIds()).includes(first.workflowId)).toBe(false);
+    expect(() => readVerificationMaterials(entry)).toThrow("registration is incomplete");
+    const restored = new LocalDependencyRegistry({ workspaceRoot: root, sessionRoot, sessionId: "partial-write" });
+    expect(await restored.resolveBuildEntry(first.workflowId)).toBeNull();
+    rmdirSync(sidecar);
+    await restored.generate(input);
+    expect((await restored.resolveBuildEntry(first.workflowId))?.entry).toBe(entry);
+    expect(readVerificationMaterials(entry)).toHaveLength(1);
+  });
+
+  test("auxiliary inputs and host-computed hashes survive a registry restart", async () => {
+    const { reg, root, sessionRoot } = makeRegistry("materials");
+    const material = { path: "build/verification/probe.c", content: "int main(void) { return 0; }\n" };
+    const generated = await reg.generate({ name: "with-helper", description: "", content: VALID_BUILD_SOURCE, materials: [material] });
+    const restored = new LocalDependencyRegistry({ workspaceRoot: root, sessionRoot, sessionId: "materials" });
+    const entry = (await restored.resolveBuildEntry(generated.workflowId))!.entry;
+    expect(readVerificationMaterials(entry)).toEqual([{ ...material, sha256: createHash("sha256").update(material.content).digest("hex") }]);
+    expect((await restored.inspect({ kind: "build", id: generated.workflowId })).items[0]?.materials).toEqual(generated.materials);
+    // Replacing a recipe with an empty material set cannot retain an old helper.
+    await restored.generate({ name: "with-helper", description: "", content: VALID_BUILD_SOURCE });
+    expect(readVerificationMaterials(entry)).toEqual([]);
+  });
+
+  test("unsafe and conflicting helper paths fail before any workflow is written", async () => {
+    const { reg, root } = makeRegistry();
+    for (const path of ["src/main.c", "build/verification/../main.c", "C:/tmp/probe.c", "build\\verification\\probe.c", "build/verification/NUL.c", "build/verification/probe.c:stream"]) {
+      await expect(reg.generate({ name: "bad", description: "", content: VALID_BUILD_SOURCE, materials: [{ path, content: "x" }] })).rejects.toThrow("verification material path");
+    }
+    for (const paths of [["build/verification/a.c", "build/verification/A.c"], ["build/verification/a", "build/verification/a/b.c"]]) {
+      await expect(reg.generate({ name: "bad", description: "", content: VALID_BUILD_SOURCE, materials: paths.map((path) => ({ path, content: "x" })) })).rejects.toThrow("conflicting verification material");
+    }
+    expect(existsSync(join(root, ".refactor", "runs", "sess-abc123", "workflows", "build"))).toBe(false);
+  });
+
   test("materializes a run-local build workflow under the repo run dir", async () => {
     const { reg, root } = makeRegistry();
     const result = await reg.generate({

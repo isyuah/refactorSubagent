@@ -1,0 +1,31 @@
+{
+  "version": 1, "difficulty": "basic",
+  "objective": "识别已有目标实际覆盖，而非惯性生成新 harness 或只运行 smoke test。",
+  "acceptableApproaches": [
+    "复用 key_semantics 对应的真实源码测试目标，由 build-writer 确认每侧构建、选择和结果读取。",
+    "自写同等有效的真实源码测试亦可，但须识别已有覆盖并说明为何值得新增。"
+  ],
+  "pitfalls": ["看到 add_test 即认为都有相关覆盖", "只选择 package_version", "一律否定已有测试", "把源码断言存在说成实测通过"],
+  "facts": [
+    {
+      "id": "relevant-existing-coverage", "weight": 4, "critical": true,
+      "requirement": "从 tests/key_test.c 与 CMake 关系确认 key_semantics 覆盖 normalize_key；package_version 没有该覆盖。不能仅凭目标名称或空 smoke 程序推荐复用。",
+      "anchors": [{"path": "CMakeLists.txt", "contains": ["add_test(NAME key_semantics COMMAND key_test)", "target_link_libraries(key_test PRIVATE key_core)", "add_test(NAME package_version COMMAND version_smoke)"]}, {"path": "tests/version_smoke.c", "contains": ["return 0;"]}]
+    },
+    {
+      "id": "normalization-semantics", "weight": 3, "critical": true,
+      "requirement": "说明仅 ASCII 字母/数字/连字符/下划线合法，大写转小写、下划线转连字符，空串有效；观察结果与错误码。已有测试明确包含转换、空串、非法字符和高位字节。",
+      "anchors": [{"path": "src/key.c", "contains": ["c == '-' || c == '_'", "c == '_' ? '-' : c"]}, {"path": "tests/key_test.c", "contains": ["\"ab-09-z\"", "normalize_key(\"\", out, 1)", "\"\\xFF\""]}]
+    },
+    {
+      "id": "error-and-output-contract", "weight": 2, "critical": false,
+      "requirement": "识别容量须容纳终止符，出错目的缓冲区保持不变；非法字符优先于容量错误，相关测试包含零容量/精确容量边界。",
+      "anchors": [{"path": "src/key.c", "contains": ["return -1;", "if (capacity <= length) return -2;"]}, {"path": "tests/key_test.c", "contains": ["normalize_key(\"?\", out, 0) == -1", "strcmp(out, \"sentinel\") == 0", "normalize_key(\"ABC\", out, 4)"]}]
+    },
+    {
+      "id": "evidence-based-reuse", "weight": 2, "critical": false,
+      "requirement": "建议与已读覆盖对应，若新增 harness 解释增益。要求每侧真实源码对应测试确实被发现并执行；不把存在测试等同于当前测试通过，不猜构建命令和产物路径。",
+      "anchors": [{"path": "tests/key_test.c", "contains": ["#define CHECK(x)", "return __LINE__;"]}, {"path": "CMakeLists.txt", "contains": ["add_library(key_core STATIC src/key.c)"]}]
+    }
+  ]
+}

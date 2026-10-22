@@ -60,7 +60,7 @@ logger.info("resuming verification from persisted artifacts", { root: options.ro
 // 1. Host facts (cheap, no AI).
 const limits = resolveLimits({ repoRoot: repo, overrides: limitOverrides }).limits;
 const host = probeHost(repo, { toolTimeoutMs: limits.probes.hostMs });
-const project = detectCProject(repo, host);
+const project = detectCProject(repo);
 logger.info("host + project probed", { status: project.status });
 
 // 2. Rebuild worktrees from the persisted refactor branch.

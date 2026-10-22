@@ -1,0 +1,6 @@
+{
+  "id": "scout-shared-library", "title": "进阶：共享库 ABI 与跨调用生命周期", "subject": "scout", "kind": "scout",
+  "tags": ["ai", "scout", "advanced", "abi", "lifecycle"],
+  "prepare": "../../resources/scout/prepare.ts", "repo": "repo", "task": "./task.txt",
+  "expect": { "method": "scout+rubric", "rubric": { "rubric": "resources/scout/rubric.md", "reference": "./reference.json" } }
+}

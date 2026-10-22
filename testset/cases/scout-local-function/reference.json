@@ -1,0 +1,31 @@
+{
+  "version": 1, "difficulty": "basic",
+  "objective": "在应用依赖旁识别可独立验证的真实源码，准确描述有界复制的行为。",
+  "acceptableApproaches": [
+    "优先用 source-harness 编译每侧的真实 src/text_copy.c 和原头文件。",
+    "若选择更大范围，须说明其确实能观察目标语义，以及承担应用依赖的理由。"
+  ],
+  "pitfalls": ["为了测复制函数要求安装 Vulkan 或运行图形界面", "仅比较字符串而不检查返回的完整长度", "复制函数实现到辅助代码中"],
+  "facts": [
+    {
+      "id": "return-and-truncation", "weight": 3, "critical": true,
+      "requirement": "识别返回值为完整源长度而非实际复制量；截断与未截断时都需观察返回值及目的缓冲区。",
+      "anchors": [{"path": "src/text_copy.c", "contains": ["length < capacity - 1", "return length;"]}]
+    },
+    {
+      "id": "buffer-boundaries", "weight": 3, "critical": true,
+      "requirement": "识别 capacity=0 时不写且允许 NULL dst，capacity=1 只写 NUL；应观察终止符和界外哨兵。不能将不重叠/有效字符串等调用前提当作已支持的非法输入。",
+      "anchors": [{"path": "include/text_copy.h", "contains": ["dst may be NULL only when capacity is zero", "No overlapping buffers"]}, {"path": "src/text_copy.c", "contains": ["if (capacity != 0)", "dst[copied] = '\\0';"]}]
+    },
+    {
+      "id": "scope-and-dependencies", "weight": 3, "critical": false,
+      "requirement": "说明函数仅依赖真实头文件/标准 size_t，无外部运行依赖；Vulkan 属于应用而非该函数。局部验证无需复制实现或修改生产源码；无充分理由将全工程构建视为唯一可行范围应扣分。",
+      "anchors": [{"path": "src/text_copy.c", "contains": ["#include \"text_copy.h\"", "size_t text_copy"]}, {"path": "CMakeLists.txt", "contains": ["find_package(Vulkan REQUIRED)"]}]
+    },
+    {
+      "id": "honest-feasibility", "weight": 1, "critical": false,
+      "requirement": "依据真实源码与缺少测试目标判断，给出需新增观察的建议；可将构建可行性交 build-writer 验证，不虚构现有测试、编译通过或产物位置。",
+      "anchors": [{"path": "README.md", "contains": ["There is currently no test target."]}, {"path": "CMakeLists.txt", "contains": ["add_executable(viewer src/application.c src/text_copy.c)"]}]
+    }
+  ]
+}

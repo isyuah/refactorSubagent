@@ -20,6 +20,8 @@ export const DeclaredBuildSetEntry = z.object({
   source_hash: Sha256Hex,
   /** True when generated this run (run-local); false = persisted library. */
   run_local: z.boolean(),
+  /** Pinned auxiliary inputs; contents are stored separately in run evidence. */
+  materials: z.array(z.object({ path: RelPath, sha256: Sha256Hex })).optional(),
 });
 export type DeclaredBuildSetEntry = z.infer<typeof DeclaredBuildSetEntry>;
 
@@ -30,7 +32,7 @@ export const DeclaredBuildSet = z.object({
   test_workflow_id: z.string().min(1),
   test_workflow_revision: z.number().int().positive(),
   builds: z.array(DeclaredBuildSetEntry),
-  /** Stable hash of the ordered declaration (id+revision+entry) for audit. */
+  /** Stable hash of the ordered declaration, workflow hashes and material hashes. */
   source_hash: Sha256Hex,
 });
 export type DeclaredBuildSet = z.infer<typeof DeclaredBuildSet>;

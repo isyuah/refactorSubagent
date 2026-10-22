@@ -10,10 +10,6 @@ export const ToolProbe = z.object({
 export const CMakePreflight = z.object({
   version: z.string().nullable().default(null),
   generators: z.array(z.string()).default([]),
-  default_generator: z.string().nullable().default(null),
-  c_compiler: z.string().nullable().default(null),
-  configure_probe: z.enum(["pass", "fail", "not-run"]).default("not-run"),
-  build_probe: z.enum(["pass", "fail", "not-run"]).default("not-run"),
   reason: z.string().nullable().default(null),
 });
 

@@ -1,0 +1,31 @@
+{
+  "version": 1, "difficulty": "intermediate",
+  "objective": "区分必须保留的真实解码依赖与可替换的资源接入点，并调查所有权和失败路径。",
+  "acceptableApproaches": [
+    "source-harness 编译 frame.c、wire.c、hex.c 真实实现，经 FrameMemory 回调控制分配。",
+    "库消费者亦可，须保留同样的真实依赖和可观察失败行为。"
+  ],
+  "pitfalls": ["将 checksum 或 hex_decode 固定返回成功", "假造不存在的全局 allocator setter", "只测成功解码不检查释放", "替身复制被测解码算法"],
+  "facts": [
+    {
+      "id": "retain-real-dependency-chain", "weight": 4, "critical": true,
+      "requirement": "追到 frame_parse -> wire_checksum 和 hex_decode -> nibble，指出校验/解码为核心真实逻辑；建议保留实现及头文件，不能 mock 掉校验、hex_decode 或复制算法。",
+      "anchors": [{"path": "src/frame.c", "contains": ["wire_checksum(wire, size - 1)", "hex_decode(wire + 2, payload, data)"]}, {"path": "src/hex.c", "contains": ["nibble(text[i])", "if (a < 0 || b < 0) return -1;"]}, {"path": "src/wire.c", "contains": ["sum += bytes[i]"]}]
+    },
+    {
+      "id": "concrete-memory-seam", "weight": 3, "critical": true,
+      "requirement": "指出 FrameMemory 的 ctx/alloc/release 是既有替换点；建议成功分配、分配失败、计数/释放检查；说明保留真实解析且替身不证明真实 allocator 的集成行为。只说 mock 依赖不足以满分。",
+      "anchors": [{"path": "include/frame.h", "contains": ["void *(*alloc)(void *, size_t)", "void (*release)(void *, void *)"]}, {"path": "src/frame.c", "contains": ["memory->alloc(memory->ctx, payload / 2 + 1)", "if (!data) return -4;"]}]
+    },
+    {
+      "id": "error-ownership-lifecycle", "weight": 3, "critical": true,
+      "requirement": "观察错误不改 out；坏 framing/checksum 不分配，坏 hex 释放已分配对象；成功转移所有权，frame_release 清空 data/size，重复对清空 frame 释放不再次释放。",
+      "anchors": [{"path": "include/frame.h", "contains": ["Caller provides a vacant out", "Errors leave out unchanged."]}, {"path": "src/frame.c", "contains": ["memory->release(memory->ctx, data);", "out->data = data;", "if (frame->data)", "frame->size = 0;"]}]
+    },
+    {
+      "id": "protocol-observations", "weight": 2, "critical": false,
+      "requirement": "报告短帧、长度/偶数限制、checksum、大小写十六进制、空 payload 等边界及解码结果/size/末尾零字节；不同错误码是可观察结果。无需设计每个具体输入字节。",
+      "anchors": [{"path": "src/frame.c", "contains": ["if (size < 3) return -1;", "payload % 2 != 0", "data[payload / 2] = 0;"]}, {"path": "src/hex.c", "contains": ["c >= 'a' && c <= 'f'", "c >= 'A' && c <= 'F'"]}]
+    }
+  ]
+}

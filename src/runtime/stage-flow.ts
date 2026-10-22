@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import { curateBuildWorkflow, loadAliases } from "../workflow/curator.js";
-import { analyzeRepo, type AnalysisResult } from "../agents/analyze.js";
 import { runRefactor } from "../agents/refactor.js";
 import { runWorkflowSession } from "../agents/workflow-session.js";
 import { LocalDependencyRegistry } from "../agents/dep-registry.js";
@@ -22,6 +21,12 @@ import { detectCProject } from "./project-detector.js";
 import { probeHost } from "./host-preflight.js";
 import { runWorkflowVerification, type WorkflowVerificationOutcome } from "./workflow-pipeline.js";
 import { applyInjections, type InjectionSpec } from "./inject.js";
+import { TrackedRepositoryGuard, type IntegrityInput } from "./verification-integrity.js";
+import {
+  mergeVerificationMaterials,
+  readVerificationMaterials,
+  type VerificationMaterial,
+} from "../workflow/verification-materials.js";
 import {
   commitCandidateChanges,
   createWorktrees,
@@ -73,7 +78,6 @@ import type { LayerOverrides } from "../config/layers.js";
 /** Stages in execution order. */
 export const STAGE_NAMES = [
   "preflight",
-  "analyze",
   "workflows",
   "prepare",
   "refactor",
@@ -102,7 +106,7 @@ export function isHalt<T>(value: StageResult<T>): value is StageHalt {
 export interface StageFlowRequest {
   /** Git repository containing the base C project. */
   readonly repoPath: string;
-  /** Natural-language refactoring task given to Analyze and Refactor agents. */
+  /** Natural-language task given to workflow writers and the Refactor agent. */
   readonly task: string;
   /** Root under which the durable session is created. */
   readonly sessionRoot: string;
@@ -134,6 +138,7 @@ export interface DeclaredAgentResolution {
   readonly testResolution: TestWorkflowResolution;
   /** Resolved build workflows, in declaration order. */
   readonly buildResolutions: readonly BuildWorkflowResolution[];
+  readonly materials: readonly VerificationMaterial[];
   readonly testSource: string;
   readonly workflowId: string;
   readonly workflowRevision: number;
@@ -150,7 +155,6 @@ export interface StageFlowResult {
   readonly store: SessionStore;
   readonly state: string;
   readonly refactorSummary: string;
-  readonly analysis: AnalysisResult | null;
   readonly declared: DeclaredAgentResolution | null;
   readonly verification: WorkflowVerificationOutcome | null;
   readonly provenance: StageProvenance;
@@ -176,10 +180,6 @@ export interface StageContext {
 export interface PreflightOutcome {
   readonly host: HostPreflight;
   readonly project: ProjectDetection;
-}
-
-export interface AnalysisOutcome {
-  readonly analysis: AnalysisResult;
 }
 
 export interface WorkflowsOutcome {
@@ -208,28 +208,23 @@ export interface PatchFacts {
 
 export interface RefactorStageInput {
   readonly preflight: PreflightOutcome;
-  readonly analysis: AnalysisOutcome | null;
   readonly workflows: WorkflowsOutcome;
   readonly candidate: CandidateWorkspace;
 }
 
 export interface VerifyStageInput {
   readonly preflight: PreflightOutcome;
-  readonly analysis: AnalysisOutcome | null;
   readonly workflows: WorkflowsOutcome;
   readonly candidate: CandidateWorkspace;
   readonly refactor: RefactorOutcome;
   readonly patch: PatchFacts;
+  readonly injectedFiles: readonly IntegrityInput[];
 }
 
 export type PreflightStage = (ctx: StageContext) => Promise<StageResult<PreflightOutcome>>;
-export type AnalyzeStage = (
-  ctx: StageContext,
-  input: { readonly preflight: PreflightOutcome },
-) => Promise<StageResult<AnalysisOutcome>>;
 export type WorkflowsStage = (
   ctx: StageContext,
-  input: { readonly preflight: PreflightOutcome; readonly analysis: AnalysisOutcome | null },
+  input: { readonly preflight: PreflightOutcome },
 ) => Promise<StageResult<WorkflowsOutcome>>;
 export type PrepareStage = (
   ctx: StageContext,
@@ -247,7 +242,6 @@ export type VerifyStage = (
 /** Replaceable stages. Every omission falls back to the host default (AI-backed). */
 export interface StageFlow {
   readonly preflight?: PreflightStage;
-  readonly analyze?: AnalyzeStage;
   readonly workflows?: WorkflowsStage;
   readonly prepare?: PrepareStage;
   readonly refactor?: RefactorStage;
@@ -301,15 +295,15 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       ? { knownEnvironmentPatterns: req.knownEnvironmentPatterns }
       : {}),
   };
-  let analysis: AnalysisResult | null = null;
   let declared: DeclaredAgentResolution | null = null;
   let verification: WorkflowVerificationOutcome | null = null;
   let refactorSummary = "";
   let worktrees: WorktreePair | null = null;
   const done = (): StageFlowResult =>
-    result(store, logger, analysis, declared, verification, refactorSummary, provenance);
+    result(store, logger, declared, verification, refactorSummary, provenance);
 
   try {
+    const originalRepository = new TrackedRepositoryGuard(req.repoPath);
     logger.phase("PREFLIGHT");
     logger.artifact("stage-provenance.json", provenance);
     if (provenance.injected.length > 0) {
@@ -323,24 +317,16 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       abort(orch, preflight.reason);
       return done();
     }
-    if (preflight.project.status !== "ready") {
-      abort(orch, `project build detection blocked: ${preflight.project.reason}`);
+    if (preflight.project.status === "no-c-sources") {
+      abort(orch, `project detection blocked: ${preflight.project.reason}`);
       return done();
     }
-
-    logger.phase("ANALYSIS");
-    const analyzed = await (flow.analyze ?? defaultAnalyzeStage)(ctx, { preflight });
-    if (isHalt(analyzed)) {
-      abort(orch, analyzed.reason);
-      return done();
-    }
-    analysis = analyzed.analysis;
 
     logger.phase("WORKFLOW_SESSION");
     const workflows = await (flow.workflows ?? defaultWorkflowsStage)(ctx, {
       preflight,
-      analysis: analyzed,
     });
+    originalRepository.assertUnchanged("after workflow authoring");
     if (isHalt(workflows)) {
       abort(orch, workflows.reason);
       return done();
@@ -353,14 +339,16 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       return done();
     }
     worktrees = prepared.worktrees;
+    const baselineRepository = new TrackedRepositoryGuard(worktrees.baselineDir);
 
     logger.phase("REFACTOR");
     const refactored = await (flow.refactor ?? defaultRefactorStage)(ctx, {
       preflight,
-      analysis: analyzed,
       workflows,
       candidate: prepared,
     });
+    originalRepository.assertUnchanged("after candidate refactoring");
+    baselineRepository.assertUnchanged("after candidate refactoring");
     if (isHalt(refactored)) {
       abort(orch, refactored.reason);
       return done();
@@ -390,6 +378,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
     // injection cannot appear in the measured change set) and the refactor
     // session is over (so it never saw what it is judged by). The verification
     // stage itself is untouched and stays authoritative.
+    const injectedFiles = new Map<string, IntegrityInput>();
     if (req.injections !== undefined && req.injections.length > 0) {
       const reports = applyInjections(
         [prepared.worktrees.baselineDir, prepared.worktrees.candidateDir],
@@ -397,6 +386,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       );
       logger.artifact("injections.json", { injections: reports });
       for (const report of reports) {
+        for (const file of report.files) injectedFiles.set(file.path, { path: file.path, sha256: file.sha256 });
         logger.info("judge material injected", {
           source: report.source,
           dest: report.dest,
@@ -412,15 +402,15 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       abort(orch, "declared workflow resolution missing or empty build set");
       return done();
     }
-    logger.info("workflow verification started", { phase_detail: "all builds + ctest both sides" });
+    logger.info("workflow verification started", { phase_detail: "all declared builds + observations on both sides" });
     const verificationStarted = performance.now();
     const verified = await (flow.verify ?? defaultVerifyStage)(ctx, {
       preflight,
-      analysis: analyzed,
       workflows,
       candidate: prepared,
       refactor: refactored,
       patch,
+      injectedFiles: [...injectedFiles.values()],
     });
     if (isHalt(verified)) {
       abort(orch, verified.reason);
@@ -465,7 +455,7 @@ export const defaultPreflightStage: PreflightStage = async (ctx) => {
     return probed;
   });
   const project = timed(ctx.logger, "project detection", () => {
-    const detected = detectCProject(ctx.repoPath, host);
+    const detected = detectCProject(ctx.repoPath);
     ctx.store.saveProjectDetection(detected);
     ctx.logger.artifact("project-detection.json", detected);
     return detected;
@@ -477,21 +467,6 @@ export const defaultPreflightStage: PreflightStage = async (ctx) => {
     source_file_count: project.source_files.length,
   });
   return { host, project };
-};
-
-/** Host default: the host-side probe report (no model call). */
-export const defaultAnalyzeStage: AnalyzeStage = async (ctx, input) => {
-  const analysis = timed(ctx.logger, "host-side analysis probe", () =>
-    analyzeRepo({
-      repoDir: ctx.repoPath,
-      taskContext: ctx.task,
-      host: input.preflight.host,
-      project: input.preflight.project,
-    }),
-  );
-  ctx.logger.artifact("analysis-report.txt", { report: analysis.report });
-  ctx.logger.info("project probed; host-side report prepared");
-  return { analysis };
 };
 
 /** Host default: the AI test-writer declares the build set and the test workflow. */
@@ -606,6 +581,8 @@ export const defaultVerifyStage: VerifyStage = async (ctx, input) => {
     test: declared.testResolution,
     declaredSet: declared.declaredSet,
     declaredBuilds: declared.buildResolutions,
+    materials: declared.materials,
+    injectedFiles: input.injectedFiles,
     patch: {
       branch: input.patch.branch,
       commit_sha: input.patch.commit_sha,
@@ -642,7 +619,6 @@ function abort(orch: Orchestrator, reason: string): void {
 function result(
   store: SessionStore,
   logger: E2ELogger,
-  analysis: AnalysisResult | null,
   declared: DeclaredAgentResolution | null,
   verification: WorkflowVerificationOutcome | null,
   refactorSummary: string,
@@ -652,7 +628,6 @@ function result(
     store,
     state: store.state,
     refactorSummary,
-    analysis,
     declared,
     verification,
     provenance,
@@ -697,11 +672,9 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Hash the ordered declaration (id:entry) for the artifact audit field. */
-function declaredSetHash(builds: readonly { id: string; entry: string }[]): string {
-  const h = createHash("sha256");
-  for (const b of builds) h.update(`${b.id}:${b.entry}\n`);
-  return h.digest("hex");
+/** Hash the actual pinned declaration rather than only its source locations. */
+function declaredSetHash(builds: DeclaredBuildSetValue["builds"]): string {
+  return createHash("sha256").update(JSON.stringify(builds), "utf8").digest("hex");
 }
 
 /**
@@ -742,6 +715,7 @@ async function runDeclaredResolution(options: {
   }
   options.logger.info("test-writer session completed", {
     declared_builds: session.declaredBuilds.join(", "),
+    verification_analysis: session.verificationAnalysisPath,
     summary: session.summary.slice(0, 200),
   });
 
@@ -907,34 +881,33 @@ export function buildDeclaredResolution(options: {
   readonly resolved: ResolvedDeclaredWorkflows;
 }): DeclaredAgentResolution {
   const testSource = existsSync(options.testEntry) ? readFileSync(options.testEntry, "utf8") : "";
+  const inputs = options.builds.map((build) => ({ build, materials: readVerificationMaterials(build.entry) }));
+  const materials = mergeVerificationMaterials(inputs.flatMap((input) => [...input.materials]));
+  const builds = inputs.map(({ build: b, materials: buildMaterials }) => ({
+    id: b.id,
+    entry: relative(options.repoDir, b.entry).split("\\").join("/"),
+    source_hash: options.resolved.builds.find((r) => r.id === b.id)?.resolution.sourceHash ?? "",
+    run_local: b.runLocal,
+    materials: buildMaterials.map(({ path, sha256 }) => ({ path, sha256 })),
+  }));
   const declaredSet: DeclaredBuildSetValue = {
     kind: "declared-build-set",
     version: 1,
     test_workflow_id: options.workflowId,
     test_workflow_revision: options.revision,
-    builds: options.builds.map((b) => ({
-      id: b.id,
-      entry: relative(options.repoDir, b.entry).split("\\").join("/"),
-      source_hash: b.runLocal
-        ? sha256File(b.entry)
-        : options.resolved.builds.find((r) => r.id === b.id)?.resolution.sourceHash ?? "",
-      run_local: b.runLocal,
-    })),
-    source_hash: declaredSetHash(options.builds),
+    builds,
+    source_hash: declaredSetHash(builds),
   };
 
   return {
     declaredSet,
     testResolution: options.resolved.test,
     buildResolutions: options.resolved.builds.map((b) => b.resolution),
+    materials,
     testSource,
     workflowId: options.workflowId,
     workflowRevision: options.revision,
   };
-}
-
-function sha256File(path: string): string {
-  return createHash("sha256").update(readFileSync(path, "utf8"), "utf8").digest("hex");
 }
 
 /** Test workflow-resolution artifact (declared mode, no single build ref). */
@@ -968,6 +941,10 @@ async function promoteRunLocalBuilds(
   const existingAliases = loadAliases(repoRoot).aliases;
   for (const build of declared.declaredSet.builds) {
     if (!build.run_local) continue;
+    if ((build.materials?.length ?? 0) > 0) {
+      logger.info(`keeping build '${build.id}' run-local: task-specific verification materials are not promoted`);
+      continue;
+    }
     if (existingAliases[build.id] !== undefined) continue; // already promoted
     const entry = join(repoRoot, build.entry);
     if (!existsSync(entry)) {

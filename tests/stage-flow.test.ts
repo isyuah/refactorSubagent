@@ -10,7 +10,7 @@ import type { InjectionReport } from "../src/runtime/inject.js";
 
 /**
  * End-to-end through the real pipeline, with the two AI stages replaced by
- * presets: preflight → analysis → declared workflows → worktrees → patch →
+ * presets: preflight → declared workflows → worktrees → patch →
  * differential build + test → verdict. No model call, real gcc, real git.
  */
 

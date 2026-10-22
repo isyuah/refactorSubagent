@@ -85,5 +85,14 @@ function isWorkflowEvent(value: unknown): value is WorkflowEvent {
     typeof record.method === "string" &&
     typeof record.ok === "boolean" &&
     typeof record.durationMs === "number" &&
-    (record.error === null || typeof record.error === "string");
+    (record.error === null || typeof record.error === "string") &&
+    (record.execution === undefined || isProcessExecution(record.execution));
+}
+
+function isProcessExecution(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return ["exited", "timeout", "output_limit", "spawn_error", "stopped"].includes(String(record.status)) &&
+    (record.exitCode === null || (typeof record.exitCode === "number" && Number.isInteger(record.exitCode))) &&
+    (record.signal === null || typeof record.signal === "string");
 }

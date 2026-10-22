@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(viewer C)
+find_package(Vulkan REQUIRED)
+add_executable(viewer src/application.c src/text_copy.c)
+target_include_directories(viewer PRIVATE include)
+target_link_libraries(viewer PRIVATE Vulkan::Vulkan)

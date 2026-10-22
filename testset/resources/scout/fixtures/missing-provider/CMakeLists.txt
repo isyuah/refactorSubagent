@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(device_reader C)
+find_package(DeviceSDK REQUIRED)
+configure_file(config/device_options.h.in generated/device_options.h)
+add_library(device_reader STATIC src/device.c)
+target_include_directories(device_reader PUBLIC include PRIVATE vendor/include ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(device_reader PRIVATE DeviceSDK::Transport)

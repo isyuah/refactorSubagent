@@ -1,0 +1,2 @@
+计划重构 src/text_copy.c 中 text_copy 的长度计算与复制循环，保持既有行为。
+请调查验证所需的范围、关键行为和依赖，向 test-writer 提交建议。

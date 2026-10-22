@@ -1,0 +1,6 @@
+{
+  "id": "scout-local-function", "title": "基础：局部纯函数与应用依赖的边界", "subject": "scout", "kind": "scout",
+  "tags": ["ai", "scout", "basic", "scope", "contrast-pair"],
+  "prepare": "../../resources/scout/prepare.ts", "repo": "repo", "task": "./task.txt",
+  "expect": { "method": "scout+rubric", "rubric": { "rubric": "resources/scout/rubric.md", "reference": "./reference.json" } }
+}

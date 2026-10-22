@@ -1,0 +1,2 @@
+计划重构 src/frame.c 的 frame_parse 和 frame_release，保持协议解析、错误和资源管理行为。
+请调查验证所需的范围、关键行为和依赖，向 test-writer 提交建议。

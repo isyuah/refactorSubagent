@@ -211,6 +211,12 @@ export type WorkflowFunction = (
    readonly ok: boolean;
    readonly durationMs: number;
    readonly error: string | null;
+   /** Host-observed process result, independent of what the workflow asserts. */
+   readonly execution?: {
+     readonly status: ProcessResult["status"];
+     readonly exitCode: number | null;
+     readonly signal: string | null;
+   };
  }
 
 /** A step declared by a workflow for observability. IDs are host-assigned. */

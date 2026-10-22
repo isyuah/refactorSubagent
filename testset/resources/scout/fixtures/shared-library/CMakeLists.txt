@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(counter_library C)
+add_library(counter SHARED src/counter.c)
+target_compile_definitions(counter PRIVATE COUNTER_BUILD)
+target_include_directories(counter PUBLIC include)
+set_target_properties(counter PROPERTIES C_VISIBILITY_PRESET hidden)

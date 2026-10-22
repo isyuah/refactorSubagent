@@ -1,0 +1,2 @@
+计划整理 src/config.c 的 config_load 和解析逻辑，保持读取、校验及错误行为。
+请调查验证所需的范围、关键行为和依赖，向 test-writer 提交建议。

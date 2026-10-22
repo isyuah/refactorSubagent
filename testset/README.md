@@ -15,15 +15,17 @@
 - [`02-testset-requirements.md`](../docs/testset/02-testset-requirements.md) — 判据需求与判定规则
 - [`01-refactor-targets.md`](../docs/testset/01-refactor-targets.md) — 可重构点与覆盖缺口
 - [`04-rubric.md`](../docs/testset/04-rubric.md) — 裁判给分标准
+- [`05-scout-evaluation.md`](../docs/testset/05-scout-evaluation.md) — scout 独立评测：分级场景、证据评分与复评
 
 ```bash
 cd <repo-root>
 
-bun testset/run.ts --list                                   # 45 个用例（扫描 cases/*/case.json）
+bun testset/run.ts --list                                   # 扫描 cases/*/case.json
 bun testset/run.ts --self-test                              # 执行器自检（合成用例，不碰项目）
 bun testset/run.ts --subject judgement --concurrency 2      # 判据本体：离线、不调模型
 bun testset/run.ts --only judgement-accept-comment          # 单个用例
 bun testset/run.ts --dry-run --subject writer               # 只看会做什么
+bun testset/run.ts --dry-run --subject scout                # 独立调查评测计划，不调用模型
 bun testset/run.ts --reevaluate runs/<批>                   # 用已存结果重判（零模型成本）
 bun testset/run.ts --freeze runs/<批>                       # 用实测失配集冻结 case.json 的期望
 ```

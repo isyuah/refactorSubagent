@@ -30,6 +30,13 @@ import {
 import type { WorktreePair } from "./worktree.js";
 import type { E2ELogger } from "./e2e-log.js";
 import type { Limits } from "../config/limits.js";
+import type { WorkflowEvent } from "../workflow/types.js";
+import { VerificationIntegrity, type IntegrityInput } from "./verification-integrity.js";
+import {
+  mergeVerificationMaterials,
+  readVerificationMaterials,
+  type VerificationMaterial,
+} from "../workflow/verification-materials.js";
 
 export interface WorkflowVerificationRequest {
   readonly repoPath: string;
@@ -49,6 +56,8 @@ export interface WorkflowVerificationRequest {
   readonly declaredSet?: DeclaredBuildSetValue;
   /** Declared build resolutions, in declaration order (executed each side). */
   readonly declaredBuilds?: readonly BuildWorkflowResolution[];
+  readonly materials?: readonly VerificationMaterial[];
+  readonly injectedFiles?: readonly IntegrityInput[];
   readonly patch: Omit<PatchRecord, "kind" | "version" | "base_commit_sha">;
   /** Resolved host limits; every stage budget and resource cap comes from here. */
   readonly limits: Limits;
@@ -68,9 +77,9 @@ export interface WorkflowVerificationOutcome {
 }
 
 /**
- * Execute one complete Workflow-backed CTest verification attempt.
+ * Execute one complete workflow-backed differential verification attempt.
  *
- * Claude supplies the analysis artifacts and patch; this function owns every
+ * Writers supply the workflows and patch; this function owns every
  * execution decision after that point. Both worktrees receive the exact same
  * validated BuildWorkflow and materialized TestWorkflow.
  */
@@ -79,7 +88,51 @@ export async function runWorkflowVerification(
 ): Promise<WorkflowVerificationOutcome> {
   const orch = new Orchestrator(request.store);
   const results: SubmitResult[] = [];
+  try {
+    const builds = request.declaredBuilds ?? [request.build];
+    const materials = mergeVerificationMaterials(request.materials ??
+      builds.flatMap((build) => [...readVerificationMaterials(build.entry)]));
+    if (request.declaredSet !== undefined) {
+      const pins = new Map(request.declaredSet.builds.flatMap((build) =>
+        (build.materials ?? []).map((material) => [material.path, material.sha256] as const)));
+      if (pins.size !== materials.length || materials.some((material) => pins.get(material.path) !== material.sha256)) {
+        throw new Error("verification materials do not match the declared build set");
+      }
+    }
+    const integrity = new VerificationIntegrity({
+      originalRepo: request.repoPath,
+      worktrees: [
+        { root: request.worktrees.baselineDir, commit: request.worktrees.baseSha },
+        { root: request.worktrees.candidateDir, commit: request.patch.commit_sha },
+      ],
+      workflows: [...builds, request.test],
+      materials,
+      injectedFiles: request.injectedFiles,
+    });
+    request.logger?.artifact("verification-materials.json", { version: 1, materials });
+    return await verifyWorkflows({ ...request, integrity }, orch, results);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    request.logger?.error(`workflow verification aborted: ${reason}`);
+    results.push(orch.abort(reason));
+    return emptyOutcome(request.store.state, results);
+  }
+}
+
+interface CheckedVerificationRequest extends WorkflowVerificationRequest {
+  readonly integrity: VerificationIntegrity;
+}
+
+async function verifyWorkflows(
+  request: CheckedVerificationRequest,
+  orch: Orchestrator,
+  results: SubmitResult[],
+): Promise<WorkflowVerificationOutcome> {
   const submit = (artifact: unknown): boolean => {
+    const kind = kindOf(artifact);
+    if (kind === "expectation-comparison-result" || kind === "ctest-comparison-result") {
+      request.integrity.check("before submitting the verification verdict");
+    }
     const result = orch.submit(artifact);
     results.push(result);
     request.logger?.info(
@@ -134,8 +187,12 @@ export async function runWorkflowVerification(
   // logic once per worktree and declare expectations; the host compares.
   if (request.test.workflow === null) {
     if (request.declaredBuilds !== undefined && request.declaredBuilds.length > 0) {
-      const buildList = request.declaredBuilds.map((resolution) => ({
-        id: resolution.manifest.id,
+      const declaration = request.declaredSet?.builds;
+      if (declaration !== undefined && declaration.length !== request.declaredBuilds.length) {
+        throw new Error("resolved build count does not match the declared build set");
+      }
+      const buildList = request.declaredBuilds.map((resolution, index) => ({
+        id: declaration === undefined ? resolution.manifest.id : declaration[index]!.id,
         resolution,
       }));
       return runDeclaredWorkflowVerification(request, orch, results, submit, environment, buildList);
@@ -233,7 +290,7 @@ interface BuildToExecute {
 }
 
 async function runSelfDrivenVerification(
-  request: WorkflowVerificationRequest,
+  request: CheckedVerificationRequest,
   orch: Orchestrator,
   results: SubmitResult[],
   submit: (artifact: unknown) => boolean,
@@ -246,7 +303,7 @@ async function runSelfDrivenVerification(
 }
 
 async function runSelfDrivenCore(
-  request: WorkflowVerificationRequest,
+  request: CheckedVerificationRequest,
   orch: Orchestrator,
   results: SubmitResult[],
   submit: (artifact: unknown) => boolean,
@@ -265,19 +322,7 @@ async function runSelfDrivenCore(
     return empty({ baselineBuild });
   }
 
-  request.logger?.phase("BASELINE_TEST_WORKFLOW");
-  const baselineRun = await runTestSide(request.test.entry, request.worktrees.baselineDir, {
-    host: request.host,
-    project: request.project,
-    policy: testWorkflowPolicy(request),
-    input: {
-      kind: "test-workflow-input",
-      version: 1,
-      build_workflow_id: request.build.manifest.id,
-      build_workflow_revision: request.build.manifest.revision,
-    },
-    timeoutMs: request.limits.stages.testWorkflowMs ?? undefined,
-  });
+  const baselineRun = await runObservedTest(request, request.worktrees.baselineDir, "baseline");
   if (baselineRun.status !== "pass") {
     results.push(orch.abort(`baseline test workflow failed: ${baselineRun.failure ?? baselineRun.status}`));
     return empty({ baselineBuild });
@@ -306,19 +351,7 @@ async function runSelfDrivenCore(
     return empty({ baselineBuild, candidateBuild });
   }
 
-  request.logger?.phase("CANDIDATE_TEST_WORKFLOW");
-  const candidateRun = await runTestSide(request.test.entry, request.worktrees.candidateDir, {
-    host: request.host,
-    project: request.project,
-    policy: testWorkflowPolicy(request),
-    input: {
-      kind: "test-workflow-input",
-      version: 1,
-      build_workflow_id: request.build.manifest.id,
-      build_workflow_revision: request.build.manifest.revision,
-    },
-    timeoutMs: request.limits.stages.testWorkflowMs ?? undefined,
-  });
+  const candidateRun = await runObservedTest(request, request.worktrees.candidateDir, "candidate");
   if (candidateRun.status !== "pass") {
     results.push(orch.abort(`candidate test workflow failed: ${candidateRun.failure ?? candidateRun.status}`));
     return empty({ baselineBuild, candidateBuild });
@@ -379,6 +412,32 @@ async function runSelfDrivenCore(
   };
 }
 
+async function runObservedTest(
+  request: CheckedVerificationRequest,
+  cwd: string,
+  side: "baseline" | "candidate",
+) {
+  request.logger?.phase(`${side.toUpperCase()}_TEST_WORKFLOW`);
+  request.integrity.check(`before ${side} test workflow`);
+  const result = await runTestSide(request.test.entry, cwd, {
+    host: request.host,
+    project: request.project,
+    policy: testWorkflowPolicy(request),
+    input: { kind: "test-workflow-input", version: 1 },
+    timeoutMs: request.limits.stages.testWorkflowMs ?? undefined,
+  });
+  request.logger?.artifact(`${side}-test-workflow-run.json`, result);
+  request.integrity.check(`after ${side} test workflow`);
+  const executionFailure = invalidExecution(result.events);
+  if (executionFailure !== null) throw new Error(`${side} test workflow has an invalid process execution: ${executionFailure}`);
+  if (result.status === "pass" && !result.events.some((event) => event.ok &&
+      ((event.capability === "process" && (event.method === "run" || event.method === "wait")) ||
+       (event.capability === "fs" && ["readFile", "snapshot", "diff"].includes(event.method))))) {
+    throw new Error(`${side} test workflow did not run or read any implementation artifact`);
+  }
+  return result;
+}
+
 function testWorkflowPolicy(request: WorkflowVerificationRequest) {
   const caps = request.limits.resources.test;
   return {
@@ -402,20 +461,20 @@ function testWorkflowPolicy(request: WorkflowVerificationRequest) {
  * Stops at the first failure (fail-closed). Single-build callers pass one item.
  */
 async function executeBuildList(
-  request: WorkflowVerificationRequest,
+  request: CheckedVerificationRequest,
   cwd: string,
   side: "baseline" | "candidate",
   buildList: readonly BuildToExecute[],
 ): Promise<BuildWorkflowExecution> {
   let last: BuildWorkflowExecution | null = null;
-  for (const item of buildList) {
+  for (const [index, item] of buildList.entries()) {
     request.logger?.info(`executing ${side} build ${item.id}`, { cwd });
     const result = await executeBuildFor(
       request,
       item.resolution,
       cwd,
       side,
-      `${side}-build-${item.id.replace(/[^A-Za-z0-9._-]/g, "_")}`,
+      `${side}-build-${index + 1}-${item.id.replace(/[^A-Za-z0-9._-]/g, "_")}`,
     );
     last = result;
     if (result.status !== "pass") {
@@ -436,7 +495,7 @@ async function executeBuildList(
 }
 
 async function executeBuild(
-  request: WorkflowVerificationRequest,
+  request: CheckedVerificationRequest,
   cwd: string,
   build: "baseline" | "candidate",
 ): Promise<BuildWorkflowExecution> {
@@ -445,12 +504,13 @@ async function executeBuild(
 
 /** Execute one build workflow resolution in one worktree. */
 async function executeBuildFor(
-  request: WorkflowVerificationRequest,
+  request: CheckedVerificationRequest,
   resolution: BuildWorkflowResolution,
   cwd: string,
   side: "baseline" | "candidate",
   artifactName: string,
 ): Promise<BuildWorkflowExecution> {
+  request.integrity.check(`before ${side} build ${resolution.manifest.id}`);
   request.logger?.phase(`${side.toUpperCase()}_BUILD`);
   request.logger?.info(`executing ${side} BuildWorkflow`, {
     workflow_id: resolution.manifest.id,
@@ -482,6 +542,9 @@ async function executeBuildFor(
     timeoutMs: request.limits.stages.buildMs ?? undefined,
   });
   request.logger?.artifact(`${artifactName}.json`, result);
+  request.integrity.check(`after ${side} build ${resolution.manifest.id}`);
+  const executionFailure = invalidExecution(result.events);
+  if (executionFailure !== null) throw new Error(`${side} build has an invalid process execution: ${executionFailure}`);
   for (const step of result.steps) {
     request.logger?.info(`${side} build step ${step.name}: ${step.status}`, {
       exit_code: step.exitCode,
@@ -498,11 +561,12 @@ function isWorkflowDriven(output: BuildWorkflowOutput): boolean {
 }
 
 async function runSuite(
-  request: WorkflowVerificationRequest,
+  request: CheckedVerificationRequest,
   repoDir: string,
   spec: Parameters<typeof runCTest>[0]["spec"],
   build: "baseline" | "candidate",
 ) {
+  request.integrity.check(`before ${build} CTest`);
   request.logger?.phase(`${build.toUpperCase()}_CTEST`);
   const logName = `${build}-ctest.log`;
   request.logger?.logFile(logName, "");
@@ -518,6 +582,7 @@ async function runSuite(
       },
     });
     request.logger?.artifact(`${build}-ctest-result.json`, result);
+    request.integrity.check(`after ${build} CTest`);
     request.logger?.info(`${build} CTest finished`, {
       status: result.status,
       exit_code: result.exit_code,
@@ -566,14 +631,26 @@ function kindOf(value: unknown): string {
   return typeof kind === "string" ? kind : "unknown";
 }
 
+/** Negative test exit codes are allowed; infrastructure failures never prove behavior. */
+function invalidExecution(events: readonly WorkflowEvent[]): string | null {
+  for (const event of events) {
+    if (event.execution !== undefined &&
+        ["timeout", "output_limit", "spawn_error"].includes(event.execution.status)) {
+      return event.execution.status;
+    }
+    if (!event.ok && event.capability === "process") return event.error ?? "process capability failed";
+  }
+  return null;
+}
+
 /**
  * Declared-set workflow verification (subagent-driven flow). The test-writer
  * session declared N build workflows; the host executes every one on both
  * worktrees, then runs the self-driven test workflow once per side and compares
  * expectations. Mirrors runSelfDrivenVerification but over a build list.
  */
-export async function runDeclaredWorkflowVerification(
-  request: WorkflowVerificationRequest,
+async function runDeclaredWorkflowVerification(
+  request: CheckedVerificationRequest,
   orch: Orchestrator,
   results: SubmitResult[],
   submit: (artifact: unknown) => boolean,

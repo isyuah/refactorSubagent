@@ -1,8 +1,14 @@
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import { discoverBuildWorkflows } from "../workflow/registry.js";
 import { checkWorkflowSourceText, stripComments } from "../workflow/source-policy.js";
+import {
+  freezeVerificationMaterials,
+  readVerificationMaterials,
+  serializeVerificationMaterials,
+  type VerificationMaterialInput,
+} from "../workflow/verification-materials.js";
 
 /**
  * dep-registry — host-side dependency registry for the subagent-driven
@@ -22,6 +28,7 @@ export interface WorkflowLibraryItem {
   readonly description: string;
   readonly entry: string;
   readonly producedArtifacts: readonly string[];
+  readonly materials?: readonly { path: string; sha256: string }[];
   readonly appliesTo: {
     readonly build_systems: readonly string[];
     readonly platforms: readonly string[];
@@ -60,6 +67,8 @@ export interface GenerateBuildWorkflowInput {
   readonly description: string;
   /** Complete TypeScript source of a workflow-driven BuildWorkflow. */
   readonly content: string;
+  /** Fixed auxiliary sources/fixtures distributed to both worktrees by the host. */
+  readonly materials?: readonly VerificationMaterialInput[];
 }
 
 export interface GenerateBuildWorkflowResult {
@@ -67,6 +76,7 @@ export interface GenerateBuildWorkflowResult {
   readonly revision: number;
   readonly lineCount: number;
   readonly description: string;
+  readonly materials: readonly { path: string; sha256: string }[];
 }
 
 export interface DependencyRegistry {
@@ -133,7 +143,7 @@ export function validateBuildWorkflowSource(source: string): { ok: boolean; reas
 
 /**
  * Registry over a persisted workflow library (discoverBuildWorkflows) plus
- * run-local materializations under sessionRoot/.refactor/runs/<session>/workflows.
+ * run-local materializations under workspaceRoot/.refactor/runs/<session>/workflows.
  */
 export class LocalDependencyRegistry implements DependencyRegistry {
   private readonly workspaceRoot: string;
@@ -167,6 +177,7 @@ export class LocalDependencyRegistry implements DependencyRegistry {
     for (const name of names) {
       const id = name.slice(0, -3);
       const entry = join(dir, name);
+      if (existsSync(`${entry}.registration-pending`)) continue;
       try {
         const size = statSync(entry).size;
         if (size === 0) continue;
@@ -236,6 +247,7 @@ export class LocalDependencyRegistry implements DependencyRegistry {
       }
       for (const runLocal of [...this.runLocal.values()]) {
         if (runLocal.kind !== "build") continue;
+        if (existsSync(`${runLocal.entry}.registration-pending`)) continue;
         if (query.id !== undefined && runLocal.id !== query.id) continue;
         items.push({
           id: runLocal.id,
@@ -245,6 +257,7 @@ export class LocalDependencyRegistry implements DependencyRegistry {
           description: runLocal.description,
           entry: runLocal.entry,
           producedArtifacts: [],
+          materials: readVerificationMaterials(runLocal.entry).map(({ path, sha256 }) => ({ path, sha256 })),
           appliesTo: { build_systems: [], platforms: [], architectures: [], required_tools: [] },
         });
       }
@@ -264,7 +277,7 @@ export class LocalDependencyRegistry implements DependencyRegistry {
       if (candidate.manifest !== null) ids.add(candidate.manifest.id);
     }
     for (const runLocal of [...this.runLocal.values()]) {
-      if (runLocal.kind === "build") ids.add(runLocal.id);
+      if (runLocal.kind === "build" && !existsSync(`${runLocal.entry}.registration-pending`)) ids.add(runLocal.id);
     }
     return [...ids].sort();
   }
@@ -301,15 +314,23 @@ export class LocalDependencyRegistry implements DependencyRegistry {
     if (!checked.ok) {
       throw new Error(`generateBuildWorkflow: invalid workflow source: ${checked.reason ?? "unknown"}`);
     }
+    const materials = freezeVerificationMaterials(input.materials ?? []);
 
     const slugged = slug(input.name);
     const id = safeRunLocalId(slugged, this.sessionId);
     const revision = (this.revisionCounter.get(id) ?? 0) + 1;
-    this.revisionCounter.set(id, revision);
 
     mkdirSync(this.runLocalBuildDir(), { recursive: true });
     const target = this.runLocalEntry(id);
+    // If a write or the host process fails midway, neither this registry nor a
+    // restarted one may treat a mixed source/material bundle as usable. Retrying
+    // the same name completes the bundle and clears the marker.
+    const pending = `${target}.registration-pending`;
+    writeFileSync(pending, "pending\n", "utf8");
     writeFileSync(target, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+    // Write even an empty set on replacement: an old auxiliary source must not
+    // silently survive a regenerated recipe that no longer declares it.
+    writeFileSync(`${target}.materials.json`, serializeVerificationMaterials(materials), "utf8");
     // Persist the description next to the source so later processes (registry
     // rebuild, curator promotion) can recover it without holding this instance.
     writeFileSync(
@@ -317,6 +338,8 @@ export class LocalDependencyRegistry implements DependencyRegistry {
       JSON.stringify({ name: slugged, description: input.description }) + "\n",
       "utf8",
     );
+    unlinkSync(pending);
+    this.revisionCounter.set(id, revision);
     this.runLocal.set(id, {
       id,
       kind: "build",
@@ -327,13 +350,19 @@ export class LocalDependencyRegistry implements DependencyRegistry {
     });
 
     const lineCount = content.split("\n").length;
-    return { workflowId: id, revision, lineCount, description: input.description };
+    return {
+      workflowId: id, revision, lineCount, description: input.description,
+      materials: materials.map(({ path, sha256 }) => ({ path, sha256 })),
+    };
   }
 
   /** Resolve a declared build id to an absolute workflow entry, if known. */
   async resolveBuildEntry(id: string): Promise<{ entry: string; runLocal: boolean } | null> {
     const runLocal = this.runLocal.get(id);
     if (runLocal !== undefined) {
+      if (existsSync(`${runLocal.entry}.registration-pending`)) {
+        throw new Error(`build workflow registration is incomplete; regenerate it: ${runLocal.entry}`);
+      }
       return { entry: runLocal.entry, runLocal: true };
     }
     for (const candidate of discoverBuildWorkflows(

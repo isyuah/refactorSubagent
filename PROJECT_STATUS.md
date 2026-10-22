@@ -1,6 +1,6 @@
 # Behavior-Preserving Refactoring Agent：项目现状与后续路线
 
-> 文档日期：2026-10-14（§1–§11 为当前状态；带日期的验证记录对应各自里程碑，历史架构见文末附录）
+> 文档日期：2026-10-22（§1–§11 为当前状态；带日期的验证记录对应各自里程碑，历史架构见文末附录）
 >
 > 当前定位：面向 C 代码的行为保持型重构原型。闭环已在 Windows + MinGW + Claude Agent SDK 环境完成真实端到端验证（含首个 `ACCEPTED`）；已补齐 Windows/Linux 工程检查与 CI 配置，并统一进程超时、取消和回收。验证记录见 §8.5–§8.6，平台级宿主隔离仍待实现。
 
@@ -136,6 +136,7 @@ src/
 │  ├─ ctest-runner.ts            CTest 执行与输出解析
 │  ├─ ctest-comparator.ts        套件失败分类与差分比较
 │  ├─ workflow-pipeline.ts       验证阶段：build → test → compare
+│  ├─ verification-integrity.ts  受控源码、workflow 与固定输入的执行边界检查
 │  ├─ stage-flow.ts              阶段契约 + 组合器（AI 与预置阶段共用）
 │  ├─ stage-presets.ts           无 AI 预置阶段（预置 workflow / 补丁 / 既有分支）
 │  ├─ e2e-log.ts                 结构化运行日志（JSONL + state.json）
@@ -156,6 +157,7 @@ src/
 │  ├─ build-executor.ts          构建执行（声明式与 workflow-driven）
 │  ├─ test-workflow.ts           TestWorkflow 解析、校验、resolve
 │  ├─ test-executor.ts           自驱动 TestWorkflow 单侧执行
+│  ├─ verification-materials.ts  辅助材料路径、内容与哈希的固定和读取
 │  ├─ expectation-compare.ts     两侧期望按位置比较
 │  ├─ registry.ts                BuildWorkflow 注册表（save/load/discover）
 │  ├─ curator.ts                 运行期构建入库（run-local → library 提升）
@@ -164,7 +166,7 @@ src/
 ├─ agents/
 │  ├─ prompts.ts                 各会话系统提示词与任务提示
 │  ├─ driver.ts                  Claude Agent SDK 封装（无 hook，白名单边界）
-│  ├─ analyze.ts                 宿主侧项目探测报告（无模型调用）
+│  ├─ workflow-facts.ts          writer 共享的 Preflight 实测上下文
 │  ├─ workflow-session.ts        TestWorkflow 编写会话（test-writer）
 │  ├─ build-writer.ts            BuildWorkflow 编写子 agent
 │  ├─ dep-registry.ts            依赖注册表（会话内声明状态）
@@ -244,6 +246,10 @@ expectation-comparison-result
 
 这样可以区分「模型声明的环境」「程序测量的主机事实」「程序最终执行的构建」。
 
+默认 Preflight 仅发现工具路径、识别 C 源码/构建标记并查询 CMake 版本与生成器元数据，不创建临时工程或编译。
+新项目检测状态为 `detected` / `no-c-sources`，与宿主工具解耦；旧状态只兼容读取历史审计。
+生成器是否可用及真实项目的构建条件由 build-writer 与所选 workflow 确认。
+
 ## 5. 状态机
 
 `Orchestrator` 是唯一允许推进状态的组件。两条合法路径共享同一套 fail-closed 规则：
@@ -318,21 +324,23 @@ worktree 之外。
 
 ## 6. Agent 层
 
-三类模型会话，工具集**逐条显式列出**（SDK 中省略列表 = 继承全部内置工具，含
+四类模型角色，工具集**逐条显式列出**（SDK 中省略列表 = 继承全部内置工具，含
 Bash/WebFetch，因此 `DriverOptions.allowedTools` 是必填参数，漏传会编译失败）。
-三个会话都有 Bash（见 §1 的决策说明）；`Bash(git push:*)` 对所有会话 deny。
+原有三个角色有 Bash（见 §1 的决策说明），新增 scout 只读源码并提交宿主报告；`Bash(git push:*)` 对所有会话 deny。
 
 | 会话 | 工具（常量名） | 产物 |
 |---|---|---|
 | test-writer | `TEST_WRITER_AGENT_TOOLS`：Read / Glob / Grep / Write / Edit / Task / **Bash** | TestWorkflow 源 + `declareDependency` 声明集 |
+| verification-scout（经 Task 派生的子 agent） | Read / Glob / Grep + MCP `inspectWorkflow` / `submitVerificationAnalysis` | 验证范围、依赖处置、行为观测要求与依据的结构化报告 |
 | build-writer（经 Task 派生的子 agent） | Read / Glob / Grep / **Bash** + MCP `generateBuildWorkflow` / `inspectWorkflow`（无 Write/Edit） | BuildWorkflow 源（经宿主 registry 落盘） |
 | refactor | `REFACTOR_AGENT_TOOLS`：Read / Write / Edit / Glob / Grep / **Bash** | candidate worktree 内的改动 |
 
 - **test-writer** 通过 `dep-registry` MCP server 声明构建依赖，生成的 workflow 源必须通过 `workflow-spec` 技能约定的接口。
+- **verification-scout** 使用独立精简 skill 调查源码，不加载 Workflow API；test-writer 先委托调查再决定方案、编写用例和辅助代码。宿主要求本次成功提交报告，原子保存到仓库运行目录的 `workflows/verification-analysis.json`；会话结束后关闭提交。源码证据、测量与推断分开，推荐 mock 时需说明接入点、模拟行为和覆盖损失。该检查不证明建议正确或内容真实。
 - **build-writer** 是 test-writer 经 `Task` 派生的子 agent，其 workflow 源码只能经宿主的 `generateBuildWorkflow` 落盘（它没有 `Write`/`Edit`）；Bash 让它能先在 scratch 目录真跑一遍构建，据实测结果而非推断来写 workflow。子 agent 的显式工具列表不继承父会话的 MCP 工具，因此需按名声明。
 - **有 shell 后的两条约定**（写进提示词）：探测性构建要放在仓库/worktree 之外，因为留在里面的东西会进入 patch；不要执行 git 变更命令——宿主拥有 staging/commit/branch，agent 自己 commit 虽然被宿主兼容（见 §5.2），但 reset/checkout 只会毁掉自己的工作。
 - **refactor** 在候选 worktree 中运行，**重构范围不设限**——由 baseline/candidate 双跑 workflow 的行为门禁兜底；`git add` / `git commit` 由宿主执行。
-- **analyze** 现在是宿主侧的纯文本探测（`analyzeRepo`），**不产生模型调用**。其报告只写入运行目录（`analysis-report.txt`），**不注入任何会话**：模型在编写 workflow 时拿不到实测主机事实，只能通过 `inspectWorkflow` 的候选分类间接感知；实测事实在 workflow **执行期**经 `ctx.facts` 提供给生成的代码。该阶段当前存在冗余（报告与已单独保存的 `host-preflight.json` / `project-detection.json` 重复），去留见 §10。
+- **Preflight** 保留宿主/项目测量，实测事实直接注入 test-writer、scout 与 build-writer；独立 Analyze 已删除。scout 建议范围，test-writer 决定最终方案，build-writer 交付真实构建及产物的完整使用说明，并通过 registry 提交辅助输入。宿主固定后向两侧分发，执行期事实继续通过 `ctx.facts` 提供。
 
 Windows 下 Driver 优先使用 `CLAUDE_CODE_EXECUTABLE`，否则查找 `%APPDATA%\npm\claude.cmd`。
 
@@ -340,19 +348,21 @@ Windows 下 Driver 优先使用 `CLAUDE_CODE_EXECUTABLE`，否则查找 `%APPDAT
 
 ### 6.1 阶段化管线（stage-flow）
 
-流程固定六段：`preflight → analyze → workflows → prepare → refactor → verify`。
+流程固定五段：`preflight → workflows → prepare → refactor → verify`。
 每段是一个**可替换的类型化函数槽**；不替换就是上面那套 AI/宿主实现：
 
 | 槽 | 默认实现 | 无 AI 预置（`stage-presets.ts`） |
 |---|---|---|
-| `preflight` / `analyze` | 主机探测 + 项目探测 | — |
+| `preflight` | 主机探测 + 项目探测，直接传递测量事实 | — |
 | `workflows` | test-writer 会话声明构建/测试 | `presetWorkflowsStage`（用仓库里的 workflow 源） |
 | `prepare` | 新建候选分支 + 双 worktree | `existingBranchPrepareStage`（复用既有候选分支） |
 | `refactor` | refactor 会话改候选区 | `patchRefactorStage` / `fixedRefactorStage` |
 | `verify` | 差分构建 + 跑测试 + 判定 | 允许替换，但记 `verification_authoritative: false` |
 
 - **宿主不变量**（阶段拿不到）：状态转移（`Orchestrator`）、候选改动集测量（阶段只返回 summary）、
-  门禁顺序（探测是否 ready / 改动非空 / 声明集非空）、worktree 清理与 run-local 提升。
+  门禁顺序（存在 C 源码 / 改动非空 / 声明集非空）、worktree 清理与 run-local 提升。
+- writer 按源码与覆盖选择验证范围；执行检查所需工具、产物、受控源码和固定输入。
+  含任务专属辅助材料的构建保留 run-local，避免推广缺少材料的配方。见 [`docs/verification-strategies.md`](docs/verification-strategies.md)。
 - 阶段可 `halt(reason)` 叫停，由组合器统一 `abort`；槽位无法自行推进状态机。
 - 注入痕迹落 `stage-provenance.json`（artifact）并进返回值，一次 ACCEPT 永远可回答"真判还是演的"。
 - **应用层**把配置翻译成槽函数（core 不接受配置文件）：`.refactor/pipeline.json` +
@@ -504,6 +514,161 @@ WSL Ubuntu 24.04 的该项回归已通过（约 5.2s），严格类型检查通�
 
 修复提交后的完整远程结果由 [PR #3 Checks](https://github.com/isyuah/refactorSubagent/pull/3/checks) 记录。
 
+### 8.7 暂缓待办：Windows CI 耗时优化（2026-10-14）
+
+**任务标题**：优化 Windows 离线 CI 的重复构建与判据执行耗时。
+
+**任务描述**：同一提交 `4950694` 的 Windows CI 总耗时为 34分04秒 / 44分32秒，Linux 为 4分02秒 / 5分38秒；差异主要集中在离线用例阶段。当前每个判据用例独立构建基线与候选，判据流程还包含多次串行编译和程序调用；Windows 适用 23 项，Linux 适用 19 项。后续分别记录环境准备、构建、判据编译和执行耗时，评估构建缓存、并行度及 push / PR 重复触发的优化收益，并保持适用用例和判定语义不变。现有证据不足以进一步确定 CPU、磁盘或文件扫描的占比。
+
+证据：[PR CI](https://github.com/isyuah/refactorSubagent/actions/runs/38529849012)、[push CI](https://github.com/isyuah/refactorSubagent/actions/runs/38529843931)。两次运行的 Windows/Linux 四项检查均已通过。
+
+**当前决定**：本轮测试开发告一段落，此项仅记录为暂缓待办；接下来评估 Agent 主流程的优化。
+
+### 8.8 验证方式选择与固定辅助材料（2026-10-15）
+
+开发分支：`codex/verification-strategies`，从 `4950694` 创建。本轮代码尚未提交、推送或合并。
+
+实现内容：
+
+- 删除独立 Analyze，保留五段流程；Preflight 实测宿主/项目信息直接传给 test-writer 和 build-writer。
+- `workflow-spec` 按需指导复用现有测试、库消费者和局部源码 harness，由 test-writer 选择范围，build-writer 准备产物。
+- `generateBuildWorkflow` 可登记 `build/verification/` 下的 UTF-8 辅助输入；宿主计算哈希、固定声明，在候选提交后向两侧分发相同内容，材料不进入重构补丁。
+- 每侧针对自己的真实实现构建并运行。宿主检查进程基础设施失败、空观测、workflow/材料哈希，以及原仓库和两侧受控源码的提交、索引与当前字节。可信盲测注入的覆盖语义保留。
+- 材料登记中断时拒绝复用，重新完整生成后恢复；任务专属材料保持 run-local。多构建按声明序号和 ID 分别保存执行记录。
+
+已取得的验证证据：
+
+| 检查 | 结果 |
+|---|---|
+| 最终源码的 `bun run typecheck` | 通过 |
+| 最终源码的核心验证场景 | 15 项逐项通过，含真实局部模块 / DLL 双侧编译运行、接受 / 拒绝和异常中止；见下文分组说明 |
+| 登记、单侧测试执行、验证方案、能力代理与会话的前序定向组 | 48 pass / 0 fail |
+| 登记与仓库完整性定向组 | 24 pass / 0 fail |
+| `bun testset/run.ts --self-test` | PASS；预期 pass=2 / fail=1 / blocked=2，平台阻断时未执行准备步骤 |
+| 其余工程回归（28 文件） | 142 pass / 4 fail / 1 error；4 项为短预算超时，复核结果见下 |
+| 候选提交相关用例单独复核 | 4 pass / 0 fail |
+| CMake 执行相关用例调整准备步骤后复核 | 2 pass / 0 fail，保留原 30s 预算 |
+
+CMake 超时已通过分段计时定位：测试先执行了约 18.4s 的完整宿主 CMake 探测，随后被测构建约 22.7s 且成功，合计超过用例的 30s 总期限。
+测试现在只测量工具可用性，跳过重复的 CMake 预构建；生产构建路径与超时预算未改。候选提交的两项超时在单独复核中通过，未据此确定其最初超时原因。
+
+最终核心回归复核中，登记 22 项、完整性 2 项，以及多构建、局部 harness / DLL 消费者的接受与拒绝、执行期源码保护共 6 个真实场景已逐项通过。
+测试进程随后以 `0x40010004` 提前结束，未生成完整汇总，退出原因尚未确认。其余 9 个场景已分两组补跑，分别 4 pass / 0 fail 与 5 pass / 0 fail；
+覆盖固定材料变更、编译失败、零观测、纯常量、明确预期的退出码 7、忽略进程超时、workflow 漂移、junction/symlink 逃逸和可信判据覆盖。
+因此 15 个核心场景均取得了通过结果。本轮没有完整成功的 `bun run check` 单次运行，也不把重叠组的数量相加为覆盖总数。
+
+验证边界：本轮真实编译/运行证据来自 Windows；Linux `.so` / macOS `.dylib` 分支已编码但未实跑，未调用收费模型验证真实 AI writer，也未重跑完整 libuv 离线套件。
+执行边界完整性检查不能替代 OS 沙箱；是否验证到本次修改的实现与完整集成行为仍需真实项目验收。
+设计说明见 [`docs/verification-strategies.md`](docs/verification-strategies.md)。
+
+### 8.9 verification-scout 调查与 writer 交接（2026-10-19）
+
+继续在 `codex/verification-strategies` 增量实现，尚未提交、推送或合并。
+
+- 新增 `src/agents/verification-scout.ts`，与 build-writer 同级，由 test-writer 前台委托。
+  使用独立精简 skill，只读源码、查询配方和提交报告；上限 24 轮，共用父会话的超时/取消。
+- 新增 `verification-analysis.ts` 与 MCP `submitVerificationAnalysis`，校验行为、策略、依赖处置、依据和未知项。
+  替身建议需要接入点、模拟行为、真实实现保留范围和覆盖损失；区分源码、Preflight 与推断。
+  报告原子保存到仓库运行目录的 `workflows/verification-analysis.json`，不注册构建或验证材料。
+- 自动编写会话要求本次成功提交报告，拒绝以旧文件代替；正常结束、超时和异常退出后关闭提交。
+  报告路径进入会话返回值与完成日志。宿主检查提交和格式，不证明源码结论真实或策略正确。
+- test-writer 决定最终策略并编写用例/辅助代码；build-writer 负责构建实测与产物完整用法。
+  支持先咨询库/运行器用法、再编写辅助代码、最后登记完整构建；具体阻碍可触发定向补查。
+  五段流程、固定材料与两侧执行机制保持不变，预置 workflows 不要求 scout 报告。
+- 为真实 MCP 协议测试显式声明开发依赖 `@modelcontextprotocol/sdk@1.30.0`，与 SDK 已使用的版本一致；
+  锁文件仅增加 workspace 开发依赖声明，没有升级解析依赖。
+
+最终源码取得的证据：
+
+| 检查 | 结果 |
+|---|---|
+| `bun run typecheck` | 通过 |
+| scout、workflow-session、registry/server、build-writer 和源码完整性定向回归（6 文件） | 52 pass / 0 fail |
+| `bun test tests/verification-strategies.test.ts --test-name-pattern 'local source harness:\|shared-library consumer:'` | 4 pass / 0 fail；其余 11 项未选择 |
+| `git diff --check` | 通过 |
+
+新增检查通过真实 MCP 客户端/内存传输调用工具，不使用 SDK 私有字段或模型：覆盖接受与持久化、无效更新保留有效报告、
+mock 建议缺失信息、推断/未知项、写盘失败、旧文件不计作本次提交，以及结束后的提交关闭。
+原生 4 场景在 Windows 真实编译局部源码及 DLL 消费者，两侧分别执行，覆盖保持行为的 ACCEPTED 与改变行为的 REJECTED。
+
+本轮未运行完整 `bun run check`、Linux/macOS 或真实 AI 会话；不将协议/宿主测试当作模型调查质量的验收。
+实现和交接说明见 [`docs/verification-strategies.md`](docs/verification-strategies.md)。
+
+### 8.10 scout 独立评测基础设施与分级材料（2026-10-19）
+
+在当前功能分支增量实现，未提交或推送；没有新增生产阶段。
+
+- testset 新增 `kind: scout` / `scout+rubric`，通过独立 CLI 运行生产 scout 定义、skill 与真实 MCP 提交，
+  不启动其他 writer/refactor。主会话显式预加载同一 skill，预算和模型选项仅属于评测。
+- 首批六例分为基础、中等、进阶三档，覆盖局部纯函数/已有测试对照、真实依赖与分配器替身、真实文件、
+  共享库 ABI/对象生命周期，以及缺失配置/provider 与旧文档冲突。源码材料与隐藏评分参考分开准备。
+- 每例四项带源码锚点/权重的事实，裁判允许有依据的不同策略；宿主严格校验事实集合并计算总分。
+  默认最低 0.8，critical 事实为 0 直接失败；未评分为 pending，不计 passed。
+- 保存完整源码/哈希、任务、Preflight、实际角色提示、skill、配置、报告、会话镜像与评分证据。
+  支持删除环境后复评；旧评分与证据绑定，变更后显式重评；不会把模型输出冻结成参考答案。
+
+已取得 Windows 离线证据：typecheck 通过；scout 评测、平台、历史复评与生产报告提交定向回归
+4 文件共 18 pass / 0 fail；执行器 self-test 通过。材料检查命令真实编译并运行五份完整工程（含 DLL 消费者），
+第六份在预期的生成配置头文件缺口失败，记录为 expected-incomplete。
+材料验证证据：`C:/Users/Yu/AppData/Local/Temp/rfr-scout-fixtures-Rv7XEv/summary.json`。
+
+截至本节离线实现完成时，尚未调用真实 scout 或模型裁判，未做裁判校准、Linux/macOS 实跑、writer 组合/完整流程评测或完整 `bun run check`。
+离线替身产生的评分仅验证协议，不代表模型能力。设计及命令见
+[`docs/testset/05-scout-evaluation.md`](docs/testset/05-scout-evaluation.md)。
+
+### 8.11 scout 首轮真实模型试跑与人工复核（2026-10-19）
+
+在当前 Windows 主机调用了真实 scout 和模型裁判。请求别名分别为 `sonnet` / `opus`，
+成功响应的模型字段均为 `deepseek/deepseek-v4.1-flash`，因此不构成 Sonnet/Opus 或异构模型对照。
+
+- 六例均已尝试，取得五份有效报告及评分；五份均达到 0.8 门槛，原始均分 0.9587。
+  allocator 在服务额度错误后重试成功；file-resource 两次均在读取源码前被拒绝，保持未评估。
+- 五份有效报告均由真实 MCP 一次接受，源码前后一致，无超时；会话未观察到读隐藏参考、写源码或 shell 调用。
+- 人工错误报告负控被判 critical 0，宿主拒绝；这一次负控不计入 scout 能力样本，也不足以证明裁判可靠。
+- 人工复核发现：跳过 CMake probe 被 `needs-adapter` 表达成不可用，影响复用建议；已有测试覆盖被低估；
+  allocator 缺确定失败建议；DLL 缺多对象/卸载生命周期；缺失 provider 场景误述 NULL 调用的序列更新与缺头编译行为。
+  裁判存在漏判、无依据扣分及从源码替报告补充内容，原始分数未修改，不能视为人工接受。
+- 原始与重试证据保存在 `runs/scout-real-20261019-a/` 和 `runs/scout-real-20261019-retry/`；
+  `trial-summary.json` 合并查看各次尝试。无模型缓存复评仍如实保留服务错误和非零退出码。
+
+本轮仅新增实测记录与本地运行证据，没有修改生产提示词/流程或评分参考，未提交或推送。
+Linux/macOS、writer 组合/完整流程及完整 `bun run check` 尚未运行。
+详细结果及建议见 [`docs/testset/06-scout-real-evaluation-2026-10-19.md`](docs/testset/06-scout-real-evaluation-2026-10-19.md)。
+
+### 8.12 Preflight 仅做发现与元数据查询（2026-10-22）
+
+针对首轮 scout 实测中将“未构建”误读为“不可用”的问题，已移除通用最小 CMake 工程探测。
+
+- `probeHost` 默认发现工具路径，仅执行 CMake `--version` / `-E capabilities`，不创建工程或 configure/build。
+  移除 `skipCMakeProbe` 和原编译结果字段；查询失败保留诊断，生成器列表仅表示 CMake 自报能力。
+  显式请求的 sanitizer 能力探测继续保留，默认不执行。
+- `detectCProject` 与宿主工具解耦，新结果只用 `detected` / `no-c-sources` 描述源码识别。
+  主流程仍只因无 C 源码中止 Preflight，五阶段顺序保持不变。
+- 真实构建由 build-writer 和所选 workflow 确认。声明式 CMake 只使用 workflow 指定的生成器，
+  未指定时由 CMake 按当前环境选择，不再注入 Preflight 推导值。
+- 共享模型上下文、plugin 参考和调用点已同步。历史审计状态仍可读取；原始评测快照与评分未改写。
+
+已取得 Windows 验证：
+
+- `bun run typecheck` 通过。
+- 8 个文件的定向回归完整运行：58 pass / 0 fail，327 个断言。覆盖 Preflight 元数据与失败处理、
+  CMake 默认/Ninja 构建、scout 离线评测、预置阶段接受/拒绝、局部 harness / 共享库消费者双侧执行，
+  以及编译失败、超时、固定输入变更、空观测、源码保护和会话提交。
+- `bun testset/run.ts --self-test` 通过，符合预期 pass=2 / fail=1 / blocked=2。
+- 实际历史 `needs-adapter` 快照可由新 schema 读取；`git diff --check` 通过。
+
+首次定向运行暴露 CMake 用例外层 30 秒期限不足以覆盖元数据查询与真实构建，现将这组测试总期限设为 90 秒；
+每条构建命令的 30 秒超时保持不变。最终完整定向运行没有超时或失败。
+
+本轮未调用真实模型，未实跑 Linux/macOS，也未重跑大型 libuv 套件；截至本节验证完成时，代码仍在当前开发分支，未提交或推送。
+
+### 8.13 功能分支交付（2026-10-22）
+
+按用户要求，将 §8.8–§8.12 的验证策略、固定辅助材料、scout 与独立评测、Preflight 简化归集提交，
+推送目标为 `origin/codex/verification-strategies`；本次不创建 PR 或合并主分支。
+临时 PR 文案和 `half-week-report/0918-weekly.html` 不属于本次功能交付，保留在本地。
+提交前重新运行 `bun run typecheck` 与执行器 self-test 均通过；其余验证结果和未验证边界沿用上述各节记录。
+
 ## 9. 已知限制与风险
 
 ### 9.1 权限边界依赖宿主目录，不是 OS 沙箱
@@ -536,7 +701,10 @@ Session state 支持 reopen；AI 会话本身、构建缓存与临时目录的�
 
 ### 9.6 尚未适配任意 C 工程
 
-稳定路径是 CMake 与显式源文件项目；Make / MSVC solution / 自定义构建脚本主要依赖探测结果阻断。
+现有测量与项目适配器主要覆盖 CMake 与显式源文件项目。原适配器缺失已不在 Preflight 直接阻断，
+writer 可选择支持的局部编译方案；这不代表 Make / MSVC solution / 自定义工程已获得完整验证。
+完整性检查递归保护已初始化子模块；未使用的空 gitlink 可保留。默认 worktree 准备尚不负责初始化所需子模块，
+依赖这些源码的方案需要显式准备，否则构建按实际缺失失败。
 历史 Windows 完整 libuv 官方套件运行存在网络与文件监听环境失败；本轮离线目标用例的通过不能替代完整官方套件验证。
 
 ## 10. 后续路线
@@ -544,7 +712,7 @@ Session state 支持 reopen；AI 会话本身、构建缓存与临时目录的�
 按风险与收益排序。
 
 1. **收紧运行边界（优先级最高）**：把 candidate worktree 移出目标仓库，或在 Linux 生产环境接入 SDK sandbox + 只读挂载 + 资源配额。这是当前架构最薄的一环。
-2. **扩展项目适配面**：Make / MSVC / 自定义构建脚本的结构化支持（当前以探测阻断为主）。
+2. **扩展项目适配面**：Make / MSVC / 自定义构建脚本的结构化支持，以及所需子模块的准备；局部验证的覆盖范围仍需独立评估。
 3. **补齐行为捕获**：网络录制/回放、子进程树、syscall 序列；对 C 而言未定义行为应成为显式失败类别。
 4. **程序化测试输入生成**：边界整数、空/超长字符串、控制字符、非 UTF-8 字节、缺失文件与环境变量；Agent 负责领域输入，程序负责边界补齐与去重。
 5. **恢复与审批**：模型轮次/构建过程的无损恢复；workflow 危险能力的审批通道（见 [`docs/roadmap-approval-mode.md`](docs/roadmap-approval-mode.md)，已记录未实现）。
@@ -555,11 +723,10 @@ Session state 支持 reopen；AI 会话本身、构建缓存与临时目录的�
 
 - 自研文件级权限边界（见 §1 的决策说明）；
 - 固定 libuv 任务作为主线（保留为回归 fixtures）；
-- Make / MSVC 的结构化 Adapter（改为探测阻断，视需要再议）。
+- Make / MSVC 的结构化 Adapter（暂不实现，允许选择可执行的局部方案，视需要再议）。
 
-待决（尚未定稿）：
-
-- **Analyze 阶段的去留**。当前它是纯装饰：报告只落盘、无任何消费者，且与已单独保存的 `host-preflight.json` / `project-detection.json` 重复，其中 `scanSourceFiles` 兜底分支在管线中不可达（`status === "ready"` 已保证 `source_files` 非空）。三个选项：删除该阶段 / 把实测事实真正注入 test-writer 提示词 / 仅保留为审计产物。见 §6 的说明。
+已决定（2026-10-14）：独立 Analyze 删除，只保留 Preflight 测量；验证方案交给 test-writer，
+skills 指导选择，宿主双侧实际执行与完整性检查承担运行判定。实现与本轮验证记录见 §8。
 
 ## 11. 结论
 

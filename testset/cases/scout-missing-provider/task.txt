@@ -1,0 +1,2 @@
+计划重构 src/device.c 的 device_read_temperature，保持当前产品的读取与错误行为。
+请调查验证所需的范围、关键行为和依赖，向 test-writer 提交建议。

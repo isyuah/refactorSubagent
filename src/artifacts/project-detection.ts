@@ -19,15 +19,17 @@ export const BuildAdapterId = z.enum([
 ]);
 
 export const ProjectDetectionStatus = z.enum([
+  "detected",
+  "no-c-sources",
+  // Accepted when reopening historical audit artifacts. New detection only
+  // reports discovery; these old values are not evidence of build feasibility.
   "ready",
   "needs-adapter",
-  "no-c-sources",
 ]);
 
 /**
- * Project Detection — measured project facts before an agent proposes a build.
- * Known build markers are reported explicitly; unsupported systems never
- * silently fall back to compiling every .c file.
+ * Project Detection — source inventory and build markers, independent of host
+ * tools. The selected workflow must establish actual build feasibility.
  */
 export const ProjectDetection = z.object({
   kind: z.literal("project-detection"),

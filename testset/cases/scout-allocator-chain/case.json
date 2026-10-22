@@ -1,0 +1,6 @@
+{
+  "id": "scout-allocator-chain", "title": "中等：真实依赖链与分配器替身的界线", "subject": "scout", "kind": "scout",
+  "tags": ["ai", "scout", "intermediate", "test-double", "ownership"],
+  "prepare": "../../resources/scout/prepare.ts", "repo": "repo", "task": "./task.txt",
+  "expect": { "method": "scout+rubric", "rubric": { "rubric": "resources/scout/rubric.md", "reference": "./reference.json" } }
+}

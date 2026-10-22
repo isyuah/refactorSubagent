@@ -1,6 +1,6 @@
 # 管线阶段化：阶段契约与来源配置（stage-flow）
 
-> 状态：**已实现**（分支 `feat/stage-flow`）。
+> 状态：阶段化管线已实现；五段流程与辅助验证材料在分支 `codex/verification-strategies` 维护。
 > core：`src/runtime/stage-flow.ts`（契约 + 组合器 + 默认实现）、`src/runtime/stage-presets.ts`（无 AI 的预置实现）。
 > application：`src/config/pipeline.ts`（把配置翻译成阶段函数）、`src/config/layers.ts`（多源配置引擎）。
 > 入口：`bun run scripts/cli.ts run <repo> --task <text> [--pipeline-file <path>] [--stage k=v]`。
@@ -8,23 +8,28 @@
 ## 0. 一句话
 
 **阶段顺序和状态机是固定的；每个阶段的"输入从哪来"是可配的。**
-没配就是全 AI（会话），配了就用文件（预置 workflow / 补丁 / 已有分支）。
+默认由 AI 会话编写 workflow 和重构，Preflight 与验证由宿主执行；配置可改用文件（预置 workflow / 补丁 / 已有分支）。
 于是可以用**真实管线**测某一段能力，而不是用单元测试复刻管线逻辑。
 
 ## 1. 阶段与契约
 
-六个阶段按固定顺序执行，每个阶段是一个可替换的函数：
+五个阶段按固定顺序执行，每个阶段是一个可替换的函数。Preflight 实测事实直接交给 writer，独立 Analyze 已删除：
 
 | 阶段 | 输入 | 输出 | 默认实现（AI/宿主） | 可替换 |
 |---|---|---|---|---|
 | `preflight` | `ctx` | `{ host, project }` | `probeHost` + `detectCProject` | ✅ |
-| `analyze` | `preflight` | `{ analysis }` | `analyzeRepo`（宿主侧探测，无模型调用） | ✅ |
-| `workflows` | `preflight`, `analysis` | `{ declared }`（DeclaredBuildSet + 测试 workflow 解析） | test-writer 会话 | ✅ |
+| `workflows` | `preflight` | `{ declared }`（构建声明、固定辅助材料、测试 workflow 解析） | test-writer 委托 scout 调查、build-writer 准备产物，再完成测试 | ✅ |
 | `prepare` | `preflight`, `workflows` | `{ branch, baseSha, worktrees }` | 建候选分支 + baseline/candidate 双 worktree | ✅ |
 | `refactor` | `…`, `candidate` | `{ summary }` | refactor 会话 | ✅ |
 | `verify` | `…`, `patch` | `WorkflowVerificationOutcome` | `runWorkflowVerification`（差分构建 + 跑测试 + 判定） | ⚠️ 允许，但会被标记**非权威** |
 
 `ctx`（`StageContext`）是只读运行配置：仓库、任务、会话目录、`SessionStore`、logger、limits、已知环境差异模式。
+
+默认 Preflight 发现工具路径、识别源码和构建标记，并查询 CMake 版本与生成器元数据；不创建临时工程或编译。
+项目状态 `detected` 仅表示发现 C 源码，实际构建可行性由 build-writer 和所选 workflow 确认。
+
+`verification-scout` 是 workflows 内部的子 agent，不新增阶段。自动编写会话必须提交本次结构化调查报告；
+`presetWorkflowsStage` 不经过 AI 会话，也不要求 scout 报告。职责与报告路径见 [验证方式与辅助材料](verification-strategies.md)。
 
 ## 2. core 用法（程序化）
 
@@ -51,7 +56,7 @@ result.state;       // ACCEPTED / REJECTED / ABORTED
 result.provenance;  // { injected: ["workflows","refactor"], verification_authoritative: true }
 ```
 
-省略的槽位保持默认（AI）。可用的无 AI 预置实现：
+省略的槽位使用默认实现。可用的无 AI 预置实现：
 
 | 构造器 | 作用 |
 |---|---|
@@ -78,7 +83,7 @@ result.provenance;  // { injected: ["workflows","refactor"], verification_author
 }
 ```
 
-没写的阶段保持 AI 默认。合并顺序（`layers.ts`，与 limits 同一套引擎）：
+没写的阶段使用默认实现。合并顺序（`layers.ts`，与 limits 同一套引擎）：
 
 ```text
 内置默认 < ~/.refactor/pipeline.json < <repo>/.refactor/pipeline.json
@@ -108,9 +113,14 @@ bun run scripts/cli.ts run ./repo --task "..." \
 
 1. **状态转移**：所有 artifact 都经 `Orchestrator` 提交，fail-closed 判定归它；
 2. **候选改动测量**：阶段只返回 `summary`，改动集由宿主 `git add/commit/diff` 量出来，阶段无法伪造；
-3. **门禁顺序**：项目探测是否 ready、改动集是否非空、声明集是否非空；
+3. **门禁顺序**：项目有 C 源码、改动集非空、构建声明集非空；所选方案需要的工具与构建条件由真实执行检查；
 4. **worktree 清理**与 run-local build 提升；
 5. **判定出处可追溯**：见下。
+
+默认验证在两侧分别执行声明的构建和同一测试源码。辅助材料通过构建声明登记，固定内容与哈希后在候选提交之后分发。
+构建/测试前后检查原仓库与两侧受控源码、提交、workflow 源码和材料；变更即中止，空观测也不能通过。
+可信宿主盲测注入仍可覆盖候选伪造的判据，覆盖后按注入哈希检查；模型辅助材料不能覆盖受控文件。
+流程与覆盖边界见 [验证方式与辅助材料](verification-strategies.md)。这些检查检测执行完整性，不能替代 OS 沙箱。
 
 ### 判定被替换 ⇒ 标记非权威
 
@@ -175,10 +185,12 @@ dep-registry 的源码字符串校验）现在共用同一份实现。
 - `tests/resolve-with-repairs.test.ts`：报出违规 → 写作方修好 → 解析通过；改不好则在预算用尽后抛错；
   预算为 0 不重写；重写解决不了的失败（文件缺失）不重写
 - `tests/pipeline-config.test.ts`：默认全 AI / 单阶段替换 / 键写错被点名 / 覆盖优先级 / `none` 与 `create` 冲突 / 空 `builds` 被拒
+- `tests/verification-strategies.test.ts`：真编译局部 harness 与共享库消费者，两侧真实运行；
+  保持行为可接受、改变实现可拒绝、执行期源码/材料变更和源码漂移可中止，盲测覆盖语义保留
 
 ## 8. 设计边界（刻意不做）
 
-- **不做通用阶段注册表**：阶段集合固定（六段），只有"输入从哪来"可换。加一段流程 = 改 core，不靠配置扩展。
+- **不做通用阶段注册表**：阶段集合固定（五段），只有"输入从哪来"可换。加一段流程 = 改 core，不靠配置扩展。
 - **配置文件不定义函数**：配置文件只描述来源（路径、补丁、分支），函数留在 core 的 `stage-presets.ts`；想自由组合就写 TS 调 `runStageFlow`。
 - **`verify` 不禁止替换**：禁不掉（调用方本就能直接操作状态机），所以改为如实记录。
 - **不做阶段并行/重排**：顺序即依赖，`buildStageFlow` 只做槽位装配。

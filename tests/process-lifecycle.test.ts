@@ -9,7 +9,7 @@ import { runCTest } from "../src/runtime/ctest-runner.js";
 import { runWorkflow } from "../src/workflow/runner.js";
 import { exec } from "../testset/runner/exec.js";
 
-const measured = probeHost(process.cwd(), { skipCMakeProbe: true });
+const measured = probeHost(process.cwd());
 const host = {
   ...measured,
   tools: { ...measured.tools, bun: { available: true, path: process.execPath, version: Bun.version } },

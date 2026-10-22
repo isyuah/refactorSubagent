@@ -69,7 +69,7 @@ export async function executeBuildWorkflow(
       buildKind = "kind" in build ? build.kind : "custom";
       if ("kind" in build && build.kind === "cmake") {
         const configureArgs = ["-S", build.source_dir, "-B", build.build_dir];
-        const generator = build.generator ?? options.host?.cmake.default_generator ?? null;
+        const generator = build.generator;
         if (generator !== null) configureArgs.push("-G", generator);
         configureArgs.push(...build.configure_flags);
         const configure = await runProcess(broker, "configure", {

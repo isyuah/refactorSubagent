@@ -46,22 +46,21 @@ interface WorkflowContext {
   executable_suffix: string;                 // win32 是 ".exe"，否则 ""
   shell: string;                             // 检测到的 shell
   tools: Record<string, {                    // 工具探测结果
-    available: boolean;                      // 是否在 PATH 上（唯一事实来源）
+    available: boolean;                      // 是否在 PATH 上发现工具
     path: string | null;                     // 绝对路径（available=true 时非 null）
     version: string | null;
   }>;
-  cmake: {                                   // cmake 详细探测
+  cmake: {                                   // CMake 元数据查询
     version: string | null;
-    generators: string[];                    // 可用生成器
-    default_generator: string | null;
-    c_compiler: string | null;
-    configure_probe: "pass" | "fail" | "not-run";
-    build_probe: "pass" | "fail" | "not-run";
+    generators: string[];                    // CMake 自报支持的生成器
+    reason: string | null;                   // 查询结果或失败诊断
   };
 }
 ```
 
-**规则**：工具可用性**只能**看 `host.tools[name].available`。不要假设工具存在。
+**规则**：通过 `host.tools[name].available` 判断工具路径是否已发现。
+默认 Preflight 只查询 CMake 版本和生成器元数据，不 configure/build。
+生成器所需的宿主依赖、编译器及项目配置是否可用，由 build-writer 和真实 workflow 构建确认。
 
 ## facts.project（ProjectDetection，总是存在）
 
@@ -75,11 +74,14 @@ interface WorkflowContext {
   primary_build_system: string | null;      // 如 "cmake"
   markers: string[];                        // 如 ["CMakeLists.txt"]
   source_files: string[];
-  adapter: "direct-compiler" | "cmake" | "ninja" | null;
-  status: "ready" | "needs-adapter" | "unsupported";
+  adapter: "direct-compiler" | "cmake" | "ninja" | "make" | "msvc" | "unsupported";
+  status: "detected" | "no-c-sources" | "ready" | "needs-adapter";
   reason: string;
 }
 ```
+
+新探测只报告 `detected`（发现 C 源码）或 `no-c-sources`；`ready` / `needs-adapter` 仅兼容历史审计。
+项目状态描述源码和构建标记的识别结果，不代表构建已经通过或验证方案不可行。
 
 **规则**：`facts.project` 和 `facts.host` **总是存在**。如果 workflow 需要它们，直接访问，不要做存在性检查后抛"missing facts"。
 
@@ -117,6 +119,8 @@ run(spec: {
   signal: string | null;
   stdoutBase64: string;      // base64 编码的 stdout
   stderrBase64: string;
+  stdout: string;            // 客户端已解码的 UTF-8 文本
+  stderr: string;
   durationMs: number;
   error: string | null;
 }>;
@@ -129,7 +133,7 @@ stop(handle) => Promise<ProcessResult>;
 
 **规则**：
 - 判断成功：`result.status === "exited" && result.exitCode === 0`，不要只看 exitCode
-- stdout/stderr 是 **base64**，需要时自己解码
+- `stdout`/`stderr` 是解码文本；需要原始字节时读取 `stdoutBase64`/`stderrBase64`
 - program 必须是 `host.tools` 里 available 的工具名，或工作区相对路径
 
 ### tools（WorkflowTools）
@@ -235,7 +239,7 @@ import { execSync } from "child_process";
 // 错误：shell 字符串
 process.run({ program: "make && make install" });
 
-// 错误：stdout 当字符串用（实际是 base64）
+// 错误：把 base64 字段当输出文本使用
 const out = result.stdoutBase64;
 if (out.includes("error")) ...
 

@@ -53,7 +53,7 @@ describe("Workflow Capability Context", () => {
     const result = await runWorkflow({
       entry,
       cwd: root,
-      facts: { host: probeHost(root, { skipCMakeProbe: true }) },
+      facts: { host: probeHost(root) },
       policy,
       timeoutMs: 30_000,
     });
@@ -123,7 +123,7 @@ describe("Workflow Capability Context", () => {
     const result = await runWorkflow({
       entry,
       cwd: root,
-      facts: { host: probeHost(root, { skipCMakeProbe: true }) },
+      facts: { host: probeHost(root) },
       policy,
       timeoutMs: 20_000,
     });

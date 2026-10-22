@@ -1,13 +1,19 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { BuildWorkflowOutput, type HostPreflight } from "../src/artifacts/index.js";
+import { BuildWorkflowOutput } from "../src/artifacts/index.js";
 import { probeHost } from "../src/runtime/host-preflight.js";
 import { executeBuildWorkflow } from "../src/workflow/build-executor.js";
 
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 function tempCMakeProject(): string {
   const root = mkdtempSync(join(tmpdir(), "rfr-build-executor-"));
+  roots.push(root);
   writeFileSync(join(root, "CMakeLists.txt"), [
     "cmake_minimum_required(VERSION 3.15)",
     "project(executor_smoke C)",
@@ -18,7 +24,7 @@ function tempCMakeProject(): string {
   return root;
 }
 
-function output(path: string) {
+function output(path: string, generator: string | null = null) {
   return BuildWorkflowOutput.parse({
     kind: "build-workflow-output",
     version: 1,
@@ -31,7 +37,7 @@ function output(path: string) {
         kind: "cmake",
         source_dir: ".",
         build_dir: "build",
-        generator: null,
+        generator,
         target: null,
         configure_flags: [],
         build_flags: [],
@@ -68,33 +74,42 @@ function policy() {
 }
 
 describe("BuildWorkflow executor", () => {
-  test("configures and builds a CMake project through the capability broker", async () => {
+  for (const generator of [null, "Ninja"]) {
+    test.skipIf(Bun.which("cmake") === null || (generator === "Ninja" && Bun.which("ninja") === null))(
+      `builds using ${generator ?? "the CMake default"} instead of a legacy preflight generator`, async () => {
+        const root = tempCMakeProject();
+        const measured = probeHost(root);
+        const host = {
+          ...measured,
+          cmake: { ...measured.cmake, default_generator: "obsolete-preflight-generator" },
+        };
+
+        const result = await executeBuildWorkflow({
+          cwd: root,
+          output: output("build/executor_smoke", generator),
+          host,
+          policy: policy(),
+          timeoutMs: 30_000,
+        });
+
+        expect(result.status, JSON.stringify({ failure: result.failure, steps: result.steps })).toBe("pass");
+        expect(result.steps.map((step) => step.name)).toEqual(["configure", "build"]);
+        expect(result.steps.every((step) => step.status === "exited" && step.exitCode === 0)).toBeTrue();
+        expect(result.missingArtifacts).toEqual([]);
+        expect(result.events).toEqual([
+          expect.objectContaining({ capability: "process", method: "run", ok: true }),
+          expect.objectContaining({ capability: "process", method: "run", ok: true }),
+        ]);
+        if (generator !== null) {
+          expect(readFileSync(join(root, "build", "CMakeCache.txt"), "utf8"))
+            .toContain(`CMAKE_GENERATOR:INTERNAL=${generator}`);
+        }
+      }, 90_000);
+  }
+
+  test.skipIf(Bun.which("cmake") === null)("rejects a successful build when the declared artifact is absent", async () => {
     const root = tempCMakeProject();
     const host = probeHost(root);
-    if (!host.tools.cmake?.available) return;
-
-    const result = await executeBuildWorkflow({
-      cwd: root,
-      output: output("build/executor_smoke"),
-      host,
-      policy: policy(),
-      timeoutMs: 30_000,
-    });
-
-    expect(result.status).toBe("pass");
-    expect(result.steps.map((step) => step.name)).toEqual(["configure", "build"]);
-    expect(result.steps.every((step) => step.status === "exited" && step.exitCode === 0)).toBeTrue();
-    expect(result.missingArtifacts).toEqual([]);
-    expect(result.events).toEqual([
-      expect.objectContaining({ capability: "process", method: "run", ok: true }),
-      expect.objectContaining({ capability: "process", method: "run", ok: true }),
-    ]);
-  }, 30_000);
-
-  test("rejects a successful build when the declared artifact is absent", async () => {
-    const root = tempCMakeProject();
-    const host: HostPreflight = probeHost(root);
-    if (!host.tools.cmake?.available) return;
 
     const result = await executeBuildWorkflow({
       cwd: root,
@@ -107,5 +122,5 @@ describe("BuildWorkflow executor", () => {
     expect(result.status).toBe("failed");
     expect(result.missingArtifacts).toEqual(["app: build/not-produced"]);
     expect(result.failure).toContain("artifacts are missing");
-  }, 30_000);
+  }, 90_000);
 });

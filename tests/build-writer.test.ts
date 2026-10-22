@@ -39,11 +39,6 @@ describe("buildWriterDefinition", () => {
     expect(def.prompt).toContain("workflow_id");
   });
 
-  test("prompt states the writer has no file-write tools", () => {
-    const def = buildWriterDefinition();
-    expect(def.prompt).toContain("You cannot write files");
-  });
-
   test("prompt uses the full MCP tool name and forbids imports", () => {
     const def = buildWriterDefinition();
     expect(def.prompt).toContain("mcp__dep-registry__generateBuildWorkflow");

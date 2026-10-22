@@ -106,7 +106,7 @@ function executePreflight(command: PreflightCommand, overrides: LayerOverrides):
   const repo = resolve(command.repo);
   const limits = resolveLimits({ repoRoot: repo, overrides }).limits;
   const host = probeHost(repo, { toolTimeoutMs: limits.probes.hostMs });
-  const project = detectCProject(repo, host);
+  const project = detectCProject(repo);
   const value = { repo, host, project };
   if (command.format === "json") console.log(JSON.stringify(value, null, 2));
   else {
@@ -117,7 +117,7 @@ function executePreflight(command: PreflightCommand, overrides: LayerOverrides):
     console.log(`status: ${project.status}`);
     console.log(`reason: ${project.reason}`);
   }
-  return project.status === "ready" ? 0 : 1;
+  return project.status === "detected" ? 0 : 1;
 }
 
 /** Run the whole pipeline; where each stage's input comes from is config. */
@@ -184,7 +184,7 @@ async function executeWorkflowBuild(
   const cwd = resolve(command.cwd);
   const limits = resolveLimits({ repoRoot: cwd, overrides }).limits;
   const host = probeHost(cwd, { toolTimeoutMs: limits.probes.hostMs });
-  const project = detectCProject(cwd, host);
+  const project = detectCProject(cwd);
   const resolution = await resolveBuildWorkflow({
     entry: command.entry,
     workflowId: command.workflowId,
@@ -261,7 +261,7 @@ function executeWorkflowList(command: WorkflowListCommand, overrides: LayerOverr
   const repo = resolve(command.cwd);
   const limits = resolveLimits({ repoRoot: repo, overrides }).limits;
   const host = probeHost(repo, { toolTimeoutMs: limits.probes.hostMs });
-  const project = detectCProject(repo, host);
+  const project = detectCProject(repo);
   const candidates = discoverBuildWorkflows(repo, host, project);
   if (command.format === "json") {
     console.log(JSON.stringify({ repo, candidates }, null, 2));

@@ -124,6 +124,9 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       error = errorMessage(cause);
     }
     const ok = error === null;
+    const execution = ok && request.capability === "process" &&
+      (request.method === "run" || request.method === "wait" || request.method === "stop")
+      ? value as ProcessResult : null;
     const event: WorkflowEvent = {
       id: request.id,
       capability: request.capability,
@@ -131,6 +134,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       ok,
       durationMs: Date.now() - started,
       error,
+      ...(execution !== null ? { execution: { status: execution.status, exitCode: execution.exitCode, signal: execution.signal } } : {}),
     };
     this.events.push(event);
     return {

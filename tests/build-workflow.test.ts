@@ -82,7 +82,7 @@ describe("BuildWorkflow planning and registry", () => {
   test("validates workflow output and generates a source-hashed manifest", async () => {
     const root = tempBuildProject(validWorkflow);
     const host = probeHost(root);
-    const project = detectCProject(root, host);
+    const project = detectCProject(root);
     const result = await resolveBuildWorkflow({
       entry: "workflow.ts",
       workflowId: "direct-smoke",
@@ -117,8 +117,8 @@ describe("BuildWorkflow planning and registry", () => {
 
   test("saves and discovers a workflow revision with a verified source hash", async () => {
     const root = tempBuildProject(validWorkflow);
-    const host = probeHost(root, { skipCMakeProbe: true });
-    const project = detectCProject(root, host);
+    const host = probeHost(root);
+    const project = detectCProject(root);
     const resolution = await resolveBuildWorkflow({
       entry: "workflow.ts",
       workflowId: "direct-smoke",

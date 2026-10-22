@@ -45,7 +45,7 @@ if (!providedSource) {
 }
 
 const host = probeHost(repo);
-const detection = detectCProject(repo, host);
+const detection = detectCProject(repo);
 console.log(JSON.stringify({
   version: LIBUV_VERSION,
   repo,
@@ -58,8 +58,8 @@ console.log(JSON.stringify({
   reason: detection.reason,
 }, null, 2));
 
-if (detection.primary_build_system !== "cmake" || detection.status !== "ready") {
-  throw new Error(`libuv CMake detection is not ready: ${detection.reason}`);
+if (detection.primary_build_system !== "cmake" || detection.status !== "detected") {
+  throw new Error(`libuv CMake project was not detected: ${detection.reason}`);
 }
 
 const workflow = await resolveBuildWorkflow({

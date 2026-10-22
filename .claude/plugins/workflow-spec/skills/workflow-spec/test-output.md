@@ -35,6 +35,12 @@ export default async (ctx: WorkflowContext) => {
   断言失败 → throw → 本侧失败（fail-closed）。不要"发现缺了再自己编"。
 - 测试目标是**跑已构建的可执行/库并观测行为**（退出码、输出、计数），
   把这些观测用 `ctx.expect` 声明。
+- 产物也可以是 BuildWorkflow 新编译的辅助程序，调用当前侧真实库或模块；先读 `verification-strategies.md`
+- 每侧必须有至少一个真实观测；零声明会失败。先确认执行有效，再比较值。
+  超时、崩溃、加载失败、未发现相关用例必须 throw，不能只比较两个相同错误。
+  负向用例要明确检查每侧的预期错误，不要求所有测试程序都返回 0。
+- 宿主会检查实际 process/fs 观测与进程状态；启动失败、超时、输出截断不能通过，
+  即使 workflow 忽略状态或两侧值相等也不行。
 
 ## ctx.expect API
 
@@ -68,6 +74,8 @@ ctx.expect("name", "both-matches", value, "^regex$"); // 每侧各自匹配正�
   exitCode: number | null,
   stdoutBase64: string,   // base64！要解码：Buffer.from(x, "base64").toString("utf8")
   stderrBase64: string,
+  stdout: string,         // 客户端已解码的 UTF-8 文本
+  stderr: string,
   durationMs: number,
   error: string | null
 }
@@ -84,13 +92,11 @@ export default async (ctx) => {
     args: ["--test-dir", "build", "-C", "Debug", "--output-on-failure"],
     timeoutMs: 120000,
   });
-  // 退出码两侧应一致（0 = ctest 全过）
-  ctx.expect("ctest-exit", suite.exitCode);
-  const out = Buffer.from(suite.stdoutBase64, "base64").toString("utf8");
-  // 输出内容两侧应一致
-  ctx.expect("ctest-summary", out.replace(/[0-9]+%/g, "N%"));
-  // 或只声明存在性（UUID/时间等易变内容：先归一化再 expect）
-  ctx.expect("ctest-has-failures", /tests failed|failed out of/.test(out));
+  if (suite.status !== "exited" || suite.exitCode !== 0) throw new Error("CTest failed");
+  const total = /tests failed out of (\d+)/.exec(suite.stdout);
+  if (total === null || Number(total[1]) === 0) throw new Error("CTest ran no tests");
+  ctx.expect("ctest-count", Number(total[1]));
+  // 若任务需要精确观察目标行为，再运行相关消费者/harness 或检查结构化测试输出。
 };
 ```
 
@@ -105,6 +111,9 @@ if (process.env.SIDE === "baseline") { ... }
 
 // 错误：在 expect 前提前 return（两侧声明数不一致）
 if (x) return;   // baseline 多跑一个 expect，candidate 少跑一个
+
+// 错误：不检查进程有效性，两侧超时都得到 null 仍可能相等
+ctx.expect("exit", run.exitCode);  // → 先检查 status 与本用例预期退出码
 
 // 错误：expect 值含易变内容且不做归一化（UUID/时间戳导致误报不一致）
 ctx.expect("stdout", rawStdout);   // → 应 expect 归一化后的值

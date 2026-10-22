@@ -1,0 +1,31 @@
+{
+  "version": 1, "difficulty": "advanced",
+  "objective": "在修改 API 表和内部状态时保留真实共享库边界与跨调用语义。",
+  "acceptableApproaches": [
+    "经公共 API 的真实共享库消费者，分别链接/加载各侧的库。",
+    "局部 harness 与真实共享库接口验证组合，明确各自范围；仅验证内部算术不能覆盖本任务的公开兼容性。"
+  ],
+  "pitfalls": ["期待已有可执行文件提供 stdin/stdout", "直接包含 counter.c 即声称验证了导出 ABI", "两侧消费同一个旧 DLL", "在消费者复制 Counter 布局或自行 free"],
+  "facts": [
+    {
+      "id": "real-public-boundary", "weight": 4, "critical": true,
+      "requirement": "识别修改含公开兼容性，验证须经过真实共享库的 counter_get_api；内部 source harness 单独使用会漏掉导出/可见性/API 表边界。建议真实库消费者或组合范围，并要求两侧对应各自源码的库。无需完整构建/调用手册。",
+      "anchors": [{"path": "CMakeLists.txt", "contains": ["add_library(counter SHARED src/counter.c)", "C_VISIBILITY_PRESET hidden"]}, {"path": "include/counter_api.h", "contains": ["__declspec(dllexport)", "COUNTER_API const CounterApi *counter_get_api"]}]
+    },
+    {
+      "id": "abi-negotiation", "weight": 3, "critical": true,
+      "requirement": "提出观察版本/struct_size/API 函数表是否一致，错误 version 或 size 应返回 NULL；使用真实公共头文件和不透明 Counter，不复制内部布局，也不能猜测兼容前缀规则。",
+      "anchors": [{"path": "include/counter_api.h", "contains": ["typedef struct Counter Counter;", "Exact ABI version 1 and exact struct size required"]}, {"path": "src/counter.c", "contains": ["version == 1 && size == sizeof(CounterApi)"]}]
+    },
+    {
+      "id": "ownership-and-lifetime", "weight": 3, "critical": true,
+      "requirement": "识别成功 open 后对象由库分配/close 释放且在卸载前完成，API 表也属于库；对象之间状态独立，需跨调用观察；不得在消费者复制实现/自行 free 或把函数指针当作纯无状态入口。",
+      "anchors": [{"path": "include/counter_api.h", "contains": ["Tables live in the library", "one close before unloading the library"]}, {"path": "src/counter.c", "contains": ["malloc(sizeof *counter)", "free(counter)", "counter->value += delta;"]}]
+    },
+    {
+      "id": "state-and-failed-updates", "weight": 3, "critical": false,
+      "requirement": "调查 seed 范围、连续 step、[-100,100] 边界及错误码，失败 step 不改状态或 out；范围检查应包含大 delta，后续成功调用可证明状态未变。无需伪造没有 seam 的 malloc 失败能力。",
+      "anchors": [{"path": "src/counter.c", "contains": ["seed > 100", "delta < -100 - counter->value", "delta > 100 - counter->value", "*out = counter->value;"]}, {"path": "include/counter_api.h", "contains": ["failed step keeps state"]}]
+    }
+  ]
+}

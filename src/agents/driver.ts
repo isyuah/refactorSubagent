@@ -31,10 +31,9 @@ const moduleRequire = createRequire(import.meta.url);
 /**
  * AgentDriver — thin wrapper over the Claude Agent SDK.
  *
- * Tool access is bounded by the SDK allowlist (allowedTools), not by a
- * host-side scope hook: no agent session gets Bash, and every agent runs in
- * a disposable worktree/session directory, so a misbehaving agent can only
- * damage its own scratch space.
+ * Explicit SDK tool lists control availability; they are not an OS sandbox.
+ * Writers/refactor may have Bash, while verification-scout has source reads
+ * and its host report tools. The host separately checks source integrity.
  */
 
 
@@ -81,9 +80,8 @@ export interface DriverOptions {
   /** Override Claude Code executable; defaults to the bundled SDK binary on Windows. */
   executable?: string;
   outputFormat?: Options["outputFormat"];
-  /** Skills to enable for this session (plugin:skill names). When omitted,
-   *  no skills are visible to the model — skills only load when listed here,
-   *  giving the host exact control over when a skill's full content loads. */
+  /** Main-session skill filter (plugin:skill names). Omission keeps CLI
+   *  defaults; subagents preload their own AgentDefinition.skills. */
   skills?: string[];
   /** Programmatically defined subagents (Agent tool) visible in this session. */
   agents?: Record<string, AgentDefinition>;

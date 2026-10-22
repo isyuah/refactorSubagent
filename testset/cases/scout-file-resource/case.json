@@ -1,0 +1,6 @@
+{
+  "id": "scout-file-resource", "title": "中等：保留真实文件语义与失败边界", "subject": "scout", "kind": "scout",
+  "tags": ["ai", "scout", "intermediate", "resource", "errors"],
+  "prepare": "../../resources/scout/prepare.ts", "repo": "repo", "task": "./task.txt",
+  "expect": { "method": "scout+rubric", "rubric": { "rubric": "resources/scout/rubric.md", "reference": "./reference.json" } }
+}

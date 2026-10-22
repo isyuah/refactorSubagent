@@ -1,0 +1,31 @@
+{
+  "version": 1, "difficulty": "intermediate",
+  "objective": "选择真实可控临时文件，区分资源错误与数据错误，避免过度隔离。",
+  "acceptableApproaches": [
+    "局部真实 config.c 加临时目录/文件，保留标准库文件读取与真实解析。",
+    "任何覆盖相同行为的库消费者；可补充受限的读错误注入，但不能替代真实文件验证。"
+  ],
+  "pitfalls": ["将 fopen/fread 固定成功", "只调用私有 parse 绕过读取", "把目录路径或 chmod 保证当成跨平台可靠读失败", "读取项目工作目录固定文件"],
+  "facts": [
+    {
+      "id": "real-temporary-resource", "weight": 4, "critical": true,
+      "requirement": "识别路径由调用者提供，可以用独立临时文件/目录保留 fopen/fread/fgetc/parse 的真实语义；无需服务或全工程应用。不能仅测试复制出来的 parser 或用固定成功 mock 覆盖文件路径。",
+      "anchors": [{"path": "src/config.c", "contains": ["FILE *file = fopen(path, \"rb\");", "count = fread(text, 1, sizeof text - 1, file);", "return parse(text, out);"]}]
+    },
+    {
+      "id": "failure-taxonomy", "weight": 3, "critical": true,
+      "requirement": "区分 -1 打开失败、-2 实际读取失败、-3 格式/长度/范围错误，出错 out 不变；空文件是格式错误而不是读失败，文件在打开成功后的路径被关闭。",
+      "anchors": [{"path": "include/config.h", "contains": ["-1 open error, -2 read error, -3 invalid format/range", "out is unchanged on every error"]}, {"path": "src/config.c", "contains": ["fclose(file);", "if (failed) return -2;"]}]
+    },
+    {
+      "id": "data-boundaries", "weight": 3, "critical": false,
+      "requirement": "说明 limit=、1..99、可选末尾换行且不可额外内容，错误格式、超范围、超长、内嵌 NUL 等有意义边界，观察配置值和哨兵输出；不凭直觉声称所有空白或多行合法。",
+      "anchors": [{"path": "src/config.c", "contains": ["value < 1 || value > 99", "if (*end == '\\n') ++end;", "memchr(text, 0, count)", "extra != EOF"]}]
+    },
+    {
+      "id": "honest-read-error-limits", "weight": 2, "critical": false,
+      "requirement": "承认便携地产生真实 read error 可能需要进一步实测或可靠 seam；缺失路径仅证明打开失败。不虚构已有可替换 reader 回调，不假定权限/目录错误在所有宿主相同；可报告这个覆盖限制。",
+      "anchors": [{"path": "src/config.c", "contains": ["if (!file) return -1;", "failed = ferror(file);", "if (ferror(file)) failed = 1;"]}]
+    }
+  ]
+}

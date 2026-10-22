@@ -86,6 +86,13 @@ drive it with context.process.run ({ program: "make", args: [...] }) etc. Never 
 emit shell commands as strings passed to a shell; context.process.run executes argv directly without a shell.
 Never emit absolute paths or compiler include flags for determinism headers.
 
+The verification strategy belongs to the test-writer. A BuildWorkflow may also compile a small consumer
+linked to this worktree's library, or compile a harness with selected real project sources. Auxiliary
+inputs are registered through generateBuildWorkflow materials under build/verification/; they are fixed
+by the host and shared by both sides. Keep generated outputs separate from those inputs. Never edit
+tracked project sources or their build files to make testing possible, and never replace the implementation
+under test with a copy, stub, or prebuilt binary from another worktree.
+
 Executable output paths on Windows end in .exe; on other platforms they do not. Decide the suffix from measured
 facts, never by guessing: ctx.facts.host.platform is "win32" on Windows (check it at runtime and append ".exe"
 to asserted artifact paths accordingly), or read CMAKE_EXECUTABLE_SUFFIX from the generated CMakeCache.txt after
@@ -140,6 +147,11 @@ values — you never know the other side's values.
 Build artifacts ALREADY EXIST when your function runs — the host built every declared build in this
 worktree before invoking you. NEVER rebuild (no configure/compile/new build dir); run the existing executables
 and assert their paths with context.validator.assertFile first.
+These artifacts can include a newly built harness or library consumer. Run them against this side's
+implementation and record actual observed results. Declare at least one expectation. A crash, timeout,
+missing test discovery or unexpected nonzero exit must fail the workflow BEFORE comparison; two
+identical failures are not evidence of behavior preservation. Expected negative cases need an explicit
+per-side check of the intended error, as well as cross-side behavior observations.
 
 Run the actual tests with injected capabilities:
 - context.process.run({ program, args, cwd, timeoutMs }) runs a measured tool or workspace-relative executable.
@@ -155,8 +167,10 @@ Typical shape:
       program: "ctest", args: ["--test-dir", "build", "-C", "Debug", "--output-on-failure"],
       timeoutMs: 120000,
     });
-    ctx.expect("ctest-exit", suite.exitCode);          // equal across sides
-    ctx.expect("ctest-passed", suite.stdout.includes("100% tests passed"));
+    if (suite.status !== "exited" || suite.exitCode !== 0) throw new Error("CTest did not pass");
+    const total = /tests failed out of (\\d+)/.exec(suite.stdout);
+    if (total === null || Number(total[1]) === 0) throw new Error("CTest ran no tests");
+    ctx.expect("ctest-count", Number(total[1]));
   };
 
 The host executes this source in each worktree, pairs expectations by position, and compares with the declared

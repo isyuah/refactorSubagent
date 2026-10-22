@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { delimiter, join } from "node:path";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import process from "node:process";
 import {
@@ -35,15 +35,12 @@ const SANITIZER_FLAGS: Record<SanitizerKind, string> = {
 export interface ProbeHostOptions {
   /** Expensive sanitizer probes run only when explicitly requested. */
   probeSanitizers?: boolean;
-  /** Skip the CMake toolchain probe (configure/build smoke test). Speeds up
-   *  callers that only need tool availability, and avoids Windows file-lock
-   *  flakiness in tests. */
-  skipCMakeProbe?: boolean;
   /** Per-probe-command timeout. Defaults to 30s (see limits.probes.hostMs). */
   toolTimeoutMs?: number;
 }
 
-/** Measure host facts once at workflow start. No model/tool call is involved. */
+/** Discover tools and query metadata. Builds belong to the selected workflow;
+ *  sanitizer compilation is a separate, explicitly requested capability check. */
 export function probeHost(
   cwd = process.cwd(),
   options: ProbeHostOptions = {},
@@ -53,16 +50,12 @@ export function probeHost(
   for (const name of TOOL_NAMES) tools[name] = probeTool(name);
 
   const shell = detectShell(tools);
-  const cmake = !options.skipCMakeProbe && tools.cmake?.available && tools.cmake.path !== null
+  const cmake = tools.cmake?.available && tools.cmake.path !== null
     ? probeCMake(tools.cmake.path, toolTimeoutMs)
     : {
         version: null,
         generators: [],
-        default_generator: null,
-        c_compiler: null,
-        configure_probe: "not-run" as const,
-        build_probe: "not-run" as const,
-        reason: options.skipCMakeProbe ? "cmake probe skipped by request" : "cmake executable is not available on PATH",
+        reason: "cmake executable was not found on PATH",
       };
   if (tools.cmake !== undefined && cmake.version !== null) {
     tools.cmake = { ...tools.cmake, version: cmake.version };
@@ -117,124 +110,39 @@ function detectShell(tools: Record<string, ToolProbe>): "cmd.exe" | "powershell.
 function probeCMake(cmakePath: string, timeoutMs: number): CMakePreflight {
   const versionRun = spawnSync(cmakePath, ["--version"], nativeProbeOptions(timeoutMs));
   const capabilitiesRun = spawnSync(cmakePath, ["-E", "capabilities"], nativeProbeOptions(timeoutMs));
-  const version = outputText(versionRun).match(/^cmake version\s+([^\r\n]+)/im)?.[1]?.trim() ?? null;
-  const generators = parseCMakeGenerators(outputText(capabilitiesRun));
-  const probe = runCMakeToolchainProbe(cmakePath, timeoutMs);
-  const failures = [
-    versionRun.status === 0 ? null : `cmake --version failed: ${probeOutput(versionRun)}`,
-    capabilitiesRun.status === 0 ? null : `cmake -E capabilities failed: ${probeOutput(capabilitiesRun)}`,
-    probe.reason,
-  ].filter((value): value is string => value !== null);
+  const version = versionRun.status === 0
+    ? versionRun.stdout.match(/^cmake version\s+([^\r\n]+)/im)?.[1]?.trim() ?? null
+    : null;
+  const failures: string[] = [];
+  if (versionRun.status !== 0) failures.push(`cmake --version failed: ${probeOutput(versionRun)}`);
+  else if (version === null) failures.push("cmake --version returned no recognizable version");
+
+  let generators: string[] = [];
+  if (capabilitiesRun.status !== 0) {
+    failures.push(`cmake -E capabilities failed: ${probeOutput(capabilitiesRun)}`);
+  } else {
+    try { generators = parseCMakeGenerators(capabilitiesRun.stdout); }
+    catch (error) { failures.push(`cmake -E capabilities returned invalid metadata: ${errorMessage(error)}`); }
+  }
 
   return {
     version,
     generators,
-    default_generator: probe.defaultGenerator,
-    c_compiler: probe.compiler,
-    configure_probe: probe.configureStatus,
-    build_probe: probe.buildStatus,
     reason: failures.length === 0
-      ? "CMake version, generators, and minimal C configure/build probes succeeded"
+      ? "CMake version and supported generator metadata queried"
       : failures.join("; ").slice(0, 1000),
   };
 }
 
-function runCMakeToolchainProbe(cmakePath: string, timeoutMs: number): {
-  configureStatus: "pass" | "fail";
-  buildStatus: "pass" | "fail" | "not-run";
-  defaultGenerator: string | null;
-  compiler: string | null;
-  reason: string | null;
-} {
-  const root = mkdtempSync(join(tmpdir(), "rfr-cmake-preflight-"));
-  const source = join(root, "main.c");
-  const project = join(root, "CMakeLists.txt");
-  const build = join(root, "build");
-  try {
-    writeFileSync(source, "int main(void) { return 0; }\n", "utf8");
-    writeFileSync(
-      project,
-      "cmake_minimum_required(VERSION 3.15)\nproject(rfr_cmake_probe C)\nadd_executable(rfr_cmake_probe main.c)\n",
-      "utf8",
-    );
-    const configure = spawnSync(
-      cmakePath,
-      ["-S", ".", "-B", "build"],
-      { ...nativeProbeOptions(timeoutMs), cwd: root },
-    );
-    const configureOutput = outputText(configure);
-    const cache = join(build, "CMakeCache.txt");
-    const defaultGenerator = configureOutput.match(/^-- Building for:\s*(.+)$/m)?.[1]?.trim()
-      ?? readCacheValue(cache, "CMAKE_GENERATOR:INTERNAL");
-    const compiler = configure.status === 0
-      ? readCacheValue(cache, "CMAKE_C_COMPILER:FILEPATH") ?? parseWorkingCCompiler(configureOutput)
-      : null;
-    if (configure.status !== 0) {
-      return {
-        configureStatus: "fail",
-        buildStatus: "not-run",
-        defaultGenerator,
-        compiler,
-        reason: `minimal CMake configure failed: ${probeOutput(configure)}`,
-      };
-    }
-
-    const built = spawnSync(
-      cmakePath,
-      ["--build", "build", "--config", "Debug"],
-      { ...nativeProbeOptions(timeoutMs), cwd: root },
-    );
-    if (built.status !== 0) {
-      return {
-        configureStatus: "pass",
-        buildStatus: "fail",
-        defaultGenerator,
-        compiler,
-        reason: `minimal CMake build failed: ${probeOutput(built)}`,
-      };
-    }
-    return {
-      configureStatus: "pass",
-      buildStatus: "pass",
-      defaultGenerator,
-      compiler,
-      reason: null,
-    };
-  } catch (error) {
-    return {
-      configureStatus: "fail",
-      buildStatus: "not-run",
-      defaultGenerator: null,
-      compiler: null,
-      reason: `CMake toolchain probe errored: ${errorMessage(error)}`,
-    };
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-function readCacheValue(path: string, key: string): string | null {
-  if (!existsSync(path)) return null;
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return readFileSync(path, "utf8").match(new RegExp(`^${escaped}=(.*)$`, "m"))?.[1]?.trim() ?? null;
-}
-
 function parseCMakeGenerators(output: string): string[] {
-  try {
-    const value = JSON.parse(output) as { generators?: Array<{ name?: unknown }> };
-    return (value.generators ?? [])
-      .map((generator) => generator.name)
-      .filter((name): name is string => typeof name === "string" && name.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-function parseWorkingCCompiler(output: string): string | null {
-  const match = output.match(/^-- Check for working C compiler:\s*(.+)$/im);
-  if (match === null) return null;
-  const compiler = match[1]!.replace(/\s+-\s+(?:skipped|works?)\s*$/i, "").trim();
-  return compiler.length === 0 ? null : compiler;
+  const value = JSON.parse(output) as { generators?: Array<{ name?: unknown }> } | null;
+  if (!Array.isArray(value?.generators)) throw new Error("missing generators array");
+  return value.generators.map((generator) => {
+    if (typeof generator?.name !== "string" || generator.name.length === 0) {
+      throw new Error("generator entry has no name");
+    }
+    return generator.name;
+  });
 }
 
 function nativeProbeOptions(timeoutMs: number): {

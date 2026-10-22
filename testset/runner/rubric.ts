@@ -242,7 +242,8 @@ export async function runRubric(options: RubricOptions): Promise<RubricOutcome> 
   ensureDir(options.caseDir);
   writeFileSync(promptPath, body.join("\n\n"), "utf8");
 
-  if (options.command === null || options.command.length === 0) {
+  const execution = await executeRubricCommand({ ...options, promptPath });
+  if (execution === null) {
     return {
       status: "pending",
       score: null,
@@ -252,34 +253,18 @@ export async function runRubric(options: RubricOptions): Promise<RubricOutcome> 
     };
   }
 
-  // The prompt goes in on stdin: that is what `claude -p` (and most scriptable
-  // model CLIs) read, and it keeps the command line free of quoting games.
-  const result = await exec({
-    program: options.command[0]!,
-    args: [...options.command.slice(1)],
-    cwd: options.caseDir,
-    timeoutMs: options.timeoutMs,
-    stdin: readFileSync(promptPath, "utf8"),
-    // A user-supplied command line goes through the shell: on Windows the model
-    // CLI is a .cmd shim, which spawn() cannot execute directly.
-    shell: true,
-    env: { RUBRIC_PROMPT_FILE: promptPath, RUBRIC_CASE: options.caseId },
-  });
-  writeFileSync(join(options.caseDir, "rubric.stdout.txt"), result.stdout, "utf8");
-  writeFileSync(join(options.caseDir, "rubric.stderr.txt"), result.stderr, "utf8");
-  if (result.status !== "exited" || result.exitCode !== 0) {
+  if (execution.error !== null) {
     return {
       status: "failed", score: null,
-      detail: `rubric command failed: ${result.status} exit=${String(result.exitCode)} ` +
-        `${(result.error ?? result.stderr ?? result.stdout).trim().slice(-300)}`,
+      detail: execution.error,
       promptPath, criteria: [],
     };
   }
-  const parsed = extractScoring(result.stdout);
+  const parsed = extractScoring(execution.stdout);
   if (parsed === null) {
     return {
       status: "failed", score: null,
-      detail: `rubric produced no parseable JSON (first 200 chars: ${result.stdout.trim().slice(0, 200)})`,
+      detail: `rubric produced no parseable JSON (first 200 chars: ${execution.stdout.trim().slice(0, 200)})`,
       promptPath, criteria: [],
     };
   }
@@ -295,6 +280,28 @@ export async function runRubric(options: RubricOptions): Promise<RubricOutcome> 
       (parsed.summary === undefined ? "" : ` — ${parsed.summary.slice(0, 200)}`),
     promptPath,
     criteria: parsed.criteria ?? [],
+  };
+}
+
+/** Only process transport is shared. Each evaluator owns its prompt and validation. */
+export async function executeRubricCommand(options: {
+  command: readonly string[] | null; caseDir: string; caseId: string;
+  timeoutMs: number; promptPath: string;
+}): Promise<{ stdout: string; error: string | null } | null> {
+  if (!options.command?.length) return null;
+  const result = await exec({
+    program: options.command[0]!, args: [...options.command.slice(1)],
+    cwd: options.caseDir, timeoutMs: options.timeoutMs,
+    stdin: readFileSync(options.promptPath, "utf8"), shell: true,
+    env: { RUBRIC_PROMPT_FILE: options.promptPath, RUBRIC_CASE: options.caseId },
+  });
+  writeFileSync(join(options.caseDir, "rubric.stdout.txt"), result.stdout, "utf8");
+  writeFileSync(join(options.caseDir, "rubric.stderr.txt"), result.stderr, "utf8");
+  return {
+    stdout: result.stdout,
+    error: result.status === "exited" && result.exitCode === 0 ? null :
+      `rubric command failed: ${result.status} exit=${String(result.exitCode)} ` +
+        (result.error ?? result.stderr ?? result.stdout).trim().slice(-300),
   };
 }
 

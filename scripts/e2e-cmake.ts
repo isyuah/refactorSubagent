@@ -56,8 +56,8 @@ writeFileSync(
 );
 
 const host = probeHost(root);
-const project = detectCProject(root, host);
-if (project.status !== "ready" || project.primary_build_system !== "cmake") {
+const project = detectCProject(root);
+if (project.status !== "detected" || project.primary_build_system !== "cmake") {
   throw new Error(`CMake smoke preflight blocked: ${project.reason}`);
 }
 
