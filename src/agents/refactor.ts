@@ -1,5 +1,6 @@
 import type { SessionStore } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../runtime/log.js";
+import { StageFailureError } from "../runtime/stage-failure.js";
 import { runAgent } from "./driver.js";
 import { REFACTOR_SYSTEM, refactorPrompt } from "./prompts.js";
 import { DEFAULT_LIMITS, type SessionLimits } from "../config/limits.js";
@@ -52,7 +53,12 @@ export async function runRefactor(
   });
 
   if (run.isError && run.result.length === 0) {
-    throw new Error("refactor agent failed without a summary");
+    throw new StageFailureError("refactor agent failed without a summary", {
+      category: "model-session",
+      component: "refactor-session",
+      retryable: true,
+      detail: { is_error: true, timed_out: run.timedOut, stalled: run.stalled === true },
+    });
   }
   return { summary: run.result };
 }

@@ -88,6 +88,8 @@ export class LocalCapabilityBroker implements CapabilityBroker {
   private readonly host: HostPreflight | undefined;
   private readonly policy: Required<WorkflowCapabilityPolicy>;
   private readonly running = new Map<string, RunningProcess>();
+  /** Workspace-relative paths the workflow asserted via validator (deduped, sorted). */
+  private readonly assertedPaths = new Set<string>();
   private nextProcessId = 1;
   private closed = false;
   private closePromise: Promise<void> | null = null;
@@ -269,6 +271,20 @@ export class LocalCapabilityBroker implements CapabilityBroker {
     return { steps: build(this.planRoots) };
   }
 
+  /**
+   * Workspace-relative paths the workflow successfully asserted via
+   * validator.assertFile/assertDir. The host uses this after a workflow-driven
+   * build to know where the build actually placed its artifacts (the function
+   * returns void, so assertions are the only artifact manifest there is).
+   */
+  getAssertedPaths(): string[] {
+    return [...this.assertedPaths].sort();
+  }
+
+  private recordAssertedPath(absolute: string): void {
+    this.assertedPaths.add(this.relativeWorkspace(absolute));
+  }
+
   private async dispatchFs(method: string, args: unknown[]): Promise<unknown> {
     switch (method) {
       case "readFile":
@@ -332,6 +348,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
         if (!existsSync(absolute) || !statSync(absolute).isFile()) {
           throw new Error(`assertion failed: expected file '${description}' (${path})`);
         }
+        this.recordAssertedPath(absolute);
         return null;
       }
       case "assertDir": {
@@ -341,6 +358,7 @@ export class LocalCapabilityBroker implements CapabilityBroker {
         if (!existsSync(absolute) || !statSync(absolute).isDirectory()) {
           throw new Error(`assertion failed: expected directory '${description}' (${path})`);
         }
+        this.recordAssertedPath(absolute);
         return null;
       }
       case "assertAbsent": {

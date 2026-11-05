@@ -311,4 +311,10 @@ export interface WorkflowRunResult {
   plan: WorkflowPlan | null;
   /** Expectation declarations collected during this run (this side's values). */
   expectations: ExpectationDeclaration[];
+  /**
+   * Workspace-relative paths the workflow asserted via validator.assertFile /
+   * assertDir. For workflow-driven builds this is the only artifact manifest
+   * the host receives (the function returns void).
+   */
+  assertedPaths: string[];
 }

@@ -43,8 +43,11 @@ export interface DriverRun {
   /** Native SDK structured output, when outputFormat was requested. */
   structuredOutput?: unknown;
   isError: boolean;
-  /** True when the host deadline closed the SDK query. */
+  /** True when the host deadline closed the SDK query (or the stall watchdog fired). */
   timedOut: boolean;
+  /** True only when the stall watchdog fired: a dead stream, distinct from the
+   *  overall deadline. Undefined in older stub results — treat as false. */
+  stalled?: boolean;
 }
 
 export interface DriverOptions {
@@ -199,7 +202,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
     result = result.length === 0 ? reason : `${result}\n${reason}`;
     isError = true;
   }
-  return { result, structuredOutput, isError, timedOut };
+  return { result, structuredOutput, isError, timedOut, stalled };
 }
 
 function normalizeTimeout(timeoutMs: number | undefined): number | undefined {

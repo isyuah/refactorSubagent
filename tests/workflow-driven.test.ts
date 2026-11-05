@@ -117,4 +117,30 @@ describe("workflow-driven builds", () => {
     expect(execution.status).toBe("failed");
     expect(execution.failure).toContain("never-exists");
   }, 90_000);
+
+  test("execute delivers the documented build input envelope on ctx.input", async () => {
+    // Regression (2026-10-16 e2e): the workflow-driven execution path skipped
+    // the input envelope that BUILD_WORKFLOW_SYSTEM documents, so a spec-conformant
+    // workflow failed with "unexpected build input kind/version".
+    const root = tempProject();
+    writeFileSync(join(root, "workflow.ts"), `
+export const workflowKind = "workflow-driven";
+
+export default async (ctx) => {
+  if (!ctx.input || ctx.input.kind !== "build-workflow-input" || ctx.input.version !== 1) {
+    throw new Error("unexpected build input kind/version; expected build-workflow-input v1");
+  }
+};
+`);
+    const host = probeHost(root);
+    const execution = await executeBuildWorkflow({
+      cwd: root,
+      entry: join(root, "workflow.ts"),
+      output: null,
+      host: host,
+      policy: DRIVEN_POLICY,
+      timeoutMs: 60_000,
+    });
+    expect(execution.status).toBe("pass");
+  }, 60_000);
 });

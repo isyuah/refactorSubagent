@@ -74,6 +74,36 @@ export interface WorkflowSessionAgentOptions {
   readonly sessionStore?: SessionStore;
 }
 
+/**
+ * Structured attribution for an unusable session outcome — replaces the old
+ * single reason string so callers classify (model-session vs resolution),
+ * judge retryability and read detail fields without parsing prose.
+ */
+export interface WorkflowSessionFailure {
+  /** "model-session": the session itself failed (error/stall/deadline);
+   *  "resolution": the session ended but a deliverable is missing. */
+  readonly category: "model-session" | "resolution";
+  readonly reason: string;
+  readonly retryable: boolean;
+  readonly detail: Record<string, unknown>;
+}
+
+/** A failure may carry structured attribution or a plain reason string
+ *  (legacy checks that predate the attribution contract normalize to the
+ *  "resolution" category with retry disabled). */
+export type WorkflowSessionFailureLike = WorkflowSessionFailure | string;
+
+/** Normalize any failure shape into the structured attribution form. */
+export function asWorkflowSessionFailure(
+  failure: WorkflowSessionFailureLike | null,
+): WorkflowSessionFailure | null {
+  if (failure === null) return null;
+  if (typeof failure === "string") {
+    return { category: "resolution", reason: failure, retryable: false, detail: {} };
+  }
+  return failure;
+}
+
 export interface WorkflowSessionResult {
   readonly ok: boolean;
   /** Final assistant text. */
@@ -87,7 +117,7 @@ export interface WorkflowSessionResult {
   /** Session timed out. */
   readonly timedOut: boolean;
   /** Why the session outcome is not usable (when ok is false). */
-  readonly failure: string | null;
+  readonly failure: WorkflowSessionFailureLike | null;
 }
 
 // Temporarily omit Bash. Restore it here if authoring shell access is enabled again.
@@ -238,17 +268,43 @@ export async function runWorkflowSession(
   const testEntryExists = existsSync(options.testEntry);
   const declaredBuilds = await registry.currentDeclared();
   const declaredExplicitly = await registry.declaredExplicitly();
-  let failure: string | null = null;
+  let failure: WorkflowSessionFailureLike | null = null;
   if (run.isError && run.result.length === 0) {
-    failure = "test-writer session failed without output";
+    failure = {
+      category: "model-session",
+      reason: "test-writer session failed without output",
+      retryable: true,
+      detail: { is_error: true, timed_out: run.timedOut, stalled: run.stalled === true },
+    };
   } else if (run.timedOut) {
-    failure = "test-writer session timed out";
+    failure = {
+      category: "model-session",
+      reason: run.stalled === true
+        ? "test-writer session aborted: agent stream stalled (no message); CLI subprocess likely died"
+        : "test-writer session timed out",
+      retryable: true,
+      detail: { timed_out: true, stalled: run.stalled === true },
+    };
   } else if (!testEntryExists) {
-    failure = `test-writer did not produce ${relativeTestEntry}`;
+    failure = {
+      category: "resolution",
+      reason: `test-writer did not produce ${relativeTestEntry}`,
+      retryable: false,
+      detail: { test_entry: relativeTestEntry, declared_builds: [...declaredBuilds] },
+    };
   } else if (!declaredExplicitly) {
-    failure =
-      "test-writer finished without calling declareDependency; it must declare " +
-      "the full dependency set (empty allowed only via an explicit declareDependency([]))";
+    failure = {
+      category: "resolution",
+      reason:
+        "test-writer finished without calling declareDependency; it must declare " +
+        "the full dependency set (empty allowed only via an explicit declareDependency([]))",
+      retryable: false,
+      detail: {
+        test_entry: relativeTestEntry,
+        declared_builds: [...declaredBuilds],
+        declared_explicitly: false,
+      },
+    };
   } else if (!verificationAnalysis.hasSubmission()) {
     failure = "test-writer finished without submitting its verification analysis through submitVerificationAnalysis";
   }

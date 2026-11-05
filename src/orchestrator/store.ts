@@ -7,7 +7,9 @@ import {
   ObservationTrace,
   HostPreflight,
   ProjectDetection,
+  FailureReport,
 } from "../artifacts/index.js";
+import type { FailureReport as FailureReportValue } from "../artifacts/failure-report.js";
 /**
  * SessionStore — durable state for one refactoring attempt.
  *
@@ -205,6 +207,27 @@ export class SessionStore {
     const path = join(this.sessionDir, "artifacts", "project-detection.json");
     if (!existsSync(path)) return null;
     return ProjectDetection.parse(JSON.parse(readFileSync(path, "utf8")));
+  }
+
+  /**
+   * Persist the structured attribution of an abort (typed fields over the
+   * ABORTED transition note). Host sidecar like host-preflight: validated with
+   * its own schema, never enters the Artifact transition union.
+   */
+  saveFailureReport(raw: unknown): FailureReportValue {
+    const parsed = FailureReport.parse(raw);
+    writeFileSync(
+      join(this.sessionDir, "artifacts", "failure-report.json"),
+      JSON.stringify(parsed, null, 2) + "\n",
+    );
+    return parsed;
+  }
+
+  /** Load the stored failure attribution; null when the run did not abort. */
+  failureReport(): FailureReportValue | null {
+    const path = join(this.sessionDir, "artifacts", "failure-report.json");
+    if (!existsSync(path)) return null;
+    return FailureReport.parse(JSON.parse(readFileSync(path, "utf8")));
   }
 
   /** Validate then durably store an artifact (no state transition — orchestrator decides that). */

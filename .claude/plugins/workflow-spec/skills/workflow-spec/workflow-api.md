@@ -21,7 +21,10 @@ import type { WorkflowContext, ProcessResult } from "./types";
 interface WorkflowContext {
   apiVersion: 1;                        // 固定为 1
   workspaceRoot: string;                // 工作区绝对路径（只读，不要硬编码进产物）
-  input: unknown;                       // 宿主注入的输入对象
+  input: unknown;                       // 宿主注入的输入对象。BuildWorkflow 收到且恒等于
+                                        // { kind: "build-workflow-input", version: 1 }；
+                                        // TestWorkflow 收到 { kind: "test-workflow-input", version: 1,
+                                        //   build_workflow_id, build_workflow_revision }
   facts: {
     host: HostPreflight;                // 宿主测量事实（见下）——总是存在
     project: ProjectDetection;          // 项目探测结果（见下）——总是存在

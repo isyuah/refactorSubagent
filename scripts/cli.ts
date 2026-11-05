@@ -33,6 +33,7 @@ import {
 } from "../src/config/pipeline.js";
 import { runStageFlow } from "../src/runtime/stage-flow.js";
 import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
+import { runStageFlowResume } from "../src/runtime/stage-resume.js";
 
 installOwnedProcessSignalHandlers();
 
@@ -131,32 +132,61 @@ async function executeRun(
   const flow = buildStageFlow(resolved.pipeline);
   const sessionId = command.session ?? `run-${Date.now().toString(36)}`;
   const sessionRoot = command.sessionRoot === null ? repo : resolve(command.sessionRoot);
-  const result = await runStageFlow({
-    repoPath: repo,
-    task: command.task,
-    sessionRoot,
-    sessionId,
-    ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
-    ...(command.injections.length > 0 ? { injections: command.injections } : {}),
-    limitOverrides: overrides,
-    flow,
-  });
+  // A resume overlays its reused checkpoints on top of the user's configured
+  // stage sources: stages without a reusable checkpoint still run whatever
+  // the pipeline config / --stage selected, and injections are forwarded so
+  // the resumed run verifies the same environment as the failed one.
+  const resumeFrom = command.resume;
+  const result = resumeFrom !== null
+    ? await runStageFlowResume({
+        repoPath: repo,
+        task: command.task,
+        sessionRoot,
+        sessionId,
+        sourceSessionId: resumeFrom,
+        ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
+        ...(command.injections.length > 0 ? { injections: command.injections } : {}),
+        baseFlow: flow,
+        limitOverrides: overrides,
+      })
+    : await runStageFlow({
+        repoPath: repo,
+        task: command.task,
+        sessionRoot,
+        sessionId,
+        ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
+        ...(command.injections.length > 0 ? { injections: command.injections } : {}),
+        limitOverrides: overrides,
+        flow,
+      });
   const declaredBuilds = result.declared?.declaredSet.builds.map((build) => build.id) ?? [];
   const summary = {
     state: result.state,
     session: sessionId,
     repo,
     log_dir: result.logDir,
-    pipeline: describePipeline(resolved.pipeline),
+    pipeline: resumeFrom !== null ? "resume (checkpoint restart)" : describePipeline(resolved.pipeline),
     pipeline_layers: resolved.sources,
     injected_stages: result.provenance.injected,
     verification_authoritative: result.provenance.verification_authoritative,
+    ...(result.provenance.resume !== undefined ? { resumed_from: result.provenance.resume } : {}),
     declared_builds: declaredBuilds,
     baseline_build: result.verification?.baselineBuild?.status ?? null,
     candidate_build: result.verification?.candidateBuild?.status ?? null,
     comparison: result.verification?.expectationComparison?.overall ??
       result.verification?.comparison?.overall ?? null,
     refactor_summary: result.refactorSummary.slice(0, 500),
+    ...(result.failure !== null
+      ? {
+          failure: {
+            stage: result.failure.stage,
+            category: result.failure.category,
+            component: result.failure.component,
+            reason: result.failure.reason,
+            retryable: result.failure.retryable,
+          },
+        }
+      : {}),
   };
   if (command.format === "json") {
     console.log(JSON.stringify(summary, null, 2));
@@ -166,6 +196,11 @@ async function executeRun(
     console.log(`log: ${result.logDir}`);
     console.log(`pipeline: ${summary.pipeline}`);
     for (const layer of resolved.sources) console.log(`pipeline layer: ${layer}`);
+    if (result.provenance.resume !== undefined) {
+      console.log(
+        `resumed from: ${result.provenance.resume.source_session} (reused: ${result.provenance.resume.reused_stages.join(", ") || "none"})`,
+      );
+    }
     if (result.provenance.injected.length > 0) {
       const authority = result.provenance.verification_authoritative
         ? ""
@@ -173,6 +208,12 @@ async function executeRun(
       console.log(`injected stages: ${result.provenance.injected.join(", ")}${authority}`);
     }
     if (declaredBuilds.length > 0) console.log(`declared builds: ${declaredBuilds.join(", ")}`);
+    if (result.failure !== null) {
+      console.log(
+        `failure: [${result.failure.category}] ${result.failure.stage}/${result.failure.component}` +
+          ` — ${result.failure.reason} (retryable: ${String(result.failure.retryable)})`,
+      );
+    }
   }
   return result.state === "ACCEPTED" ? 0 : 1;
 }

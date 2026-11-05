@@ -46,6 +46,13 @@ export interface BuildWorkflowExecution {
   readonly missingArtifacts: string[];
   readonly events: WorkflowEvent[];
   readonly failure: string | null;
+  /**
+   * Workspace-relative paths the build asserted via ctx.validator — for
+   * workflow-driven builds this is the only artifact manifest the host has
+   * (the function returns void). Downstream stages (the test workflow's
+   * executable allowlist) derive from it instead of assuming a build dir.
+   */
+  readonly assertedArtifacts: readonly string[];
 }
 
 /** Execute a validated BuildWorkflow through the brokered process boundary. */
@@ -63,6 +70,7 @@ export async function executeBuildWorkflow(
     // workflow-driven: the function produces the output during execution.
     let artifact: BuildArtifact | null = null;
     let buildKind = "custom";
+    let assertedFromDriven: readonly string[] = [];
     if (options.output !== null) {
       artifact = options.output.artifact;
       const build = options.output.environment.build;
@@ -142,6 +150,7 @@ export async function executeBuildWorkflow(
         }
         artifact = driven.artifact;
         buildKind = "workflow-driven";
+        assertedFromDriven = driven.assertedPaths;
       } else {
         return failed(options.output.artifact, steps, [], events, "legacy shell-command BuildWorkflow execution is not supported");
       }
@@ -159,6 +168,7 @@ export async function executeBuildWorkflow(
       }
       artifact = driven.artifact;
       buildKind = "workflow-driven";
+      assertedFromDriven = driven.assertedPaths;
     }
 
     const output = artifact;
@@ -185,6 +195,7 @@ export async function executeBuildWorkflow(
       missingArtifacts,
       events,
       failure: null,
+      assertedArtifacts: buildKind === "workflow-driven" ? assertedFromDriven : broker.getAssertedPaths(),
     };
   } finally {
     await broker.close();
@@ -202,11 +213,15 @@ async function runDrivenWorkflow(
   broker: LocalCapabilityBroker,
   steps: BuildWorkflowStepResult[],
   events: WorkflowEvent[],
-): Promise<{ readonly artifact: BuildArtifact } | { readonly error: string }> {
+): Promise<{ readonly artifact: BuildArtifact; readonly assertedPaths: readonly string[] } | { readonly error: string }> {
   if (options.entry === undefined) return { error: "workflow-driven build requires the workflow entry" };
   const driven = await runWorkflow({
     entry: options.entry,
     cwd: options.cwd,
+    // Same input envelope the declarative path delivers (resolveBuildWorkflow):
+    // BUILD_WORKFLOW_SYSTEM documents `context.input` as exactly this value, so
+    // both execution paths must honor it (workflows defensively assert it).
+    input: { kind: "build-workflow-input", version: 1 },
     facts: { host: options.host, project: options.project },
     policy: options.policy,
     timeoutMs: options.timeoutMs,
@@ -227,7 +242,12 @@ async function runDrivenWorkflow(
     durationMs: 0,
     error: null,
   });
-  return { artifact: { kind: "custom", version: 1, workflow_id: "", workflow_revision: 0, paths: {}, metadata: {} } };
+  // The child's capability requests are served by the runner's broker, so the
+  // asserted artifact manifest comes from the run result, not our broker.
+  return {
+    artifact: { kind: "custom", version: 1, workflow_id: "", workflow_revision: 0, paths: {}, metadata: {} },
+    assertedPaths: driven.assertedPaths,
+  };
 }
 
 async function runProcess(
@@ -285,6 +305,7 @@ function failed(
   missingArtifacts: string[],
   events: WorkflowEvent[],
   failure: string,
+  broker?: LocalCapabilityBroker,
 ): BuildWorkflowExecution {
   return {
     status: "failed",
@@ -293,6 +314,7 @@ function failed(
     missingArtifacts,
     events,
     failure,
+    assertedArtifacts: broker?.getAssertedPaths() ?? [],
   };
 }
 

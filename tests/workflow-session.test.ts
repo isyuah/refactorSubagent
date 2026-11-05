@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../src/artifacts/index.js";
 import { DEFAULT_LIMITS, type SessionLimits } from "../src/config/limits.js";
 import {
+  asWorkflowSessionFailure,
   runWorkflowSession,
   type WorkflowSessionAgentOptions,
   type WorkflowSessionResult,
@@ -204,7 +205,9 @@ describe("runWorkflowSession", () => {
     const h = makeSessionHarness({ writeTestEntry: false });
     const result = await h.run();
     expect(result.ok).toBe(false);
-    expect(result.failure).toContain("did not produce");
+    expect(asWorkflowSessionFailure(result.failure)?.category).toBe("resolution");
+    expect(asWorkflowSessionFailure(result.failure)?.retryable).toBe(false);
+    expect(asWorkflowSessionFailure(result.failure)?.reason).toContain("did not produce");
     expect(result.testEntryExists).toBe(false);
   });
 
@@ -223,14 +226,20 @@ describe("runWorkflowSession", () => {
     const h = makeSessionHarness({ isError: true, result: "" });
     const result = await h.run();
     expect(result.ok).toBe(false);
-    expect(result.failure).toContain("failed without output");
+    expect(asWorkflowSessionFailure(result.failure)?.category).toBe("model-session");
+    expect(asWorkflowSessionFailure(result.failure)?.retryable).toBe(true);
+    expect(asWorkflowSessionFailure(result.failure)?.reason).toContain("failed without output");
+    expect(asWorkflowSessionFailure(result.failure)?.detail).toMatchObject({ is_error: true });
   });
 
-  test("reports timeout", async () => {
+  test("reports timeout with stall distinction", async () => {
     const h = makeSessionHarness({ timedOut: true, writeTestEntry: true });
     const result = await h.run();
     expect(result.ok).toBe(false);
-    expect(result.failure).toContain("timed out");
+    expect(asWorkflowSessionFailure(result.failure)?.category).toBe("model-session");
+    expect(asWorkflowSessionFailure(result.failure)?.retryable).toBe(true);
+    expect(asWorkflowSessionFailure(result.failure)?.reason).toContain("timed out");
+    expect(asWorkflowSessionFailure(result.failure)?.detail).toMatchObject({ timed_out: true, stalled: false });
   });
 
   test("fails when declaration was never called even if file exists", async () => {
@@ -238,7 +247,8 @@ describe("runWorkflowSession", () => {
     const result = await h.run();
     // Fresh registry → declare never called → not explicit → failure.
     expect(result.ok).toBe(false);
-    expect(result.failure).toContain("declareDependency");
+    expect(asWorkflowSessionFailure(result.failure)?.category).toBe("resolution");
+    expect(asWorkflowSessionFailure(result.failure)?.reason).toContain("declareDependency");
   });
 
   test("a fresh submitted report, declared build and test file complete the session", async () => {

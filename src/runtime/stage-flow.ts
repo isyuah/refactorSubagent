@@ -2,10 +2,17 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
-import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
+import { z } from "zod";
+import type {
+  FailureCategory,
+  FailureReport,
+  HostPreflight,
+  ProjectDetection,
+} from "../artifacts/index.js";
+import { WorkflowPolicyError } from "../workflow/source-policy.js";
 import { curateBuildWorkflow, loadAliases } from "../workflow/curator.js";
 import { runRefactor } from "../agents/refactor.js";
-import { runWorkflowSession } from "../agents/workflow-session.js";
+import { asWorkflowSessionFailure, runWorkflowSession } from "../agents/workflow-session.js";
 import { LocalDependencyRegistry } from "../agents/dep-registry.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { SessionStore } from "../orchestrator/store.js";
@@ -16,6 +23,7 @@ import {
 } from "../workflow/resolve-with-repairs.js";
 import { runWorkflowRepairSession } from "../agents/workflow-repair.js";
 import { E2ELogger } from "./e2e-log.js";
+import { StageFailureError } from "./stage-failure.js";
 import { FileSessionStore } from "./session-store.js";
 import { detectCProject } from "./project-detector.js";
 import { probeHost } from "./host-preflight.js";
@@ -86,14 +94,30 @@ export const STAGE_NAMES = [
 
 export type StageName = (typeof STAGE_NAMES)[number];
 
+/**
+ * Structured attribution a stage may attach to a halt. The stage it belongs to
+ * is the one that returned the halt, so it is not repeated here. Without it the
+ * abort falls back to { category: "internal", component: "stage-flow" }.
+ */
+export interface StageFailureAttribution {
+  readonly category: FailureCategory;
+  readonly component: string;
+  readonly retryable?: boolean;
+  readonly detail?: Record<string, unknown>;
+}
+
 /** A stage may refuse to continue; the composer turns this into an abort. */
 export interface StageHalt {
   readonly halt: true;
   readonly reason: string;
+  /** Structured attribution persisted as artifacts/failure-report.json. */
+  readonly attribution?: StageFailureAttribution;
 }
 
-export function halt(reason: string): StageHalt {
-  return { halt: true, reason };
+export function halt(reason: string, attribution?: StageFailureAttribution): StageHalt {
+  return attribution === undefined
+    ? { halt: true, reason }
+    : { halt: true, reason, attribution };
 }
 
 export type StageResult<T> = T | StageHalt;
@@ -130,6 +154,15 @@ export interface StageFlowRequest {
   readonly logger?: E2ELogger;
   /** Stage implementations; omitted stages use the host defaults. */
   readonly flow?: StageFlow;
+  /**
+   * Set when this run resumes a previously aborted one (see stage-resume.ts).
+   * Purely descriptive — written to stage-provenance.json so a resumed run's
+   * record states which stages were reused instead of re-executed.
+   */
+  readonly resume?: {
+    readonly sourceSessionId: string;
+    readonly reusedStages: readonly StageName[];
+  };
 }
 
 export interface DeclaredAgentResolution {
@@ -149,6 +182,11 @@ export interface StageProvenance {
   readonly injected: readonly StageName[];
   /** False when the caller replaced the verification stage. */
   readonly verification_authoritative: boolean;
+  /** Present when the run resumed a previously aborted session. */
+  readonly resume?: {
+    readonly source_session: string;
+    readonly reused_stages: readonly StageName[];
+  };
 }
 
 export interface StageFlowResult {
@@ -158,6 +196,8 @@ export interface StageFlowResult {
   readonly declared: DeclaredAgentResolution | null;
   readonly verification: WorkflowVerificationOutcome | null;
   readonly provenance: StageProvenance;
+  /** Structured attribution of the abort; null unless the run aborted. */
+  readonly failure: FailureReport | null;
   readonly logDir: string;
 }
 
@@ -184,6 +224,9 @@ export interface PreflightOutcome {
 
 export interface WorkflowsOutcome {
   readonly declared: DeclaredAgentResolution;
+  /** Root the declared entries were resolved against and must stay inside.
+   *  Defaults to the repository when the stage does not say otherwise. */
+  readonly entryRoot?: string;
 }
 
 /** Branch + worktree pair the refactor stage edits and verification measures. */
@@ -257,6 +300,14 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
   const provenance: StageProvenance = {
     injected: STAGE_NAMES.filter((name) => flow[name] !== undefined),
     verification_authoritative: flow.verify === undefined,
+    ...(req.resume !== undefined
+      ? {
+          resume: {
+            source_session: req.resume.sourceSessionId,
+            reused_stages: req.resume.reusedStages,
+          },
+        }
+      : {}),
   };
   const store = SessionStore.create(req.sessionRoot, req.sessionId);
   const orch = new Orchestrator(store);
@@ -299,6 +350,11 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
   let verification: WorkflowVerificationOutcome | null = null;
   let refactorSummary = "";
   let worktrees: WorktreePair | null = null;
+  // The catch-all attributes a thrown error to the stage in progress; halts
+  // carry their own stage at the call site.
+  let currentStage: StageName = "preflight";
+  // Stage-completion facts for resume; rewritten after each completed stage.
+  const checkpoints: StageCheckpoint[] = [];
   const done = (): StageFlowResult =>
     result(store, logger, declared, verification, refactorSummary, provenance);
 
@@ -310,17 +366,28 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       logger.info("stage flow overrides active", {
         injected: provenance.injected.join(", "),
         verification_authoritative: provenance.verification_authoritative,
+        ...(provenance.resume !== undefined ? { resume: provenance.resume } : {}),
       });
     }
     const preflight = await (flow.preflight ?? defaultPreflightStage)(ctx);
     if (isHalt(preflight)) {
-      abort(orch, preflight.reason);
+      abort(orch, ctx, "preflight", preflight.reason, preflight.attribution);
       return done();
     }
     if (preflight.project.status === "no-c-sources") {
-      abort(orch, `project detection blocked: ${preflight.project.reason}`);
+      abort(orch, ctx, "preflight", `project detection blocked: ${preflight.project.reason}`, {
+        category: "project",
+        component: "project-detection",
+        retryable: false,
+        detail: {
+          status: preflight.project.status,
+          reason: preflight.project.reason,
+          primary_build_system: preflight.project.primary_build_system ?? null,
+        },
+      });
       return done();
     }
+    currentStage = "workflows";
 
     logger.phase("WORKFLOW_SESSION");
     const workflows = await (flow.workflows ?? defaultWorkflowsStage)(ctx, {
@@ -328,19 +395,23 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
     });
     originalRepository.assertUnchanged("after workflow authoring");
     if (isHalt(workflows)) {
-      abort(orch, workflows.reason);
+      abort(orch, ctx, "workflows", workflows.reason, workflows.attribution);
       return done();
     }
     declared = workflows.declared;
+    checkpoints.push({ stage: "workflows", at: now(), data: workflowsCheckpointData(req.repoPath, workflows) });
+    saveStageCheckpoints(store, checkpoints);
 
+    currentStage = "prepare";
     const prepared = await (flow.prepare ?? defaultPrepareStage)(ctx, { preflight, workflows });
     if (isHalt(prepared)) {
-      abort(orch, prepared.reason);
+      abort(orch, ctx, "prepare", prepared.reason, prepared.attribution);
       return done();
     }
     worktrees = prepared.worktrees;
     const baselineRepository = new TrackedRepositoryGuard(worktrees.baselineDir);
 
+    currentStage = "refactor";
     logger.phase("REFACTOR");
     const refactored = await (flow.refactor ?? defaultRefactorStage)(ctx, {
       preflight,
@@ -350,7 +421,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
     originalRepository.assertUnchanged("after candidate refactoring");
     baselineRepository.assertUnchanged("after candidate refactoring");
     if (isHalt(refactored)) {
-      abort(orch, refactored.reason);
+      abort(orch, ctx, "refactor", refactored.reason, refactored.attribution);
       return done();
     }
     refactorSummary = refactored.summary;
@@ -362,7 +433,12 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
     const summaryLine = firstSummaryLine(refactored.summary) ?? req.task;
     const changedFiles = commitCandidateChanges(prepared.worktrees.candidateDir, prepared.baseSha, summaryLine);
     if (changedFiles.length === 0) {
-      abort(orch, "refactor agent made no changes");
+      abort(orch, ctx, "refactor", "refactor agent made no changes", {
+        category: "gate",
+        component: "change-set-measurement",
+        retryable: false,
+        detail: { branch: prepared.branch, base_sha: prepared.baseSha },
+      });
       return done();
     }
     const patch: PatchFacts = {
@@ -373,6 +449,19 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       summary: summaryLine.slice(0, 500),
     };
     logger.artifact("patch-candidate.json", patch);
+    // Refactor checkpoint: written only after the host measured the commit,
+    // so a resume never replays an unmeasured half-state.
+    checkpoints.push({
+      stage: "refactor",
+      at: now(),
+      data: {
+        branch: patch.branch,
+        base_sha: patch.base_sha,
+        commit_sha: patch.commit_sha,
+        summary: patch.summary,
+      },
+    });
+    saveStageCheckpoints(store, checkpoints);
 
     // Judge material comes back only now: the candidate is committed (so the
     // injection cannot appear in the measured change set) and the refactor
@@ -397,9 +486,15 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       }
     }
 
+    currentStage = "verify";
     logger.phase("VERIFICATION");
     if (declared === null || declared.buildResolutions.length === 0) {
-      abort(orch, "declared workflow resolution missing or empty build set");
+      abort(orch, ctx, "verify", "declared workflow resolution missing or empty build set", {
+        category: "resolution",
+        component: "declared-build-set",
+        retryable: false,
+        detail: { build_resolutions: declared?.buildResolutions.length ?? null },
+      });
       return done();
     }
     logger.info("workflow verification started", { phase_detail: "all declared builds + observations on both sides" });
@@ -413,17 +508,31 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       injectedFiles: [...injectedFiles.values()],
     });
     if (isHalt(verified)) {
-      abort(orch, verified.reason);
+      abort(orch, ctx, "verify", verified.reason, verified.attribution);
       return done();
     }
     verification = verified;
     logger.info("workflow verification completed", {
       duration_ms: Math.round(performance.now() - verificationStarted),
     });
+    if (store.state === "ABORTED") {
+      // The verification pipeline aborted the session itself (build or test
+      // execution failure) with a plain reason on the store; attribute it here
+      // from the measured outcome. orch.abort must NOT run again: ABORTED is
+      // terminal (R7), so this persists the report only.
+      const reason = abortReason(store) ?? "workflow verification aborted";
+      persistFailureReport(ctx, "verify", reason, verificationAbortAttribution(verification));
+    }
     return done();
   } catch (error) {
     const reason = errorMessage(error);
-    abort(orch, reason);
+    const info = error instanceof StageFailureError ? error.info : undefined;
+    abort(orch, ctx, currentStage, reason, {
+      category: info?.category ?? "internal",
+      component: info?.component ?? "stage-flow",
+      retryable: info?.retryable ?? false,
+      detail: info?.detail ?? {},
+    });
     return done();
   } finally {
     timed(logger, "worktree cleanup", () => {
@@ -611,9 +720,95 @@ function abortReason(store: SessionStore): string | null {
   return null;
 }
 
-/** Abort the run. The reason is journaled once, from the store, in the finally block. */
-function abort(orch: Orchestrator, reason: string): void {
+/**
+ * Abort the run and persist its structured attribution. The reason is journaled
+ * once, from the store, in the finally block; the typed fields land in
+ * artifacts/failure-report.json and the run dir's failure-report.json.
+ */
+function abort(
+  orch: Orchestrator,
+  ctx: StageContext,
+  stage: StageName,
+  reason: string,
+  attribution?: StageFailureAttribution,
+): void {
   orch.abort(reason);
+  persistFailureReport(ctx, stage, reason, {
+    category: attribution?.category ?? "internal",
+    component: attribution?.component ?? "stage-flow",
+    retryable: attribution?.retryable ?? false,
+    detail: attribution?.detail ?? {},
+  });
+}
+
+/** Validate + durably store one failure attribution (session + run dir). */
+function persistFailureReport(
+  ctx: StageContext,
+  stage: StageName,
+  reason: string,
+  attribution: StageFailureAttribution,
+): FailureReport {
+  const report = ctx.store.saveFailureReport({
+    kind: "failure-report",
+    version: 1,
+    stage,
+    category: attribution.category,
+    component: attribution.component,
+    reason,
+    retryable: attribution.retryable ?? false,
+    detail: attribution.detail ?? {},
+    at: now(),
+  });
+  ctx.logger.error("stage failure attributed", {
+    stage: report.stage,
+    category: report.category,
+    component: report.component,
+    retryable: report.retryable,
+    reason: report.reason,
+  });
+  ctx.logger.artifact("failure-report.json", report);
+  return report;
+}
+
+/**
+ * Derive the attribution of an abort that the verification pipeline performed
+ * directly on the store: prefer the attribution recorded at the exact abort
+ * site; the legacy nullness heuristic only covers outcomes that predate it.
+ */
+function verificationAbortAttribution(
+  v: WorkflowVerificationOutcome,
+): StageFailureAttribution {
+  if (v.abortAttribution !== undefined) {
+    return v.abortAttribution;
+  }
+  if (v.baselineBuild !== null && v.baselineBuild.status !== "pass") {
+    return {
+      category: "build",
+      component: "build-workflow:baseline",
+      retryable: true,
+      detail: { status: v.baselineBuild.status, failure: v.baselineBuild.failure },
+    };
+  }
+  if (v.candidateBuild !== null && v.candidateBuild.status !== "pass") {
+    return {
+      category: "build",
+      component: "build-workflow:candidate",
+      retryable: true,
+      detail: { status: v.candidateBuild.status, failure: v.candidateBuild.failure },
+    };
+  }
+  if (v.baseline === null) {
+    return { category: "test", component: "test-workflow:baseline", retryable: true, detail: {} };
+  }
+  if (v.candidate === null) {
+    return { category: "test", component: "test-workflow:candidate", retryable: true, detail: {} };
+  }
+  return {
+    category: "internal",
+    component: "workflow-verification",
+    retryable: false,
+    detail: { state: v.state },
+  };
 }
 
 function result(
@@ -624,6 +819,10 @@ function result(
   refactorSummary: string,
   provenance: StageProvenance,
 ): StageFlowResult {
+  // Read the attribution back from the store instead of threading it through
+  // locals: abort() persists synchronously, and this stays correct even for
+  // aborts performed inside the verification pipeline.
+  const failure = store.state === "ABORTED" ? store.failureReport() : null;
   return {
     store,
     state: store.state,
@@ -631,6 +830,7 @@ function result(
     declared,
     verification,
     provenance,
+    failure,
     logDir: logger.runDir,
   };
 }
@@ -638,6 +838,102 @@ function result(
 /** First non-empty line of a stage summary, used as the commit subject. */
 function firstSummaryLine(summary: string): string | null {
   return summary.split(/\r?\n/).find((line) => line.trim().length > 0) ?? null;
+}
+
+/**
+ * Stage checkpoints — the resume bookkeeping.
+ *
+ * After the workflows and refactor stages complete, their host-measured facts
+ * are written to <sessionDir>/stage-checkpoints.json. A resume run
+ * (stage-resume.ts) reuses a checkpoint only when every fact it references is
+ * still verifiable on disk (workflow sources exist, branch exists, repo HEAD
+ * unchanged); otherwise the stage simply re-runs. Fail-closed: an unreadable
+ * or malformed checkpoint file is treated as absent, never as reusable.
+ */
+
+export interface StageCheckpoint {
+  readonly stage: "workflows" | "refactor";
+  readonly at: string;
+  readonly data: Record<string, unknown>;
+}
+
+const CheckpointEntry = z.object({
+  stage: z.enum(["workflows", "refactor"]),
+  at: z.string(),
+  data: z.record(z.unknown()),
+});
+const CheckpointFile = z.object({
+  version: z.literal(1),
+  session_id: z.string().min(1),
+  checkpoints: z.array(CheckpointEntry),
+});
+
+/** Persist (rewrite) the checkpoint file for a session. */
+export function saveStageCheckpoints(store: SessionStore, checkpoints: readonly StageCheckpoint[]): void {
+  const file = {
+    version: 1,
+    session_id: store.id,
+    checkpoints: checkpoints.map((c) => ({ stage: c.stage, at: c.at, data: c.data })),
+  };
+  CheckpointFile.parse(file);
+  writeFileSync(join(store.sessionDir, "stage-checkpoints.json"), JSON.stringify(file, null, 2) + "\n");
+}
+
+/**
+ * Load a session's checkpoints. Returns them with a diagnostic; a missing file
+ * yields an empty list, a malformed one yields an empty list PLUS an error —
+ * the caller decides (resume must not reuse, but may still report why).
+ */
+export function loadStageCheckpoints(
+  sessionDir: string,
+): { checkpoints: StageCheckpoint[]; error: string | null } {
+  const path = join(sessionDir, "stage-checkpoints.json");
+  if (!existsSync(path)) return { checkpoints: [], error: null };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    return { checkpoints: [], error: `unreadable stage-checkpoints.json: ${errorMessage(error)}` };
+  }
+  const parsed = CheckpointFile.safeParse(raw);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return { checkpoints: [], error: `malformed stage-checkpoints.json: ${issue?.message ?? "schema mismatch"}` };
+  }
+  return {
+    checkpoints: parsed.data.checkpoints.map((c) => ({ stage: c.stage, at: c.at, data: c.data })),
+    error: null,
+  };
+}
+
+/**
+ * Checkpoint payload of a completed workflows stage. Paths are relative to
+ * `entry_root` (the root the stage resolved its sources against — usually the
+ * repository, but a caller may point it elsewhere), so a resume can re-resolve
+ * them without mistaking an external source for a boundary escape.
+ */
+function workflowsCheckpointData(
+  repoPath: string,
+  outcome: WorkflowsOutcome,
+): Record<string, unknown> {
+  const declared = outcome.declared;
+  const entryRoot = outcome.entryRoot ?? repoPath;
+  return {
+    entry_root: entryRoot.split("\\").join("/"),
+    test_entry: relative(entryRoot, declared.testResolution.entry).split("\\").join("/"),
+    workflow_id: declared.workflowId,
+    workflow_revision: declared.workflowRevision,
+    builds: declared.declaredSet.builds.map((b) => ({
+      id: b.id,
+      entry: relative(entryRoot, join(repoPath, b.entry)).split("\\").join("/"),
+      source_hash: b.source_hash,
+      run_local: b.run_local,
+    })),
+  };
+}
+
+function now(): string {
+  return new Date().toISOString();
 }
 
 /** Time one host-side stage; logs completion at info with duration_ms. */
@@ -709,8 +1005,15 @@ async function runDeclaredResolution(options: {
     limits: options.limits,
   });
   if (!session.ok) {
-    throw new Error(
-      `test-writer session failed: ${session.failure ?? "unknown"}${session.summary.length > 0 ? ` — ${session.summary.slice(0, 400)}` : ""}`,
+    const f = asWorkflowSessionFailure(session.failure);
+    throw new StageFailureError(
+      `test-writer session failed: ${f?.reason ?? "unknown"}${session.summary.length > 0 ? ` — ${session.summary.slice(0, 400)}` : ""}`,
+      {
+        category: f?.category ?? "model-session",
+        component: "test-writer-session",
+        retryable: f?.retryable ?? true,
+        detail: { ...(f?.detail ?? {}), summary_excerpt: session.summary.slice(0, 400) },
+      },
     );
   }
   options.logger.info("test-writer session completed", {
@@ -732,23 +1035,57 @@ async function runDeclaredResolution(options: {
   for (const id of session.declaredBuilds) {
     const resolved = await registry.resolveBuildEntry(id);
     if (resolved === null) {
-      throw new Error(`declared build workflow '${id}' cannot be resolved to a source`);
+      throw new StageFailureError(
+        `declared build workflow '${id}' cannot be resolved to a source`,
+        {
+          category: "resolution",
+          component: "dep-registry",
+          retryable: false,
+          detail: { build_id: id, declared_builds: [...session.declaredBuilds] },
+        },
+      );
     }
     buildSources.push({ id, entry: resolved.entry, runLocal: resolved.runLocal });
   }
 
-  const resolved = await resolveWithRepairs({
-    repoDir: options.repoDir,
-    testEntry,
-    testWorkflowId: `test-${options.sessionId}`,
-    buildSources,
-    host: options.host,
-    project: options.project,
-    logger: options.logger,
-    sessionStore: options.sessionStore,
-    limits: options.limits,
-    policyRepairs: options.policyRepairs,
-  });
+  let resolved: ResolvedDeclaredWorkflows;
+  try {
+    resolved = await resolveWithRepairs({
+      repoDir: options.repoDir,
+      testEntry,
+      testWorkflowId: `test-${options.sessionId}`,
+      buildSources,
+      host: options.host,
+      project: options.project,
+      logger: options.logger,
+      sessionStore: options.sessionStore,
+      limits: options.limits,
+      policyRepairs: options.policyRepairs,
+    });
+  } catch (error) {
+    if (error instanceof StageFailureError) throw error;
+    if (error instanceof WorkflowPolicyError) {
+      throw new StageFailureError(errorMessage(error), {
+        category: "policy",
+        component: "source-policy",
+        retryable: false,
+        detail: {
+          entry: relative(options.repoDir, error.entry).split("\\").join("/"),
+          rule: error.violation.rule,
+          detail: error.violation.detail,
+          line: error.violation.line,
+          column: error.violation.column,
+          snippet: error.violation.snippet,
+        },
+      });
+    }
+    throw new StageFailureError(errorMessage(error), {
+      category: "resolution",
+      component: "workflow-resolution",
+      retryable: false,
+      detail: {},
+    });
+  }
 
   return buildDeclaredResolution({
     repoDir: options.repoDir,
