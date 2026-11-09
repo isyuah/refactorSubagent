@@ -172,6 +172,56 @@ describe("stage flow with preset stages", () => {
     expect(result.verification?.candidateBuild?.status).toBe("pass");
   }, 180_000);
 
+  test("accepts when the declared build outputs outside the legacy build/ tree", async () => {
+    // Regression (2026-10-16 real-AI e2e): the test side's executable allowlist
+    // was hard-coded to build/**, so a workflow-driven build that placed its
+    // artifacts elsewhere failed every direct execution on BOTH sides (equal
+    // sentinels → fail-closed REJECTED). The allowlist must derive from where
+    // the build asserted its artifacts.
+    const fixture = createRepo();
+    writeFileSync(join(fixture.repo, "workflows", "build.ts"), `
+export const workflowKind = "workflow-driven";
+
+export default async ({ process, fs, validator }) => {
+  await fs.mkdir("out/declared");
+  const compiled = await process.run({
+    program: "gcc",
+    args: ["main.c", "-o", "out/declared/app.exe"],
+    cwd: ".",
+    timeoutMs: 60000,
+  });
+  if (compiled.status !== "exited" || compiled.exitCode !== 0) {
+    throw new Error("gcc failed: " + (compiled.error ?? String(compiled.exitCode)));
+  }
+  await validator.assertFile("out/declared/app.exe", "fixture executable");
+};
+`);
+    writeFileSync(join(fixture.repo, "workflows", "test.ts"), `
+export const workflowKind = "test-workflow-driven";
+
+export default async (ctx) => {
+  await ctx.validator.assertFile("out/declared/app.exe", "fixture executable");
+  const run = await ctx.process.run({ program: "out/declared/app.exe", args: [], cwd: ".", timeoutMs: 30000 });
+  ctx.expect("exit-code", run.exitCode);
+  ctx.expect("stdout", run.stdout.trim());
+};
+`);
+    const patch = writePatch(fixture, "comment-only-nested", (source) =>
+      source.replace("int main(void) {\n", "int main(void) {\n  /* preset patch */\n"),
+    );
+
+    const result = await runStageFlow({
+      repoPath: fixture.repo,
+      task: "preset: artifact outside build tree",
+      sessionRoot: fixture.sessionRoot,
+      sessionId: "preset-nested-out",
+      flow: presetFlow(patch),
+    });
+
+    expect(result.state).toBe("ACCEPTED");
+    expect(result.verification?.expectationComparison?.overall).toBe("consistent");
+  }, 180_000);
+
   test("a stage that halts aborts the run with its reason", async () => {
     const fixture = createRepo();
     const patch = writePatch(fixture, "unused", (source) => source);

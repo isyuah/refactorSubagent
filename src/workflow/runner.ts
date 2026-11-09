@@ -140,6 +140,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
       events,
       plan: broker.getPlan(),
       expectations,
+      assertedPaths: broker.getAssertedPaths(),
     };
   }
   if (stopped === "cancelled" || transportError !== null || cleanupError !== null || exit.error !== null) {
@@ -157,6 +158,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
       events,
       plan: broker.getPlan(),
       expectations,
+      assertedPaths: broker.getAssertedPaths(),
     };
   }
   if (exit.code !== 0 || completedEnvelope === null || !completedEnvelope.ok) {
@@ -172,6 +174,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
       events,
       plan: broker.getPlan(),
       expectations,
+      assertedPaths: broker.getAssertedPaths(),
     };
   }
 
@@ -185,6 +188,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
     events,
     plan: broker.getPlan(),
     expectations,
+    assertedPaths: broker.getAssertedPaths(),
   };
 }
 
@@ -203,6 +207,7 @@ function rejected(reason: string): WorkflowRunResult {
     events: [],
     plan: null,
     expectations: [],
+    assertedPaths: [],
   };
 }
 

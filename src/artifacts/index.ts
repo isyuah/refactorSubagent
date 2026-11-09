@@ -34,6 +34,7 @@ export * from "./test-workflow.js";
 export * from "./workflow-resolution.js";
 export * from "./declared-build-set.js";
 export * from "./expectation-suite.js";
+export * from "./failure-report.js";
 /** Union of every artifact kind the orchestrator accepts (some carry cross-field
  * refinements, so plain union instead of discriminatedUnion). */
 export const Artifact = z.union([

@@ -52,10 +52,16 @@ const workflowsProduced = declared !== null &&
   declared.buildResolutions.every((b) => existsSync(b.entry));
 const buildsPassed = result.verification?.baselineBuild?.status === "pass" &&
   result.verification?.candidateBuild?.status === "pass";
-const testsCompleted = result.verification?.baseline !== null &&
+// Tests "completed" = either comparison path ran to a decision: the CTest
+// path populates baseline/candidate, while the declared self-driven
+// expectation path leaves them null and populates expectationComparison.
+const ctestSidesRan = result.verification?.baseline !== null &&
   result.verification?.baseline !== undefined &&
   result.verification?.candidate !== null &&
   result.verification?.candidate !== undefined;
+const expectationDecided = result.verification?.expectationComparison !== null &&
+  result.verification?.expectationComparison !== undefined;
+const testsCompleted = ctestSidesRan || expectationDecided;
 const accepted = result.state === "ACCEPTED";
 
 console.log(JSON.stringify({

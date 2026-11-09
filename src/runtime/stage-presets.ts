@@ -72,7 +72,14 @@ export function presetWorkflowsStage(spec: PresetWorkflowsSpec): WorkflowsStage 
     const testEntry = resolveEntry(entryRoot, spec.testEntry);
     const missing = builds.find((build) => !existsSync(build.entry))?.entry ??
       (existsSync(testEntry) ? null : testEntry);
-    if (missing !== null) return halt(`preset workflow source missing: ${missing}`);
+    if (missing !== null) {
+      return halt(`preset workflow source missing: ${missing}`, {
+        category: "resolution",
+        component: "preset-workflows",
+        retryable: false,
+        detail: { entry: missing },
+      });
+    }
 
     const resolved = await resolveDeclaredWorkflows({
       workspaceRoot: ctx.repoPath,
@@ -93,6 +100,7 @@ export function presetWorkflowsStage(spec: PresetWorkflowsSpec): WorkflowsStage 
         builds,
         resolved,
       }),
+      entryRoot,
     };
   };
 }
@@ -116,6 +124,12 @@ export function patchRefactorStage(patchFile: string): RefactorStage {
       const detail = (applied.stderr ?? "").trim();
       return halt(
         `preset patch did not apply: ${detail.length > 0 ? detail : `git apply exited ${String(applied.status)}`}`,
+        {
+          category: "resolution",
+          component: "preset-patch",
+          retryable: false,
+          detail: { patch_file: patchFile, git_stderr: detail },
+        },
       );
     }
     return { summary: `preset patch: ${patchFile}` };
@@ -141,7 +155,16 @@ export function existingBranchPrepareStage(spec: {
   readonly baseSha: string;
 }): PrepareStage {
   return async (ctx) => {
-    const worktrees = createWorktrees(ctx.repoPath, ctx.store.sessionDir, spec.branch, spec.baseSha);
+    // Honor a caller-owned worktree root exactly like the default prepare
+    // stage: when the original run kept its pair under --worktree-root, the
+    // candidate branch is still checked out THERE, and re-creating the pair
+    // under the session dir would make git refuse the second checkout.
+    const worktrees = createWorktrees(
+      ctx.repoPath,
+      ctx.worktreeRoot ?? ctx.store.sessionDir,
+      spec.branch,
+      spec.baseSha,
+    );
     return { branch: spec.branch, baseSha: spec.baseSha, worktrees };
   };
 }

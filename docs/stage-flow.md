@@ -33,6 +33,11 @@
 实际编译和运行由 verify 阶段的宿主执行。
 `presetWorkflowsStage` 不经过 AI 会话，也不要求这份计划。职责与报告路径见 [验证方式与辅助材料](verification-strategies.md)。
 
+`runStageFlowResume` 复用仍有效的检查点时，同样转发 `onProgress` 和 `configuration`，
+发出带来源会话及复用阶段的 `resume` 事件。统一 `report` 保存结构化 `failure` 与 `resume`；
+阶段耗时中的 `reused` 只计本次加载、校验和测量，验证总耗时始终来自本次运行。
+复用决策、检查点校验与失败分类沿用阶段恢复实现，显示层不参与重试或判定。
+
 ## 2. core 用法（程序化）
 
 ```ts

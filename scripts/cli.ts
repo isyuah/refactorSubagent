@@ -34,6 +34,7 @@ import {
 import { runStageFlow, StageFlowFinalizationError, type StageFlowResult } from "../src/runtime/stage-flow.js";
 import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
 import { RunDisplay, formatRunReport } from "../src/cli/display.js";
+import { runStageFlowResume } from "../src/runtime/stage-resume.js";
 
 installOwnedProcessSignalHandlers();
 
@@ -132,6 +133,7 @@ async function executeRun(
   const flow = buildStageFlow(resolved.pipeline);
   const sessionId = command.session ?? `run-${Date.now().toString(36)}`;
   const sessionRoot = command.sessionRoot === null ? repo : resolve(command.sessionRoot);
+  const resumeFrom = command.resume;
   const display = new RunDisplay({ format: command.format, verbosity: command.verbosity,
     progress: command.progress, color: command.color });
   const limits = resolveLimits({ repoRoot: repo, overrides });
@@ -148,7 +150,7 @@ async function executeRun(
   try {
     let result: StageFlowResult;
     try {
-      result = await runStageFlow({
+      const request = {
         repoPath: repo,
         task: command.task,
         sessionRoot,
@@ -156,10 +158,14 @@ async function executeRun(
         ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
         ...(command.injections.length > 0 ? { injections: command.injections } : {}),
         limitOverrides: overrides,
-        flow,
         onProgress: display.receive,
         configuration: { pipeline: resolved.pipeline, sources: resolved.sources, overrides: pipelineOverrides.values ?? [] },
-      });
+      };
+      // Resume overlays verified checkpoints while preserving current configuration
+      // and the same progress/report observers as a fresh run.
+      result = resumeFrom !== null
+        ? await runStageFlowResume({ ...request, sourceSessionId: resumeFrom, baseFlow: flow })
+        : await runStageFlow({ ...request, flow });
     } catch (error) {
       if (!(error instanceof StageFlowFinalizationError)) throw error;
       result = error.result;
@@ -171,16 +177,21 @@ async function executeRun(
       session: sessionId,
       repo,
       log_dir: result.logDir,
-      pipeline: describePipeline(resolved.pipeline),
+      pipeline: resumeFrom !== null ? "resume (checkpoint restart)" : describePipeline(resolved.pipeline),
       pipeline_layers: resolved.sources,
       injected_stages: result.provenance.injected,
       verification_authoritative: result.provenance.verification_authoritative,
+      ...(result.provenance.resume !== undefined ? { resumed_from: result.provenance.resume } : {}),
       declared_builds: declaredBuilds,
       baseline_build: result.verification?.baselineBuild?.status ?? null,
       candidate_build: result.verification?.candidateBuild?.status ?? null,
       comparison: result.verification?.expectationComparison?.overall ??
         result.verification?.comparison?.overall ?? null,
       refactor_summary: result.refactorSummary.slice(0, 500),
+      ...(result.failure !== null
+        ? { failure: { stage: result.failure.stage, category: result.failure.category,
+            component: result.failure.component, reason: result.failure.reason, retryable: result.failure.retryable } }
+        : {}),
       report: result.report,
     };
     if (command.format === "json") {

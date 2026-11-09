@@ -76,6 +76,8 @@ export interface RunCommand {
    * and before verification: `<source>=<dest-inside-worktree>` pairs.
    */
   injections: readonly InjectionSpec[];
+  /** Aborted session id to resume from its stage checkpoints (null = fresh run). */
+  resume: string | null;
   format: CliFormat;
 }
 
@@ -156,6 +158,7 @@ function parseRun(args: string[]): RunCommand {
   let sessionRoot: string | null = null;
   let worktreeRoot: string | null = null;
   const injections: { source: string; dest: string }[] = [];
+  let resume: string | null = null;
   let format: CliFormat = "human";
   let sawRepo = false;
   for (let index = 0; index < args.length; index++) {
@@ -198,6 +201,10 @@ function parseRun(args: string[]): RunCommand {
       injections.push({ source: pair.slice(0, at), dest: pair.slice(at + 1) });
       continue;
     }
+    if (arg === "--resume") {
+      resume = nextValue(args, ++index, "--resume");
+      continue;
+    }
     if (arg === "--format") {
       format = parseFormat(nextValue(args, ++index, "--format"));
       continue;
@@ -208,7 +215,7 @@ function parseRun(args: string[]): RunCommand {
     sawRepo = true;
   }
   if (task === null) throw new CliUsageError("run requires --task <text>");
-  return { kind: "run", repo, task, session, sessionRoot, worktreeRoot, injections, format, verbosity, progress, color };
+  return { kind: "run", repo, task, session, sessionRoot, worktreeRoot, injections, resume, format, verbosity, progress, color };
 }
 
 function parsePreflight(args: string[]): PreflightCommand {
@@ -366,6 +373,7 @@ export const CLI_HELP = `Usage:
   refactor-subagent preflight [repo] [--format human|json]
   refactor-subagent run [repo] --task <text> [--session <id>] [--session-root <dir>]
                             [--worktree-root <dir>] [--inject <src>=<dest>]
+                            [--resume <aborted-session-id>]
                             [--format human|json] [--verbosity detailed|summary]
                             [--progress auto|plain|off] [--no-color]
   refactor-subagent workflow run <entry.ts> [options]
@@ -390,6 +398,14 @@ Run display:
 Progress goes to stderr; the final human/JSON report goes to stdout.
 Detailed display does not require RFR_LOG_LEVEL=trace. The durable report is
 saved as artifacts/run-summary.json. A session id must be unique; it is not a resume command.
+
+Resume (checkpoint restart):
+  --resume <id>               Resume an ABORTED session from its stage
+                              checkpoints instead of re-running everything.
+                              Completed stages whose facts still verify on disk
+                              (workflow sources, candidate branch, unchanged
+                              repo HEAD) are reused; verification always re-runs.
+                              A fresh session id is generated unless --session is set.
 
 Stage sources (accepted by "run"), later wins:
   --pipeline-file <path>      Extra pipeline layer, merged in order (repeatable)

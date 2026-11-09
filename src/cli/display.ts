@@ -95,6 +95,7 @@ export class RunDisplay {
   private logDir = "";
   private readonly pending = new Map<string, string>();
   private readonly tails = new Map<string, string>();
+  private readonly reusedStages = new Set<string>();
 
   constructor(private readonly options: DisplayOptions) {
     this.output = options.output ?? process.stderr;
@@ -128,18 +129,22 @@ export class RunDisplay {
         !(event.type === "agent-activity" && event.heartbeat)) this.lastActivity = event.elapsed_ms;
     const label = `[${duration(event.elapsed_ms)}]`;
     switch (event.type) {
+      case "resume":
+        for (const stage of event.reused_stages) this.reusedStages.add(stage);
+        this.line(`${label} 恢复自会话: ${event.source_session}\n复用阶段: ${event.reused_stages.map((stage) => STAGES[stage] ?? stage).join("、") || "无"}；环境检查与验证重新执行，阶段耗时仅计入本次重新校验。`);
+        break;
       case "phase":
         this.phase = event.name;
         this.phaseStarted = event.elapsed_ms;
-        this.line(`${label} ${PHASES[event.name] ?? event.name} (${event.name})`);
+        this.line(`${label} ${this.phaseLabel(event.name)} (${event.name})`);
         break;
       case "stage":
-        if (event.action === "end") this.line(`${label} ${STAGES[event.name]}: ${event.failed ? "未完成" : "完成"}`);
+        if (event.action === "end") this.line(`${label} ${STAGES[event.name]}: ${event.failed ? "未完成" : this.reusedStages.has(event.name) ? "复用完成" : "完成"}`);
         break;
       case "log":
         if (!event.heartbeat && !["trace", "debug"].includes(event.level)) {
           const details = event.details ?? {};
-          const extra = ["attempt", "max_repairs", "entry", "rule", "detail", "reason", "duration_ms"]
+          const extra = ["attempt", "max_repairs", "entry", "rule", "detail", "reason", "duration_ms", "stage", "category", "component", "retryable"]
             .flatMap((key) => details[key] === undefined ? [] : [`${key}=${String(details[key])}`]);
           this.line(`${label} ${event.level === "error" ? "错误: " : event.level === "warn" ? "提示: " : ""}${event.message}${extra.length ? ` · ${extra.join(" · ")}` : ""}`);
         }
@@ -182,7 +187,7 @@ export class RunDisplay {
   tick(): void {
     if (!this.enabled || this.closed) return;
     const elapsed = this.elapsed + this.now() - this.observedAt;
-    const phase = this.animated ? fitTerminal(PHASES[this.phase] ?? this.phase, 14) : PHASES[this.phase] ?? this.phase;
+    const phase = this.animated ? fitTerminal(this.phaseLabel(this.phase), 14) : this.phaseLabel(this.phase);
     const text = `状态: ${phase} | 总耗时 ${duration(elapsed)} | 阶段 ${duration(elapsed - this.phaseStarted)} | 无活动 ${duration(elapsed - this.lastActivity)}`;
     if (!this.animated) { this.line(text); return; }
     this.clearStatus();
@@ -213,6 +218,11 @@ export class RunDisplay {
 
   private clearStatus(): void {
     if (this.hasStatus) { this.write("\r\u001b[2K"); this.hasStatus = false; }
+  }
+  private phaseLabel(name: string): string {
+    if (name === "WORKFLOW_SESSION" && this.reusedStages.has("workflows")) return "复用验证脚本并重新校验";
+    if (name === "REFACTOR" && this.reusedStages.has("refactor")) return "复用已保存的候选改动";
+    return PHASES[name] ?? name;
   }
   private line(text: string): void { this.clearStatus(); this.write(`${cleanText(text)}\n`); }
   private write(text: string): void { this.output.write(text); }
@@ -252,7 +262,7 @@ function limitLines(limits: Limits): string[] {
   ];
 }
 function statusText(status: string): string {
-  return ({ running: "运行中", pass: "通过", failed: "失败", "not-run": "未执行", completed: "完成",
+  return ({ running: "运行中", pass: "通过", failed: "失败", "not-run": "未执行", completed: "完成", reused: "复用（重新校验）",
     declare: "已声明", begin: "开始", complete: "完成", fail: "失败" } as Record<string, string>)[status] ?? status;
 }
 
@@ -282,6 +292,10 @@ export function formatRunReport(report: RunReport, verbosity: CliVerbosity): str
   const compactReason = comparison ? `行为比较${comparison.overall === "consistent" ? "一致" : "未通过"}：${comparison.mismatched} 个检查项失配，${comparison.errors.length} 个比较错误。` : "";
   if (report.abort_reason) lines.push(`中止原因: ${preview(report.abort_reason)}`);
   else if (report.decision_reason) lines.push(`判定原因: ${verbosity === "summary" && comparison ? compactReason : preview(report.decision_reason)}`);
+  if (report.failure) lines.push(`失败归因: [${report.failure.category}] ${report.failure.stage}/${report.failure.component} · 可重试=${report.failure.retryable ? "是" : "否"}`,
+    `失败证据: ${join(report.log_dir, "artifacts", "failure-report.json")}`);
+  if (report.resume) lines.push(`恢复自会话: ${report.resume.source_session}`,
+    `复用阶段: ${report.resume.reused_stages.map((stage) => STAGES[stage] ?? stage).join("、") || "无"}；耗时仅包含本次执行与重新校验。`);
   if (report.finalization_error) lines.push(`收尾失败: ${report.finalization_error}（验证结论已保留，进程以失败退出）`);
   if (report.configuration) lines.push(`阶段配置: ${JSON.stringify(report.configuration.pipeline.stages)}`,
     `运行配置来源: ${report.configuration.sources.join(", ") || "内置默认"}`,

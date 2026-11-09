@@ -5,12 +5,51 @@ import { fileURLToPath } from "node:url";
 import type { RunReport } from "../src/runtime/progress.js";
 import type { HarnessSummary } from "../testset/runner/drivers.js";
 import { cliFixture, type CliScenario } from "./helpers/cli-fixture.js";
-import { defaultPrepareStage, isHalt, runStageFlow, StageFlowFinalizationError } from "../src/runtime/stage-flow.js";
+import { defaultPrepareStage, halt, isHalt, runStageFlow, StageFlowFinalizationError } from "../src/runtime/stage-flow.js";
 import { buildStageFlow, resolvePipeline } from "../src/config/pipeline.js";
+import { formatRunReport } from "../src/cli/display.js";
 
 const cli = fileURLToPath(new URL("../scripts/cli.ts", import.meta.url));
 
 describe("offline CLI run output", () => {
+  test("CLI resume preserves checkpoint reuse, progress, configuration and the durable report", async () => {
+    const f = cliFixture("accept");
+    const sourceSession = "cli-resume-source";
+    const first = await runStageFlow({ repoPath: f.repo, task: "resume display integration", sessionId: sourceSession, sessionRoot: f.sessionRoot,
+      flow: { ...buildStageFlow(resolvePipeline({ repoRoot: f.repo, overrides: { files: [f.pipeline] } }).pipeline),
+        verify: async () => halt("fixture verification temporarily unavailable", { category: "environment", component: "cli-resume-fixture", retryable: true }),
+      },
+    });
+    expect(first.state).toBe("ABORTED");
+    expect(first.report.failure).toEqual(first.failure);
+    expect(first.report.failure?.stage).toBe("verify");
+    expect(formatRunReport(first.report, "summary")).toContain("cli-resume-fixture");
+    const child = Bun.spawn([process.execPath, cli, ...f.args, "--resume", sourceSession,
+      "--format", "json", "--verbosity", "summary", "--progress", "plain", "--no-color"], { stdout: "pipe", stderr: "pipe", timeout: 60_000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const result = JSON.parse(stdout) as HarnessSummary & { resumed_from: RunReport["resume"]; report: RunReport };
+    expect(exit, stderr).toBe(0);
+    expect(result.state).toBe("ACCEPTED");
+    expect(result.resumed_from).toEqual({ source_session: sourceSession, reused_stages: ["workflows", "refactor"] });
+    expect(result.report.resume).toEqual(result.resumed_from);
+    expect(result.report.failure).toBeNull();
+    expect(result.report.configuration?.sources).toContain(f.pipeline);
+    expect(result.report.stage_timings.filter((stage) => stage.status === "reused").map((stage) => stage.name)).toEqual(["workflows", "refactor"]);
+    expect(result.report.stage_timings.find((stage) => stage.name === "verify")?.status).toBe("completed");
+    expect(result.report.builds).toHaveLength(4);
+    expect(result.report.builds.every((build) => build.status === "pass")).toBeTrue();
+    expect(result.report.comparison?.overall).toBe("consistent");
+    expect(result.verification_authoritative).toBeTrue();
+    expect(stderr).toContain(sourceSession);
+    expect(stderr).toContain("WORKFLOW_SESSION");
+    expect(stderr).toContain("COMPARISON");
+    for (const verbosity of ["detailed", "summary"] as const) {
+      expect(formatRunReport(result.report, verbosity)).toContain(sourceSession);
+      expect(formatRunReport(result.report, verbosity)).toContain(result.report.candidate!.commit_sha);
+    }
+    expect(JSON.parse(readFileSync(result.report.report_path, "utf8"))).toEqual(result.report);
+  }, 120_000);
+
   test("a cleanup failure retains the gate verdict and durable evidence while still rejecting successful completion", async () => {
     const f = cliFixture("accept");
     try {
@@ -50,6 +89,10 @@ describe("offline CLI run output", () => {
       expect(result.report.repo).toBe(f.repo);
       expect(result.report.elapsed_ms).toBeGreaterThan(0);
       expect(result.report.stage_timings.find((stage) => stage.name === "cleanup")?.status).toBe("completed");
+      expect(result.report.resume).toBeNull();
+      if (state === "ABORTED") {
+        expect(result.report.failure).toMatchObject({ stage: scenario === "abort" ? "workflows" : "verify", category: scenario === "abort" ? "resolution" : "build" });
+      } else expect(result.report.failure).toBeNull();
       expect(JSON.parse(readFileSync(result.report.report_path, "utf8"))).toEqual(result.report);
       expect(result.log_dir).toBe(result.report.log_dir);
       expect(result.report.configuration?.sources).toContain(f.pipeline);

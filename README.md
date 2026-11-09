@@ -49,6 +49,9 @@ bun scripts/cli.ts run <repo> --task "..." --session task-002 --verbosity summar
 
 # 保存可直接解析的 JSON，同时把按行进度保存到另一个文件
 bun scripts/cli.ts run <repo> --task "..." --session task-003 --format json --progress plain > result.json 2> progress.log
+
+# 恢复一次 ABORTED 运行；创建新会话，重新执行环境检查和完整验证
+bun scripts/cli.ts run <repo> --task "..." --resume task-001 --session task-001-retry --verbosity summary
 ```
 
 | 参数 | 默认值与行为 |
@@ -59,6 +62,7 @@ bun scripts/cli.ts run <repo> --task "..." --session task-003 --format json --pr
 | `--progress plain` | 强制逐行实时展示，JSON 模式也可使用 |
 | `--progress off` | 关闭实时展示，仍输出结束报告 |
 | `--no-color` | 禁用颜色；也尊重 `NO_COLOR` 环境变量 |
+| `--resume <会话编号>` | 复用指定中止会话中仍有效的阶段检查点，在新会话中重新验证 |
 
 进度始终写入 **stderr**，结束报告写入 **stdout**。交互终端保留事件历史并在底部刷新当前阶段、
 总耗时、阶段耗时和无实际活动的时间；非交互终端每 10 秒输出状态。心跳与工具存活消息不会重置活动时间。
@@ -75,14 +79,22 @@ bun scripts/cli.ts run <repo> --task "..." --session task-003 --format json --pr
 每个大值最多预览 1,024 个字符，完整值保存在证据文件中。
 SDK 提供时展示会话轮数、用量和费用；缺失时不估算，子会话费用不重复计入合计。
 
+恢复运行会显示来源会话和复用阶段；复用阶段的耗时只包含本次加载、重新校验或测量，
+不会计入上次 AI 执行耗时。检查点无效的阶段按本次配置重新运行，验证始终重新执行。
+恢复时仍需传入所需的 `--session-root`、`--worktree-root`、`--pipeline-file`、`--stage`、`--inject` 等参数，
+不会自动恢复上一次命令行。有效检查点优先于本次阶段配置，只有未复用的阶段使用本次配置。
+只有 `ABORTED` 会话可恢复；运行成功、拒绝和中止的既有记录不会被改写。
+
 证据默认保存在 `<repo>/.refactor/e2e/<session>/`，也可用 `--session-root <目录>` 改变存放根目录：
 
 - `artifacts/run-summary.json`：清理完成后定稿的统一报告，与 CLI JSON 的 `report` 字段相同。
+- `artifacts/failure-report.json`：中止时的失败阶段、分类、组件、原因及可重试标记；统一报告的 `failure` 同步保存该信息。
 - `logs/`：构建、测试与 CTest 的原始进程输出；具体失败信息也保存在对应执行结果 JSON 中。
 - `artifacts/expectation-*.json` 或 `ctest-*.json`：两侧完整观测与比较证据。
 - `run.jsonl`、`state.json`、`sessions/`：运行事件、状态与 SDK 会话记录。
 
 `--format json` 保留既有顶层字段并追加 `report`，测试集原有读取方式继续有效。
+恢复信息保留在顶层 `resumed_from` 与 `report.resume`，复用成功的阶段在 `stage_timings` 中标为 `reused`。
 提前失败只报告已获得的信息。收到中断后停止状态刷新、回收所属进程并保留已有证据；
 强制中断时最终报告可能尚未生成。若清理或产物推广失败，报告单独记录 `finalization_error`，
 保留实际验证结论，同时以失败退出。

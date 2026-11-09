@@ -1,5 +1,5 @@
 import type { VerificationAnalysis } from "../agents/verification-analysis.js";
-import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
+import type { FailureReport, HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import type { Limits } from "../config/limits.js";
 import type { Pipeline } from "../config/pipeline.js";
 
@@ -63,6 +63,7 @@ export interface CandidateSummary {
 }
 export type ProgressUpdate = (
   | { readonly type: "phase"; readonly name: string }
+  | { readonly type: "resume"; readonly source_session: string; readonly reused_stages: readonly RunStage[] }
   | { readonly type: "stage"; readonly name: RunStage; readonly action: "start" | "end"; readonly failed?: boolean }
   | { readonly type: "log"; readonly level: string; readonly message: string; readonly heartbeat?: boolean; readonly details?: Record<string, unknown> }
   | { readonly type: "preflight"; readonly host: HostPreflight; readonly project: ProjectDetection }
@@ -93,7 +94,7 @@ export type WorkflowProgressObserver = (update: ProgressUpdate) => void;
 
 export interface StageTiming {
   readonly name: RunStage;
-  readonly status: "completed" | "failed" | "not-run";
+  readonly status: "completed" | "reused" | "failed" | "not-run";
   readonly elapsed_ms: number;
 }
 export interface ExecutionSummary {
@@ -113,6 +114,8 @@ export interface RunReport {
   readonly task: string;
   readonly state: string;
   readonly abort_reason: string | null;
+  readonly failure: FailureReport | null;
+  readonly resume: { readonly source_session: string; readonly reused_stages: readonly RunStage[] } | null;
   readonly decision_reason: string | null;
   readonly finalization_error: string | null;
   readonly elapsed_ms: number;
@@ -177,7 +180,7 @@ export class RunReportCollector {
     }
   }
 
-  finish(input: Pick<RunReport, "session" | "repo" | "task" | "state" | "abort_reason" | "decision_reason" | "finalization_error" | "elapsed_ms" | "limits" | "limit_sources" | "limit_overrides" | "configuration" | "refactor_summary" | "log_dir" | "report_path">,
+  finish(input: Pick<RunReport, "session" | "repo" | "task" | "state" | "abort_reason" | "failure" | "resume" | "decision_reason" | "finalization_error" | "elapsed_ms" | "limits" | "limit_sources" | "limit_overrides" | "configuration" | "refactor_summary" | "log_dir" | "report_path">,
     buildIds: readonly string[]): RunReport {
     const agents = [...this.agents.values()];
     const rootCosts = agents.filter((agent) => !agent.parent_id && agent.cost_usd !== undefined);
@@ -194,7 +197,7 @@ export class RunReportCollector {
       decision_reason: input.decision_reason?.trim() || input.abort_reason || this.comparison?.reason || null,
       stage_timings: (["preflight", "workflows", "prepare", "refactor", "verify", "cleanup"] as const).map((name) => {
         const timing = this.stages.get(name);
-        return { name, status: timing ? timing.failed || timing.end === undefined ? "failed" : "completed" : "not-run",
+        return { name, status: timing ? timing.failed || timing.end === undefined ? "failed" : input.resume?.reused_stages.includes(name) ? "reused" : "completed" : "not-run",
           elapsed_ms: timing ? Math.max(0, (timing.end ?? input.elapsed_ms) - timing.start) : 0 };
       }),
       phases: this.phases.map((phase) => ({ name: phase.name, elapsed_ms: Math.max(0, (phase.end ?? input.elapsed_ms) - phase.start) })),

@@ -11,6 +11,7 @@ import { ctestProgressSummary } from "../src/runtime/workflow-progress.js";
 import type { CTestComparisonResult } from "../src/artifacts/index.js";
 
 const input = { session: "offline", repo: "repo", task: "task", state: "ABORTED", abort_reason: "fixture stopped", decision_reason: "fixture stopped", finalization_error: null,
+  failure: null, resume: null,
   elapsed_ms: 1000, limits: DEFAULT_LIMITS, limit_sources: [], limit_overrides: [], configuration: null,
   refactor_summary: "", log_dir: "evidence", report_path: "evidence/artifacts/run-summary.json" };
 function event(update: ProgressUpdate, elapsed_ms = 0): RunProgressEvent {

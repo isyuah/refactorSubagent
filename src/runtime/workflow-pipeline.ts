@@ -32,6 +32,7 @@ import type { WorktreePair } from "./worktree.js";
 import type { E2ELogger } from "./e2e-log.js";
 import type { Limits } from "../config/limits.js";
 import type { WorkflowEvent } from "../workflow/types.js";
+import type { StageFailureAttribution } from "./stage-flow.js";
 import { VerificationIntegrity, type IntegrityInput } from "./verification-integrity.js";
 import {
   mergeVerificationMaterials,
@@ -75,6 +76,9 @@ export interface WorkflowVerificationOutcome {
   readonly comparison: CTestComparisonResult | null;
   /** Self-driven test path: the declared-expectation comparison that decided the run. */
   readonly expectationComparison: ExpectationComparisonResult | null;
+  /** Structured attribution set at the exact abort site; consumed by the
+   *  stage-flow failure report so the side is never guessed. */
+  readonly abortAttribution?: StageFailureAttribution;
 }
 
 /**
@@ -207,7 +211,15 @@ async function verifyWorkflows(
   });
   if (suite === null) {
     results.push(orch.abort("TestWorkflow is not a CTest workflow; this executor requires CTest"));
-    return emptyOutcome(request.store.state, results);
+    return {
+      ...emptyOutcome(request.store.state, results),
+      abortAttribution: {
+        category: "resolution",
+        component: "test-workflow:materialize",
+        retryable: false,
+        detail: {},
+      },
+    };
   }
 
   const baselineBuild = await executeBuild(
@@ -217,7 +229,11 @@ async function verifyWorkflows(
   );
   if (baselineBuild.status !== "pass") {
     results.push(orch.abort(`baseline BuildWorkflow failed: ${baselineBuild.failure ?? "unknown failure"}`));
-    return { ...emptyOutcome(request.store.state, results), baselineBuild };
+    return {
+      ...emptyOutcome(request.store.state, results),
+      baselineBuild,
+      abortAttribution: buildFailureAttribution("baseline", baselineBuild),
+    };
   }
 
   const baselineResult = await runSuite(request, request.worktrees.baselineDir, suite, "baseline");
@@ -227,7 +243,12 @@ async function verifyWorkflows(
   request.store.saveArtifact(baseline);
   request.logger?.artifact("ctest-baseline.json", baseline);
   if (!submit(baseline)) {
-    return { ...emptyOutcome(request.store.state, results), baselineBuild, baseline };
+    return {
+      ...emptyOutcome(request.store.state, results),
+      baselineBuild,
+      baseline,
+      abortAttribution: testFailureAttribution("baseline", { status: "artifact-submission-rejected" }),
+    };
   }
 
   const patch: PatchRecord = {
@@ -247,7 +268,13 @@ async function verifyWorkflows(
   );
   if (candidateBuild.status !== "pass") {
     results.push(orch.abort(`candidate BuildWorkflow failed: ${candidateBuild.failure ?? "unknown failure"}`));
-    return { ...emptyOutcome(request.store.state, results), baselineBuild, baseline, candidateBuild };
+    return {
+      ...emptyOutcome(request.store.state, results),
+      baselineBuild,
+      baseline,
+      candidateBuild,
+      abortAttribution: buildFailureAttribution("candidate", candidateBuild),
+    };
   }
 
   const candidateResult = await runSuite(request, request.worktrees.candidateDir, suite, "candidate");
@@ -261,6 +288,7 @@ async function verifyWorkflows(
       candidateBuild,
       baseline,
       candidate,
+      abortAttribution: testFailureAttribution("candidate", { status: "artifact-submission-rejected" }),
     };
   }
 
@@ -322,13 +350,19 @@ async function runSelfDrivenCore(
   const baselineBuild = await executeBuildList(request, request.worktrees.baselineDir, "baseline", buildList);
   if (baselineBuild.status !== "pass") {
     results.push(orch.abort(`baseline BuildWorkflow failed: ${baselineBuild.failure ?? "unknown failure"}`));
-    return empty({ baselineBuild });
+    return empty({
+      baselineBuild,
+      abortAttribution: buildFailureAttribution("baseline", baselineBuild),
+    });
   }
 
   const baselineRun = await runObservedTest(request, request.worktrees.baselineDir, "baseline");
   if (baselineRun.status !== "pass") {
     results.push(orch.abort(`baseline test workflow failed: ${baselineRun.failure ?? baselineRun.status}`));
-    return empty({ baselineBuild });
+    return empty({
+      baselineBuild,
+      abortAttribution: testFailureAttribution("baseline", baselineRun),
+    });
   }
   const baselineArtifact = ExpectationBaseline.parse({
     kind: "expectation-baseline",
@@ -338,7 +372,12 @@ async function runSelfDrivenCore(
   });
   request.store.saveArtifact(baselineArtifact);
   request.logger?.artifact("expectation-baseline.json", baselineArtifact);
-  if (!submit(baselineArtifact)) return empty({ baselineBuild });
+  if (!submit(baselineArtifact)) {
+    return empty({
+      baselineBuild,
+      abortAttribution: testFailureAttribution("baseline", { status: "artifact-submission-rejected" }),
+    });
+  }
 
   const patch: PatchRecord = {
     kind: "patch-record",
@@ -351,13 +390,21 @@ async function runSelfDrivenCore(
   const candidateBuild = await executeBuildList(request, request.worktrees.candidateDir, "candidate", buildList);
   if (candidateBuild.status !== "pass") {
     results.push(orch.abort(`candidate BuildWorkflow failed: ${candidateBuild.failure ?? "unknown failure"}`));
-    return empty({ baselineBuild, candidateBuild });
+    return empty({
+      baselineBuild,
+      candidateBuild,
+      abortAttribution: buildFailureAttribution("candidate", candidateBuild),
+    });
   }
 
   const candidateRun = await runObservedTest(request, request.worktrees.candidateDir, "candidate");
   if (candidateRun.status !== "pass") {
     results.push(orch.abort(`candidate test workflow failed: ${candidateRun.failure ?? candidateRun.status}`));
-    return empty({ baselineBuild, candidateBuild });
+    return empty({
+      baselineBuild,
+      candidateBuild,
+      abortAttribution: testFailureAttribution("candidate", candidateRun),
+    });
   }
   const candidateArtifact = ExpectationCandidate.parse({
     kind: "expectation-candidate",
@@ -368,7 +415,11 @@ async function runSelfDrivenCore(
   request.store.saveArtifact(candidateArtifact);
   request.logger?.artifact("expectation-candidate.json", candidateArtifact);
   if (!submit(candidateArtifact)) {
-    return empty({ baselineBuild, candidateBuild });
+    return empty({
+      baselineBuild,
+      candidateBuild,
+      abortAttribution: testFailureAttribution("candidate", { status: "artifact-submission-rejected" }),
+    });
   }
 
   request.logger?.phase("COMPARISON");
@@ -517,6 +568,7 @@ async function executeBuildList(
     missingArtifacts: [],
     events: [],
     failure: null,
+    assertedArtifacts: [],
   };
 }
 
@@ -666,6 +718,32 @@ function emptyOutcome(
     candidate: null,
     comparison: null,
     expectationComparison: null,
+  };
+}
+
+/** Attribution for a build-side abort, recorded at the abort site itself. */
+function buildFailureAttribution(
+  side: "baseline" | "candidate",
+  execution: BuildWorkflowExecution,
+): StageFailureAttribution {
+  return {
+    category: "build",
+    component: `build-workflow:${side}`,
+    retryable: true,
+    detail: { status: execution.status, failure: execution.failure },
+  };
+}
+
+/** Attribution for a test-workflow abort, recorded at the abort site itself. */
+function testFailureAttribution(
+  side: "baseline" | "candidate",
+  run: { status: string; failure?: string | null },
+): StageFailureAttribution {
+  return {
+    category: "test",
+    component: `test-workflow:${side}`,
+    retryable: true,
+    detail: { status: run.status, failure: run.failure ?? null },
   };
 }
 
