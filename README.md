@@ -41,8 +41,11 @@ bun run scripts/cli.ts limits <repo>       # 当前生效的超时/资源阈值�
 再给出具体重构任务；使用新的会话名，已有会话不会被覆盖。
 
 ```bash
-# 默认详细模式：阶段、AI 正常回复、工具活动、构建和测试输出
-bun scripts/cli.ts run <repo> --task "提取重复的参数校验逻辑，保持行为不变" --session task-001
+# 最简启动：在终端输入任务，然后选择开始、重新输入或取消
+bun scripts/cli.ts run <repo>
+
+# 默认详细模式；省略 --session 时自动生成唯一编号
+bun scripts/cli.ts run <repo> --task "提取重复的参数校验逻辑，保持行为不变"
 
 # 摘要模式：保留阶段、验证方案、步骤结果和失败原因
 bun scripts/cli.ts run <repo> --task "..." --session task-002 --verbosity summary
@@ -56,6 +59,9 @@ bun scripts/cli.ts run <repo> --task "..." --resume task-001 --session task-001-
 
 | 参数 | 默认值与行为 |
 |---|---|
+| `--task <text>` | 重构需求；终端中可省略或留空，程序会提示输入；非交互环境必须提供非空内容 |
+| `--session <id>` | 可选自定义编号；省略时使用时间戳与随机 UUID 生成新编号，不会覆盖已有会话 |
+| `--no-interactive` | 禁止提示输入；适合脚本和 CI，缺少任务时直接以退出码 2 报错 |
 | `--verbosity detailed` | 默认；显示正常 AI 文字、工具名称与目标、命令输出和完整失配结果 |
 | `--verbosity summary` | 省略 AI 回复正文和正常命令输出；失败时显示输出末尾，最多列出前 10 个失配项 |
 | `--progress auto` | 默认；文字模式自动适配终端，JSON 模式关闭实时展示 |
@@ -64,9 +70,56 @@ bun scripts/cli.ts run <repo> --task "..." --resume task-001 --session task-001-
 | `--no-color` | 禁用颜色；也尊重 `NO_COLOR` 环境变量 |
 | `--resume <会话编号>` | 复用指定中止会话中仍有效的阶段检查点，在新会话中重新验证 |
 
+任务输入只在 stdin 和 stderr 都连接交互终端、未设置有效的 `CI`、且未传 `--no-interactive` 时启用。
+输入需求后会列出仓库、任务与会话设置，可选 `[1] 开始运行`、`[2] 重新输入`、`[0] 取消`；直接回车取消。
+任务输入时也可使用 `/cancel`、Ctrl+C 或 Ctrl+D 取消。取消发生在创建会话、调用模型或执行构建之前，退出码为 130。
+提供非空 `--task` 时直接运行，不增加确认步骤；其他无效参数仍直接报错。
+交互提示只写 stderr，即使 stdout 输出 JSON 也不会混入提示文字。
+
+程序调用可显式关闭交互和颜色；下例的 stdout 始终是单个 JSON 报告，进度另存一份：
+
+```bash
+bun scripts/cli.ts run <repo> --task "..." --no-interactive --no-color --format json --progress plain > result.json 2> progress.log
+```
+
+自动生成的会话编号会显示在启动信息和结束报告中，JSON 对应 `session` 字段。
+自定义 `--session` 必须使用新名字；已有名字不会被覆盖，也不会自动恢复。
+恢复使用 `--resume <旧编号>`，恢复后的运行默认也会生成新的会话编号。
+
 进度始终写入 **stderr**，结束报告写入 **stdout**。交互终端保留事件历史并在底部刷新当前阶段、
 总耗时、阶段耗时和无实际活动的时间；非交互终端每 10 秒输出状态。心跳与工具存活消息不会重置活动时间。
 阶段不显示推测的进度百分比；声明比较的数量称为“检查项”，不代表测试用例数。
+
+终端会给标题和标签着色，AI 长段正文、文件路径、命令内容和进程输出正文保留默认色：
+
+| 信息 | 颜色 |
+|---|---|
+| 阶段标题、报告分节 | 蓝色加粗 |
+| AI 角色与回复标题 | 紫色；会话短编号弱化显示 |
+| 工具动作、验证方式、配置字段名 | 青色 |
+| 完成、通过、`ACCEPTED`、一致数 | 绿色 |
+| 警告、取消、`ABORTED`、覆盖缺口 | 黄色 |
+| 失败、`REJECTED`、失配、比较错误 | 红色；零失配与零错误不突出 |
+| 原版／候选版标签 | 蓝色／紫色 |
+
+实时信息和结束报告分别按 stderr、stdout 是否连接交互终端决定配色；重定向到文件时保持纯文本。
+`--no-color`、`NO_COLOR`（包括空值）或 `TERM=dumb` 均关闭颜色，JSON 与落盘报告不会混入展示用 ANSI。
+stderr 输出流标签使用黄色，是否失败以实际执行结果为准。
+
+读取、写入、修改、查找文件及搜索内容只在收到结果后显示一条记录，包含目标、完成或失败及耗时。
+本地构建方案查询、依赖登记、方案保存和验证方案提交也按此规则展示；
+例如 `mcp__dep-registry__generateBuildWorkflow` 显示为“保存构建方案”，实际构建仍在验证阶段执行。
+子任务、命令及未知工具保留开始和结束记录；未知 MCP 名称缩短为 `服务名/工具名`。
+等待期间状态行显示最近的工具动作及其余活动数量；中断或结束时仍无结果的调用会明确标为“未收到完成结果”。
+
+可先用模拟 SDK 消息预览两种显示模式，无需目标项目、凭据、模型调用或编译：
+
+```bash
+bun scripts/replay-cli-progress.ts --verbosity detailed
+bun scripts/replay-cli-progress.ts --verbosity summary
+# 导出两种模式的 ANSI、纯文本和 HTML 预览到忽略目录
+bun scripts/replay-cli-progress.ts --out runs/cli-progress/color-examples
+```
 
 启动信息包括实际配置及来源、模型与限制、主机工具、基准提交、候选分支和工作目录。
 验证方案提交后展示采用的验证方式、理由、覆盖行为、真实依赖、模拟依赖和覆盖缺口。

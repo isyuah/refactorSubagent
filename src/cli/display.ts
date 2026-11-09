@@ -1,9 +1,12 @@
 import { isAbsolute, join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import type { CliFormat, CliProgress, CliVerbosity } from "./args.js";
 import type { Limits } from "../config/limits.js";
 import type { ExecutionContext, RunProgressEvent, RunReport } from "../runtime/progress.js";
 import type { Pipeline } from "../config/pipeline.js";
+import { cleanText, styled, statusTone, TerminalStyle, type ColorOptions, type TextLine, type TextPart, type Tone } from "./terminal.js";
+import { toolPresentation } from "./tool-presentation.js";
+
+export { cleanText } from "./terminal.js";
 
 interface TerminalOutput {
   write(text: string): unknown;
@@ -56,9 +59,6 @@ export function duration(ms: number): string {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.floor(ms / 60_000)}m ${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}s`;
 }
-export function cleanText(value: string): string {
-  return stripVTControlCharacters(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
-}
 function commandText(program: string, args: readonly string[]): string {
   let redactNext = false;
   return [program, ...args].map((arg) => {
@@ -68,14 +68,29 @@ function commandText(program: string, args: readonly string[]): string {
     return /\s/.test(safe) ? JSON.stringify(safe) : safe;
   }).join(" ");
 }
-function contextLabel(context: ExecutionContext | undefined): string {
-  return context ? `${context.side === "baseline" ? "原版" : "候选版"}${context.build_id ? `/${context.build_id}` : ""}` : "执行";
-}
 function roleName(role: string): string { return ROLES[role] ?? role; }
-function agentLabel(role: string, id: string): string {
+function agentParts(role: string, id: string): TextPart[] {
   const [root, child] = id.split("/");
-  return `${roleName(role)} · ${root!.slice(0, 8)}${child ? `/${child.slice(-8)}` : ""}`;
+  return [styled(`AI [${roleName(role)}`, "agent"), " · ",
+    styled(`${root!.slice(0, 8)}${child ? `/${child.slice(-8)}` : ""}`, "muted"), styled("]", "agent")];
 }
+function sidePart(side: "baseline" | "candidate"): TextPart {
+  return styled(side === "baseline" ? "原版" : "候选版", side);
+}
+function contextParts(context: ExecutionContext | undefined, stream?: "stdout" | "stderr"): TextPart[] {
+  return ["[", ...(context ? [sidePart(context.side), context.build_id ? `/${context.build_id}` : ""] : [styled("执行", "accent")]),
+    ...(stream ? [" ", styled(stream, stream === "stderr" ? "warning" : "accent")] : []), "]"];
+}
+function field(label: string, value: string, tone: Tone = "accent"): TextPart[] {
+  return [styled(`${label}: `, tone), value];
+}
+function comparisonParts(comparison: NonNullable<RunReport["comparison"]>): TextPart[] {
+  return [styled("比较: ", "accent"), styled(comparison.overall, statusTone(comparison.overall)), ` · ${comparison.total} 项 · `,
+    styled(`一致 ${comparison.matched}`, "success"), " · ", styled(`失配 ${comparison.mismatched}`, comparison.mismatched ? "error" : "muted"), " · ",
+    styled(`比较错误 ${comparison.errors.length}`, comparison.errors.length ? "error" : "muted")];
+}
+
+type ToolEvent = Extract<RunProgressEvent, { type: "agent-tool" }>;
 
 /** Append-only history, with one disposable status line on interactive terminals. */
 export class RunDisplay {
@@ -83,7 +98,7 @@ export class RunDisplay {
   private readonly now: () => number;
   private readonly enabled: boolean;
   private readonly animated: boolean;
-  private readonly color: boolean;
+  private readonly style: TerminalStyle;
   private observedAt: number;
   private elapsed = 0;
   private phase = "INIT";
@@ -92,10 +107,13 @@ export class RunDisplay {
   private timer: ReturnType<typeof setInterval> | null = null;
   private hasStatus = false;
   private closed = false;
+  private interrupted = false;
   private logDir = "";
   private readonly pending = new Map<string, string>();
   private readonly tails = new Map<string, string>();
   private readonly reusedStages = new Set<string>();
+  private readonly activeTools = new Map<string, ToolEvent>();
+  private readonly completedTools = new Set<string>();
 
   constructor(private readonly options: DisplayOptions) {
     this.output = options.output ?? process.stderr;
@@ -104,19 +122,20 @@ export class RunDisplay {
     const env = options.env ?? process.env;
     this.enabled = options.progress !== "off" && (options.format !== "json" || options.progress === "plain");
     this.animated = options.progress === "auto" && Boolean(this.output.isTTY) && env.TERM !== "dumb";
-    this.color = options.color && Boolean(this.output.isTTY) && env.NO_COLOR === undefined && env.TERM !== "dumb";
+    this.style = new TerminalStyle({ color: options.color, output: this.output, env });
   }
 
   start(input: RunStartup): void {
     this.logDir = input.log_dir;
     if (!this.enabled) return;
-    this.line(`任务: ${input.task}\n仓库: ${input.repo}\n会话: ${input.session}\n结果目录: ${input.log_dir}\n运行配置: ${input.pipeline}`);
-    this.line(`运行配置来源: ${input.pipeline_sources.join(", ") || "内置默认"}`);
-    if (input.pipeline_config) this.line(`阶段配置: ${JSON.stringify(input.pipeline_config.stages)}`);
-    if (input.pipeline_overrides?.length) this.line(`命令行阶段覆盖: ${input.pipeline_overrides.join("; ")}`);
-    this.line(`限制配置来源: ${input.limit_sources.join(", ") || "内置默认"}`);
-    if (input.limit_overrides?.length) this.line(`命令行限制覆盖: ${input.limit_overrides.join("; ")}`);
-    this.line(limitLines(input.limits).join("\n"));
+    this.line(styled("开始运行", "heading"));
+    this.lines([field("任务", input.task), field("仓库", input.repo), field("会话", input.session),
+      field("结果目录", input.log_dir), field("运行配置", input.pipeline), field("运行配置来源", input.pipeline_sources.join(", ") || "内置默认")]);
+    if (input.pipeline_config) this.line(...field("阶段配置", JSON.stringify(input.pipeline_config.stages)));
+    if (input.pipeline_overrides?.length) this.line(...field("命令行阶段覆盖", input.pipeline_overrides.join("; ")));
+    this.line(...field("限制配置来源", input.limit_sources.join(", ") || "内置默认"));
+    if (input.limit_overrides?.length) this.line(...field("命令行限制覆盖", input.limit_overrides.join("; ")));
+    this.lines(limitLines(input.limits));
     this.timer = setInterval(() => this.tick(), this.animated ? 1000 : 10_000);
     this.timer.unref();
   }
@@ -127,75 +146,94 @@ export class RunDisplay {
     this.elapsed = event.elapsed_ms;
     if (!(event.type === "log" && (event.heartbeat || ["trace", "debug"].includes(event.level))) &&
         !(event.type === "agent-activity" && event.heartbeat)) this.lastActivity = event.elapsed_ms;
-    const label = `[${duration(event.elapsed_ms)}]`;
+    const label = styled(`[${duration(event.elapsed_ms)}]`, "muted");
     switch (event.type) {
       case "resume":
         for (const stage of event.reused_stages) this.reusedStages.add(stage);
-        this.line(`${label} 恢复自会话: ${event.source_session}\n复用阶段: ${event.reused_stages.map((stage) => STAGES[stage] ?? stage).join("、") || "无"}；环境检查与验证重新执行，阶段耗时仅计入本次重新校验。`);
+        this.line(label, " ", ...field("恢复自会话", event.source_session));
+        this.line(...field("复用阶段", `${event.reused_stages.map((stage) => STAGES[stage] ?? stage).join("、") || "无"}；环境检查与验证重新执行，阶段耗时仅计入本次重新校验。`));
         break;
       case "phase":
         this.phase = event.name;
         this.phaseStarted = event.elapsed_ms;
-        this.line(`${label} ${this.phaseLabel(event.name)} (${event.name})`);
+        this.line(label, " ", styled(this.phaseLabel(event.name), "heading"), " ", styled(`(${event.name})`, "muted"));
         break;
       case "stage":
-        if (event.action === "end") this.line(`${label} ${STAGES[event.name]}: ${event.failed ? "未完成" : this.reusedStages.has(event.name) ? "复用完成" : "完成"}`);
+        if (event.action === "end") this.line(label, " ", styled(`${STAGES[event.name]}: `, "accent"),
+          styled(event.failed ? "未完成" : this.reusedStages.has(event.name) ? "复用完成" : "完成", event.failed ? "error" : "success"));
         break;
       case "log":
         if (!event.heartbeat && !["trace", "debug"].includes(event.level)) {
           const details = event.details ?? {};
           const extra = ["attempt", "max_repairs", "entry", "rule", "detail", "reason", "duration_ms", "stage", "category", "component", "retryable"]
             .flatMap((key) => details[key] === undefined ? [] : [`${key}=${String(details[key])}`]);
-          this.line(`${label} ${event.level === "error" ? "错误: " : event.level === "warn" ? "提示: " : ""}${event.message}${extra.length ? ` · ${extra.join(" · ")}` : ""}`);
+          this.line(label, " ", styled(event.level === "error" ? "错误: " : event.level === "warn" ? "提示: " : "活动: ",
+            event.level === "error" ? "error" : event.level === "warn" ? "warning" : "accent"),
+            event.message, extra.length ? ` · ${extra.join(" · ")}` : "");
         }
         break;
       case "preflight":
-        this.line(`平台: ${event.host.platform}/${event.host.arch}; 项目: ${event.project.status}; 构建系统: ${event.project.primary_build_system ?? "未识别"}\n${event.project.reason}`);
-        this.line(`工具: ${Object.entries(event.host.tools).map(([name, tool]) => `${name}=${tool.available ? tool.path : "不可用"}`).join("; ")}`);
+        this.line(...field("平台", `${event.host.platform}/${event.host.arch}`), "; ", ...field("项目", event.project.status), "; ",
+          ...field("构建系统", event.project.primary_build_system ?? "未识别"), `\n${event.project.reason}`);
+        this.line(styled("工具: ", "accent"), ...Object.entries(event.host.tools).flatMap(([name, tool], index) =>
+          [index ? "; " : "", styled(`${name}=`, "accent"), tool.available ? tool.path ?? "可用" : styled("不可用", "warning")]));
         break;
-      case "strategy": this.line(strategyText(event.report, this.options.verbosity)); break;
-      case "workspace": this.line(`基准提交: ${event.base_sha}\n候选分支: ${event.branch}\n原版目录: ${event.baseline_dir}\n候选目录: ${event.candidate_dir}`); break;
-      case "candidate": this.line(`候选提交: ${event.candidate.commit_sha}\n改动文件: ${event.candidate.changed_files.join(", ")}`); break;
-      case "agent-start": this.line(`${label} AI [${agentLabel(event.role, event.agent_id)}] 开始 · 模型=${event.model ?? "SDK 默认/尚未报告"}`); break;
+      case "strategy": this.lines(strategyLines(event.report, this.options.verbosity)); break;
+      case "workspace": this.lines([field("基准提交", event.base_sha), field("候选分支", event.branch),
+        field("原版目录", event.baseline_dir), field("候选目录", event.candidate_dir)]); break;
+      case "candidate": this.lines([field("候选提交", event.candidate.commit_sha), field("改动文件", event.candidate.changed_files.join(", "))]); break;
+      case "agent-start": this.line(label, " ", ...agentParts(event.role, event.agent_id), " ", styled("开始", "accent"),
+        " · ", styled("模型=", "accent"), event.model ?? "SDK 默认/尚未报告"); break;
       case "agent-text":
-        if (this.options.verbosity === "detailed") this.line(`${label} AI [${agentLabel(event.role, event.agent_id)}]:\n${event.text}`);
+        if (this.options.verbosity === "detailed") this.line(label, " ", ...agentParts(event.role, event.agent_id), `:\n${event.text}`);
         break;
       case "agent-activity":
-        if (!event.heartbeat) this.line(`${label} AI [${agentLabel(event.role, event.agent_id)}] ${event.text}`);
+        if (!event.heartbeat) this.line(label, " ", ...agentParts(event.role, event.agent_id), ` ${event.text}`);
         break;
-      case "agent-tool": this.line(`${label} AI [${agentLabel(event.role, event.agent_id)}] ${event.name}${event.target ? ` ${preview(event.target, 256)}` : ""} · ${event.action === "start" ? "开始" : event.failed ? "失败" : "完成"}`); break;
-      case "agent-usage": this.line(`${label} AI [${agentLabel(event.usage.role, event.usage.agent_id)}] 结束 · ${usageText(event.usage)}`); break;
-      case "command-start": this.line(`${label} [${contextLabel(event.context)}] $ ${commandText(event.program, event.args)}\n  cwd: ${event.cwd}`); break;
+      case "agent-tool": this.toolEvent(event); break;
+      case "agent-usage": this.line(label, " ", ...agentParts(event.usage.role, event.usage.agent_id), " ", styled("结束", "accent"), ` · ${usageText(event.usage)}`); break;
+      case "command-start": this.line(label, " ", ...contextParts(event.context), " ", styled("$ ", "accent"),
+        commandText(event.program, event.args), "\n  ", ...field("cwd", event.cwd)); break;
       case "command-output": this.outputChunk(event); break;
       case "command-end": {
         this.flushCommand(event);
-        this.line(`${label} [${contextLabel(event.context)}] 命令结束: ${event.status}; exit=${event.exit_code ?? "无"}; 耗时=${duration(event.duration_ms)}${event.error ? `; ${event.error}` : ""}`);
+        const tone = event.status === "exited" && event.exit_code === 0 && !event.error ? "success" : statusTone(event.status) === "warning" ? "warning" : "error";
+        this.line(label, " ", ...contextParts(event.context), " ", styled("命令结束: ", "accent"), styled(event.status, tone),
+          `; exit=${event.exit_code ?? "无"}; 耗时=${duration(event.duration_ms)}${event.error ? `; ${event.error}` : ""}`);
         const tail = this.tails.get(commandKey(event)) ?? "";
-        if (this.options.verbosity === "summary" && (event.status !== "exited" || (event.exit_code !== null && event.exit_code !== 0)) && tail) this.line(`输出末尾:\n${tail}`);
-        if (event.context) this.line(`完整输出: ${event.context.log_path}`);
+        if (this.options.verbosity === "summary" && (event.status !== "exited" || (event.exit_code !== null && event.exit_code !== 0)) && tail) this.line(...field("输出末尾", `\n${tail}`, "warning"));
+        if (event.context) this.line(...field("完整输出", event.context.log_path));
         this.tails.delete(commandKey(event));
         break;
       }
-      case "step": this.line(`${label} [${contextLabel(event.context)}] ${event.title} (${event.id}): ${statusText(event.status)}${event.duration_ms === undefined ? "" : ` · ${duration(event.duration_ms)}`}${event.error ? ` · ${event.error}` : ""}`); break;
-      case "build": this.line(`${label} ${event.side === "baseline" ? "原版" : "候选版"}构建 ${event.id}: ${statusText(event.status)}${event.duration_ms === undefined ? "" : ` · ${duration(event.duration_ms)}`}${event.failure ? ` · ${event.failure}` : ""}`); break;
-      case "test": this.line(`${label} ${event.side === "baseline" ? "原版" : "候选版"}测试: ${statusText(event.status)}${event.duration_ms === undefined ? "" : ` · ${duration(event.duration_ms)}`}${event.checks === undefined ? "" : ` · ${event.checks} 个检查项`}${event.ctest_tests === undefined ? "" : ` · ${event.ctest_tests} 个 CTest 测试`}${event.failure ? ` · ${event.failure}` : ""}`); break;
-      case "comparison": this.line(`比较: ${event.comparison.overall} · ${event.comparison.total} 项 · 一致 ${event.comparison.matched} · 失配 ${event.comparison.mismatched} · 比较错误 ${event.comparison.errors.length}`); break;
+      case "step": this.line(label, " ", ...contextParts(event.context), " ", styled(event.title, "accent"), ` (${event.id}): `,
+        styled(statusText(event.status), statusTone(event.status)), `${event.duration_ms === undefined ? "" : ` · ${duration(event.duration_ms)}`}${event.error ? ` · ${event.error}` : ""}`); break;
+      case "build": this.line(label, " ", sidePart(event.side), styled(`构建 ${event.id}: `, "accent"), styled(statusText(event.status), statusTone(event.status)),
+        `${event.duration_ms === undefined ? "" : ` · ${duration(event.duration_ms)}`}${event.failure ? ` · ${event.failure}` : ""}`); break;
+      case "test": this.line(label, " ", sidePart(event.side), styled("测试: ", "accent"), styled(statusText(event.status), statusTone(event.status)),
+        `${event.duration_ms === undefined ? "" : ` · ${duration(event.duration_ms)}`}${event.checks === undefined ? "" : ` · ${event.checks} 个检查项`}${event.ctest_tests === undefined ? "" : ` · ${event.ctest_tests} 个 CTest 测试`}${event.failure ? ` · ${event.failure}` : ""}`); break;
+      case "comparison": this.line(...comparisonParts(event.comparison)); break;
     }
     if (this.animated) this.tick();
   };
 
   tick(): void {
     if (!this.enabled || this.closed) return;
-    const elapsed = this.elapsed + this.now() - this.observedAt;
+    const elapsed = this.currentElapsed();
     const phase = this.animated ? fitTerminal(this.phaseLabel(this.phase), 14) : this.phaseLabel(this.phase);
-    const text = `状态: ${phase} | 总耗时 ${duration(elapsed)} | 阶段 ${duration(elapsed - this.phaseStarted)} | 无活动 ${duration(elapsed - this.lastActivity)}`;
-    if (!this.animated) { this.line(text); return; }
+    const tool = [...this.activeTools.values()].at(-1);
+    const activity: TextPart[] = tool ? [" | ", styled(`当前: ${toolPresentation(tool.name).label}`, "accent"),
+      this.activeTools.size > 1 ? `（另 ${this.activeTools.size - 1} 项）` : ""] : [];
+    const parts = [styled(`状态: ${phase}`, "heading"), ...activity, ` | 总耗时 ${duration(elapsed)} | 阶段 ${duration(elapsed - this.phaseStarted)} | 无活动 ${duration(elapsed - this.lastActivity)}`];
+    if (!this.animated) { this.line(...parts); return; }
     this.clearStatus();
     // Unicode grapheme boundaries and display cells keep long CJK labels from wrapping.
     const cells = Math.max(1, (this.output.columns ?? 80) - 1);
-    const compact = `${phase} | 总 ${duration(elapsed)} | 阶段 ${duration(elapsed - this.phaseStarted)} | 无活动 ${duration(elapsed - this.lastActivity)}`;
-    const clipped = fitTerminal(text, cells) === text ? text : fitTerminal(compact, cells);
-    this.write(this.color ? `\u001b[36m${clipped}\u001b[0m` : clipped);
+    const compact = [styled(fitTerminal(phase, 10), "heading"),
+      ...(tool ? [" | ", styled(fitTerminal(toolPresentation(tool.name).label, 12), "accent"), this.activeTools.size > 1 ? ` +${this.activeTools.size - 1}` : ""] : []),
+      ` | 总 ${duration(elapsed)} | 阶段 ${duration(elapsed - this.phaseStarted)} | 无活动 ${duration(elapsed - this.lastActivity)}`];
+    const plain = new TerminalStyle().render(parts);
+    this.write(this.style.render(fitLine(fitTerminal(plain, cells) === plain ? parts : compact, cells)));
     this.hasStatus = true;
   }
 
@@ -208,11 +246,19 @@ export class RunDisplay {
       for (const text of this.pending.values()) if (text) this.line(text);
     }
     this.pending.clear();
+    const elapsed = this.currentElapsed();
+    for (const tool of this.activeTools.values()) this.toolLine(tool, this.interrupted ? "已中断；未收到完成结果" : "未收到完成结果",
+      "warning", elapsed, ` · 已等待 ${duration(elapsed - tool.elapsed_ms)}`);
+    this.activeTools.clear();
+    this.completedTools.clear();
+    this.tails.clear();
     this.closed = true;
   }
 
   interrupt(signal: string): void {
-    if (this.enabled && !this.closed) this.line(`收到 ${signal}，正在回收进程。已有证据: ${this.logDir}；本次最终报告可能尚未生成。`);
+    this.interrupted = true;
+    if (this.enabled && !this.closed) this.line(styled(`收到 ${signal}，正在回收进程。`, "warning"),
+      "已有证据: ", this.logDir, "；本次最终报告可能尚未生成。");
     this.stop();
   }
 
@@ -224,8 +270,31 @@ export class RunDisplay {
     if (name === "REFACTOR" && this.reusedStages.has("refactor")) return "复用已保存的候选改动";
     return PHASES[name] ?? name;
   }
-  private line(text: string): void { this.clearStatus(); this.write(`${cleanText(text)}\n`); }
+  private currentElapsed(): number { return this.elapsed + this.now() - this.observedAt; }
+  private lines(lines: readonly TextLine[]): void { for (const line of lines) this.line(...line); }
+  private line(...parts: TextPart[]): void { this.clearStatus(); this.write(`${this.style.render(parts)}\n`); }
   private write(text: string): void { this.output.write(text); }
+  private toolEvent(event: ToolEvent): void {
+    const key = `${event.agent_id}\u0000${event.id}`;
+    if (this.completedTools.has(key)) return;
+    if (event.action === "start") {
+      if (this.activeTools.has(key)) return;
+      this.activeTools.set(key, event);
+      if (!toolPresentation(event.name).completionOnly) this.toolLine(event, "开始", "accent", event.elapsed_ms);
+    } else {
+      const start = this.activeTools.get(key);
+      this.activeTools.delete(key);
+      this.completedTools.add(key);
+      this.toolLine(event, event.failed ? "失败" : "完成", event.failed ? "error" : "success", event.elapsed_ms,
+        start ? ` · ${duration(event.elapsed_ms - start.elapsed_ms)}` : "");
+    }
+  }
+  private toolLine(event: ToolEvent, status: string, tone: Tone, elapsed: number, suffix = ""): void {
+    const target = event.name === "Task" || event.name === "Agent"
+      ? event.target.split(" · ").map((part, index) => index === 0 ? roleName(part) : part).join(" · ") : event.target;
+    this.line(styled(`[${duration(elapsed)}]`, "muted"), " ", ...agentParts(event.role, event.agent_id), " ",
+      styled(toolPresentation(event.name).label, "accent"), target ? ` ${preview(target, 256)}` : "", " · ", styled(status, tone), suffix);
+  }
   private outputChunk(event: Extract<RunProgressEvent, { type: "command-output" }>): void {
     const key = commandKey(event);
     const text = cleanText(event.text);
@@ -234,15 +303,15 @@ export class RunDisplay {
     const streamKey = `${key}/${event.stream}`;
     const lines = ((this.pending.get(streamKey) ?? "") + text).split("\n");
     let last = lines.pop() ?? "";
-    for (const line of lines) this.line(`[${contextLabel(event.context)} ${event.stream}] ${line}`);
-    while (last.length > 4096) { this.line(`[${contextLabel(event.context)} ${event.stream}] ${last.slice(0, 4096)}`); last = last.slice(4096); }
+    for (const line of lines) this.line(...contextParts(event.context, event.stream), ` ${line}`);
+    while (last.length > 4096) { this.line(...contextParts(event.context, event.stream), ` ${last.slice(0, 4096)}`); last = last.slice(4096); }
     this.pending.set(streamKey, last);
   }
   private flushCommand(event: RunProgressEvent & { id: string }): void {
     for (const stream of ["stdout", "stderr"] as const) {
       const key = `${commandKey(event)}/${stream}`;
       const pending = this.pending.get(key);
-      if (pending) this.line(`[${contextLabel(event.context)} ${stream}] ${pending}`);
+      if (pending) this.line(...contextParts(event.context, stream), ` ${pending}`);
       this.pending.delete(key);
     }
   }
@@ -252,13 +321,13 @@ function commandKey(event: { id: string; context?: ExecutionContext }): string {
   return `${event.context?.side ?? ""}/${event.context?.build_id ?? "test"}/${event.id}`;
 }
 function budget(value: number | null): string { return value === null ? "不限" : duration(value); }
-function limitLines(limits: Limits): string[] {
+function limitLines(limits: Limits): TextLine[] {
   return [
     ...Object.entries(limits.sessions).map(([name, limit]) =>
-      `${name === "testWriter" ? "测试编写" : "代码重构"}: 模型=${limit.model ?? "SDK 默认"}; 总时限=${budget(limit.deadlineMs)}; 无消息时限=${budget(limit.stallMs)}; 轮数=${limit.maxTurns ?? "不限"}`),
-    `执行时限: 构建=${budget(limits.stages.buildMs)}; 测试=${budget(limits.stages.testWorkflowMs)}; CTest=${budget(limits.stages.ctestMs)}; 单命令=${budget(limits.commands.processMs)}; 脚本策略修复上限=${limits.stages.policyRepairs}`,
-    `资源限制: 构建并发=${limits.resources.build.maxProcesses}; 测试并发=${limits.resources.test.maxProcesses}; 构建/测试输出上限=${limits.resources.build.maxOutputBytes}/${limits.resources.test.maxOutputBytes} 字节`,
-    `探测时限: 就绪=${budget(limits.commands.readyMs)}; 工具=${budget(limits.probes.hostMs)}; 构建/测试单文件上限=${limits.resources.build.maxFileBytes}/${limits.resources.test.maxFileBytes} 字节`,
+      field(name === "testWriter" ? "测试编写" : "代码重构", `模型=${limit.model ?? "SDK 默认"}; 总时限=${budget(limit.deadlineMs)}; 无消息时限=${budget(limit.stallMs)}; 轮数=${limit.maxTurns ?? "不限"}`)),
+    field("执行时限", `构建=${budget(limits.stages.buildMs)}; 测试=${budget(limits.stages.testWorkflowMs)}; CTest=${budget(limits.stages.ctestMs)}; 单命令=${budget(limits.commands.processMs)}; 脚本策略修复上限=${limits.stages.policyRepairs}`),
+    field("资源限制", `构建并发=${limits.resources.build.maxProcesses}; 测试并发=${limits.resources.test.maxProcesses}; 构建/测试输出上限=${limits.resources.build.maxOutputBytes}/${limits.resources.test.maxOutputBytes} 字节`),
+    field("探测时限", `就绪=${budget(limits.commands.readyMs)}; 工具=${budget(limits.probes.hostMs)}; 构建/测试单文件上限=${limits.resources.build.maxFileBytes}/${limits.resources.test.maxFileBytes} 字节`),
   ];
 }
 function statusText(status: string): string {
@@ -266,17 +335,18 @@ function statusText(status: string): string {
     declare: "已声明", begin: "开始", complete: "完成", fail: "失败" } as Record<string, string>)[status] ?? status;
 }
 
-function strategyText(report: NonNullable<RunReport["strategy"]>["report"], verbosity: CliVerbosity): string {
-  const lines = [`验证方式: ${STRATEGIES[report.recommendation.strategy]} · ${report.subject}`, `选择理由: ${report.recommendation.rationale}`,
-    ...report.behaviors.map((behavior) => `  覆盖: ${behavior}`)];
+function strategyLines(report: NonNullable<RunReport["strategy"]>["report"], verbosity: CliVerbosity): TextLine[] {
+  const lines: TextLine[] = [[styled("验证方式: ", "accent"),
+    styled(STRATEGIES[report.recommendation.strategy]!, report.recommendation.strategy === "undetermined" ? "warning" : "accent"), ` · ${report.subject}`],
+    field("选择理由", report.recommendation.rationale), ...report.behaviors.map((behavior) => field("  覆盖", behavior))];
   for (const dep of report.dependencies) {
-    lines.push(`  依赖: ${dep.name} · ${dep.treatment} · ${dep.rationale}`);
-    if (dep.treatment === "test-double") lines.push(`    模拟入口: ${dep.seam}; 模拟行为: ${dep.simulate.join("; ")}; 保留真实实现: ${dep.retainReal}`,
-      ...dep.lostCoverage.map((gap) => `    缺少的集成覆盖: ${gap}`));
+    lines.push(field("  依赖", `${dep.name} · ${dep.treatment} · ${dep.rationale}`));
+    if (dep.treatment === "test-double") lines.push([...field("    模拟入口", dep.seam), "; ", ...field("模拟行为", dep.simulate.join("; ")), "; ", ...field("保留真实实现", dep.retainReal)],
+      ...dep.lostCoverage.map((gap) => field("    缺少的集成覆盖", gap, "warning")));
   }
-  lines.push(...report.limitations.map((gap) => `  覆盖限制: ${gap}`), ...report.openQuestions.map((question) => `  待确认: ${question}`));
-  if (verbosity === "detailed") lines.push(...report.evidence.map((item) => `  依据 [${item.basis}] ${item.reference}: ${item.finding}`));
-  return lines.join("\n");
+  lines.push(...report.limitations.map((gap) => field("  覆盖限制", gap, "warning")), ...report.openQuestions.map((question) => field("  待确认", question, "warning")));
+  if (verbosity === "detailed") lines.push(...report.evidence.map((item) => [styled(`  依据 [${item.basis}] `, "accent"), `${item.reference}: ${item.finding}`]));
+  return lines;
 }
 
 function usageText(usage: RunReport["agents"][number]): string {
@@ -286,59 +356,73 @@ function usageText(usage: RunReport["agents"][number]): string {
     `费用=${usage.cost_usd === undefined ? "未报告" : `$${usage.cost_usd.toFixed(6)}`}`].join("; ");
 }
 
-export function formatRunReport(report: RunReport, verbosity: CliVerbosity): string {
-  const lines = [`state: ${report.state}`, `session: ${report.session}`, `任务: ${report.task}`, `仓库: ${report.repo}`, `总耗时: ${duration(report.elapsed_ms)}`];
+export function formatRunReport(report: RunReport, verbosity: CliVerbosity, options: ColorOptions = {}): string {
+  const style = new TerminalStyle({ ...options, output: options.output ?? process.stdout });
+  const lines: TextLine[] = [[styled("state: ", "accent"), styled(report.state, statusTone(report.state))], field("session", report.session),
+    field("任务", report.task), field("仓库", report.repo), field("总耗时", duration(report.elapsed_ms))];
   const comparison = report.comparison;
   const compactReason = comparison ? `行为比较${comparison.overall === "consistent" ? "一致" : "未通过"}：${comparison.mismatched} 个检查项失配，${comparison.errors.length} 个比较错误。` : "";
-  if (report.abort_reason) lines.push(`中止原因: ${preview(report.abort_reason)}`);
-  else if (report.decision_reason) lines.push(`判定原因: ${verbosity === "summary" && comparison ? compactReason : preview(report.decision_reason)}`);
-  if (report.failure) lines.push(`失败归因: [${report.failure.category}] ${report.failure.stage}/${report.failure.component} · 可重试=${report.failure.retryable ? "是" : "否"}`,
-    `失败证据: ${join(report.log_dir, "artifacts", "failure-report.json")}`);
-  if (report.resume) lines.push(`恢复自会话: ${report.resume.source_session}`,
-    `复用阶段: ${report.resume.reused_stages.map((stage) => STAGES[stage] ?? stage).join("、") || "无"}；耗时仅包含本次执行与重新校验。`);
-  if (report.finalization_error) lines.push(`收尾失败: ${report.finalization_error}（验证结论已保留，进程以失败退出）`);
-  if (report.configuration) lines.push(`阶段配置: ${JSON.stringify(report.configuration.pipeline.stages)}`,
-    `运行配置来源: ${report.configuration.sources.join(", ") || "内置默认"}`,
-    ...report.configuration.overrides.map((value) => `命令行阶段覆盖: ${value}`));
-  lines.push(`限制配置来源: ${report.limit_sources.join(", ") || "内置默认"}`,
-    ...report.limit_overrides.map((value) => `命令行限制覆盖: ${value}`), ...limitLines(report.limits));
-  lines.push("阶段耗时:", ...report.stage_timings.map((stage) => `  ${STAGES[stage.name]}: ${statusText(stage.status)} · ${duration(stage.elapsed_ms)}`));
-  if (verbosity === "detailed") lines.push("验证子阶段（已包含在验证总耗时内）:", ...report.phases
+  if (report.abort_reason) lines.push(field("中止原因", preview(report.abort_reason), "warning"));
+  else if (report.decision_reason) lines.push(field("判定原因", verbosity === "summary" && comparison ? compactReason : preview(report.decision_reason)));
+  if (report.failure) lines.push(field("失败归因", `[${report.failure.category}] ${report.failure.stage}/${report.failure.component} · 可重试=${report.failure.retryable ? "是" : "否"}`, "error"),
+    field("失败证据", join(report.log_dir, "artifacts", "failure-report.json")));
+  if (report.resume) lines.push(field("恢复自会话", report.resume.source_session),
+    field("复用阶段", `${report.resume.reused_stages.map((stage) => STAGES[stage] ?? stage).join("、") || "无"}；耗时仅包含本次执行与重新校验。`));
+  if (report.finalization_error) lines.push(field("收尾失败", `${report.finalization_error}（验证结论已保留，进程以失败退出）`, "error"));
+  if (report.configuration) lines.push(field("阶段配置", JSON.stringify(report.configuration.pipeline.stages)),
+    field("运行配置来源", report.configuration.sources.join(", ") || "内置默认"),
+    ...report.configuration.overrides.map((value) => field("命令行阶段覆盖", value)));
+  lines.push(field("限制配置来源", report.limit_sources.join(", ") || "内置默认"),
+    ...report.limit_overrides.map((value) => field("命令行限制覆盖", value)), ...limitLines(report.limits));
+  lines.push([styled("阶段耗时:", "heading")], ...report.stage_timings.map((stage) => ["  ", styled(`${STAGES[stage.name]}: `, "accent"),
+    styled(statusText(stage.status), statusTone(stage.status)), ` · ${duration(stage.elapsed_ms)}`]));
+  if (verbosity === "detailed") lines.push([styled("验证子阶段（已包含在验证总耗时内）:", "heading")], ...report.phases
     .filter((phase) => /^(BASELINE_|CANDIDATE_|COMPARISON)/.test(phase.name))
-    .map((phase) => `  ${PHASES[phase.name] ?? phase.name}: ${duration(phase.elapsed_ms)}`));
-  if (report.preflight) lines.push(`平台: ${report.preflight.host.platform}/${report.preflight.host.arch}; 项目识别: ${report.preflight.project.status}`);
-  if (report.strategy) lines.push(strategyText(report.strategy.report, verbosity));
-  lines.push("构建结果:", ...(report.builds.length ? report.builds.map((build) =>
-    `  ${build.side === "baseline" ? "原版" : "候选版"}/${build.id}: ${statusText(build.status)}${build.duration_ms === null ? "" : ` · ${duration(build.duration_ms)}`}${build.failure ? ` · ${preview(build.failure)}` : ""}${build.evidence_path ? `\n    证据: ${evidencePath(report, build.evidence_path)}` : ""}`) : ["  尚未声明构建"]));
-  lines.push("测试结果:", ...report.tests.map((test) => `  ${test.side === "baseline" ? "原版" : "候选版"}: ${statusText(test.status)}${test.duration_ms === null ? "" : ` · ${duration(test.duration_ms)}`}${test.checks === undefined ? "" : ` · ${test.checks} 个检查项`}${test.ctest_tests === undefined ? "" : ` · ${test.ctest_tests} 个 CTest 测试`}${test.failure ? ` · ${preview(test.failure)}` : ""}${test.evidence_path ? `\n    证据: ${evidencePath(report, test.evidence_path)}` : ""}`));
+    .map((phase) => field(`  ${PHASES[phase.name] ?? phase.name}`, duration(phase.elapsed_ms))));
+  if (report.preflight) lines.push([...field("平台", `${report.preflight.host.platform}/${report.preflight.host.arch}`), "; ", ...field("项目识别", report.preflight.project.status)]);
+  if (report.strategy) lines.push(...strategyLines(report.strategy.report, verbosity));
+  lines.push([styled("构建结果:", "heading")]);
+  if (!report.builds.length) lines.push([styled("  尚未声明构建", "warning")]);
+  for (const build of report.builds) {
+    lines.push(["  ", sidePart(build.side), `/${build.id}: `, styled(statusText(build.status), statusTone(build.status)),
+      `${build.duration_ms === null ? "" : ` · ${duration(build.duration_ms)}`}${build.failure ? ` · ${preview(build.failure)}` : ""}`]);
+    if (build.evidence_path) lines.push(field("    证据", evidencePath(report, build.evidence_path)));
+  }
+  lines.push([styled("测试结果:", "heading")]);
+  for (const test of report.tests) {
+    lines.push(["  ", sidePart(test.side), ": ", styled(statusText(test.status), statusTone(test.status)),
+      `${test.duration_ms === null ? "" : ` · ${duration(test.duration_ms)}`}${test.checks === undefined ? "" : ` · ${test.checks} 个检查项`}${test.ctest_tests === undefined ? "" : ` · ${test.ctest_tests} 个 CTest 测试`}${test.failure ? ` · ${preview(test.failure)}` : ""}`]);
+    if (test.evidence_path) lines.push(field("    证据", evidencePath(report, test.evidence_path)));
+  }
   if (comparison) {
-    lines.push(`比较: ${comparison.overall} · ${comparison.total} 项 · 一致 ${comparison.matched} · 失配 ${comparison.mismatched} · 比较错误 ${comparison.errors.length}`, `判定说明: ${verbosity === "summary" ? compactReason : preview(comparison.reason)}`);
+    lines.push(comparisonParts(comparison), field("判定说明", verbosity === "summary" ? compactReason : preview(comparison.reason)));
     const bad = comparison.checks.filter((check) => !check.matched);
     for (const check of verbosity === "summary" ? bad.slice(0, 10) : bad) {
-      lines.push(`  失配: ${check.name} · ${preview(check.reason)}`);
-      if (verbosity === "detailed") lines.push(`    原版: ${preview(check.baseline)}`, `    候选版: ${preview(check.candidate)}`);
+      lines.push(field("  失配", `${check.name} · ${preview(check.reason)}`, "error"));
+      if (verbosity === "detailed") lines.push(["    ", sidePart("baseline"), `: ${preview(check.baseline)}`], ["    ", sidePart("candidate"), `: ${preview(check.candidate)}`]);
     }
-    if (verbosity === "summary" && bad.length > 10) lines.push(`  另有 ${bad.length - 10} 项失配，详见完整报告。`);
-    lines.push(...comparison.errors.map((error) => `  比较错误: ${error}`));
-    lines.push(...(comparison.warnings ?? []).map((warning) => `  比较提示: ${warning}`));
-    lines.push(...comparison.evidence_paths.map((path) => `比较证据: ${evidencePath(report, path)}`));
-  } else lines.push("比较: 未执行或未完成");
-  if (report.refactor_summary) lines.push(`重构说明:\n${report.refactor_summary}`);
+    if (verbosity === "summary" && bad.length > 10) lines.push([styled(`  另有 ${bad.length - 10} 项失配，详见完整报告。`, "warning")]);
+    lines.push(...comparison.errors.map((error) => field("  比较错误", error, "error")));
+    lines.push(...(comparison.warnings ?? []).map((warning) => field("  比较提示", warning, "warning")));
+    lines.push(...comparison.evidence_paths.map((path) => field("比较证据", evidencePath(report, path))));
+  } else lines.push([styled("比较: ", "accent"), styled("未执行或未完成", "warning")]);
+  if (report.refactor_summary) lines.push([styled("重构说明:", "heading"), `\n${report.refactor_summary}`]);
   if (report.candidate) {
     const candidate = report.candidate;
-    lines.push(`候选分支: ${candidate.branch}`, `基准提交: ${candidate.base_sha}`, `候选提交: ${candidate.commit_sha}`,
-      "改动文件:", ...candidate.changed_files.map((path) => `  ${path}`),
-      `查看差异: git -C ${shellQuote(report.repo)} diff ${candidate.base_sha} ${candidate.commit_sha}`,
-      "候选改动尚未合并回原分支；ACCEPTED 仅表示本次验证范围内通过。");
+    lines.push(field("候选分支", candidate.branch), field("基准提交", candidate.base_sha), field("候选提交", candidate.commit_sha),
+      [styled("改动文件:", "heading")], ...candidate.changed_files.map((path) => [`  ${path}`]),
+      field("查看差异", `git -C ${shellQuote(report.repo)} diff ${candidate.base_sha} ${candidate.commit_sha}`),
+      [styled("候选改动尚未合并回原分支", "warning"), "；ACCEPTED 仅表示本次验证范围内通过。"]);
   } else {
-    if (report.workspace) lines.push(`候选分支: ${report.workspace.branch}`, `基准提交: ${report.workspace.base_sha}`);
-    lines.push("候选提交: 尚未生成", "结果尚未合并回原分支。");
+    if (report.workspace) lines.push(field("候选分支", report.workspace.branch), field("基准提交", report.workspace.base_sha));
+    lines.push([styled("候选提交: ", "accent"), styled("尚未生成", "warning")], [styled("结果尚未合并回原分支。", "warning")]);
   }
-  for (const agent of report.agents) lines.push(`AI [${agentLabel(agent.role, agent.agent_id)}]${agent.session_id ? ` · 会话 ${agent.session_id}` : ""}${agent.parent_id ? "（子会话，用量不重复累计）" : ""}: ${usageText(agent)}`);
-  if (report.cost_usd !== null) lines.push(`已报告的根会话费用合计: $${report.cost_usd.toFixed(6)}`);
-  lines.push(`log: ${report.log_dir}`, `完整报告: ${report.report_path}`,
-    `当前状态与中止原因: ${join(report.log_dir, "state.json")}`, `AI 会话记录: ${join(report.log_dir, "sessions")}`);
-  return cleanText(lines.join("\n"));
+  for (const agent of report.agents) lines.push([...agentParts(agent.role, agent.agent_id),
+    `${agent.session_id ? ` · 会话 ${agent.session_id}` : ""}${agent.parent_id ? "（子会话，用量不重复累计）" : ""}: ${usageText(agent)}`]);
+  if (report.cost_usd !== null) lines.push(field("已报告的根会话费用合计", `$${report.cost_usd.toFixed(6)}`));
+  lines.push(field("log", report.log_dir), field("完整报告", report.report_path),
+    field("当前状态与中止原因", join(report.log_dir, "state.json")), field("AI 会话记录", join(report.log_dir, "sessions")));
+  return lines.map((line) => style.render(line)).join("\n");
 }
 
 function evidencePath(report: RunReport, path: string): string {
@@ -364,4 +448,18 @@ function fitTerminal(text: string, cells: number): string {
     result += segment;
   }
   return result;
+}
+
+function fitLine(parts: TextLine, cells: number): TextPart[] {
+  const safe = parts.map((part) => {
+    const text = cleanText(typeof part === "string" ? part : part.text).replace(/[\n\t]/g, " ");
+    return typeof part === "string" ? text : styled(text, part.tone);
+  });
+  let remaining = fitTerminal(new TerminalStyle().render(safe), cells).length;
+  return safe.map((part) => {
+    const text = typeof part === "string" ? part : part.text;
+    const clipped = text.slice(0, remaining);
+    remaining -= clipped.length;
+    return typeof part === "string" ? clipped : styled(clipped, part.tone);
+  });
 }

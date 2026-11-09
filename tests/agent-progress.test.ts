@@ -10,6 +10,21 @@ function replay() {
 }
 
 describe("SDK progress replay", () => {
+  test("known registry tools publish only safe identifiers and keep raw protocol names", () => {
+    const { agent, events } = replay();
+    const calls = [
+      { id: "generate", name: "mcp__dep-registry__generateBuildWorkflow", input: { name: "helper-build", content: "PRIVATE_SOURCE", description: "PRIVATE_DESCRIPTION", materials: [{ path: "helper.c", content: "PRIVATE_MATERIAL" }] } },
+      { id: "inspect", name: "mcp__dep-registry__inspectWorkflow", input: { kind: "build", id: "build-id" } },
+      { id: "declare", name: "mcp__dep-registry__declareDependency", input: { buildWorkflowIds: ["helper-build", "library-build", { token: "PRIVATE_VALUE" }] } },
+      { id: "unknown", name: "mcp__other__generateBuildWorkflow", input: { name: "PRIVATE_UNKNOWN_NAME", content: "PRIVATE_UNKNOWN_CONTENT" } },
+    ];
+    calls.forEach((tool) => agent.accept({ type: "assistant", message: { id: tool.id, content: [{ type: "tool_use", ...tool }] } }));
+    const tools = events.filter((event) => event.type === "agent-tool");
+    expect(tools.map((tool) => tool.target)).toEqual(["helper-build", "build · build-id", "helper-build, library-build", ""]);
+    expect(tools.map((tool) => tool.name)).toEqual(calls.map((tool) => tool.name));
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_");
+  });
+
   test("retains different blocks in one turn, deduplicates replay and never publishes thinking or tool payloads", () => {
     const { agent, events } = replay();
     const send = (content: unknown[]) => agent.accept({ type: "assistant", message: { id: "same-turn", model: "reported-model", content } });

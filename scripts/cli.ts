@@ -4,7 +4,6 @@ import { dirname, join, resolve } from "node:path";
 import {
   CLI_HELP,
   CliUsageError,
-  parseCliArgs,
   type CliCommand,
   type ConfigCommand,
   type LimitsCommand,
@@ -34,18 +33,22 @@ import {
 import { runStageFlow, StageFlowFinalizationError, type StageFlowResult } from "../src/runtime/stage-flow.js";
 import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
 import { RunDisplay, formatRunReport } from "../src/cli/display.js";
+import { styled, TerminalStyle } from "../src/cli/terminal.js";
+import { CliInputCancelled, createRunSessionId, resolveCliInput } from "../src/cli/input.js";
 import { runStageFlowResume } from "../src/runtime/stage-resume.js";
-
-installOwnedProcessSignalHandlers();
 
 try {
   const { overrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
   const { overrides: pipelineOverrides, remaining: argv } = extractPipelineArgs(remaining);
-  const command = parseCliArgs(argv);
+  const command = await resolveCliInput(argv);
+  installOwnedProcessSignalHandlers();
   const exitCode = await execute(command, overrides, pipelineOverrides);
   if (exitCode !== 0) process.exitCode ??= exitCode;
 } catch (cause) {
-  if (cause instanceof CliUsageError) {
+  if (cause instanceof CliInputCancelled) {
+    console.error(cause.message);
+    process.exitCode ??= cause.exitCode;
+  } else if (cause instanceof CliUsageError) {
     console.error(`error: ${cause.message}\n\n${CLI_HELP}`);
     process.exitCode ??= 2;
   } else {
@@ -131,7 +134,7 @@ async function executeRun(
   const repo = resolve(command.repo);
   const resolved = resolvePipeline({ repoRoot: repo, overrides: pipelineOverrides });
   const flow = buildStageFlow(resolved.pipeline);
-  const sessionId = command.session ?? `run-${Date.now().toString(36)}`;
+  const sessionId = command.session ?? createRunSessionId();
   const sessionRoot = command.sessionRoot === null ? repo : resolve(command.sessionRoot);
   const resumeFrom = command.resume;
   const display = new RunDisplay({ format: command.format, verbosity: command.verbosity,
@@ -197,16 +200,17 @@ async function executeRun(
     if (command.format === "json") {
       console.log(JSON.stringify(summary, null, 2));
     } else {
-      console.log(formatRunReport(result.report, command.verbosity));
-      console.log(`pipeline: ${summary.pipeline}`);
-      for (const layer of resolved.sources) console.log(`pipeline layer: ${layer}`);
+      const style = new TerminalStyle({ color: command.color, output: process.stdout });
+      console.log(formatRunReport(result.report, command.verbosity, { color: command.color, output: process.stdout }));
+      console.log(style.render([styled("pipeline: ", "accent"), summary.pipeline]));
+      for (const layer of resolved.sources) console.log(style.render([styled("pipeline layer: ", "accent"), layer]));
       if (result.provenance.injected.length > 0) {
         const authority = result.provenance.verification_authoritative
           ? ""
           : " (verification replaced: verdict is non-authoritative)";
-        console.log(`injected stages: ${result.provenance.injected.join(", ")}${authority}`);
+        console.log(style.render([styled("injected stages: ", "accent"), result.provenance.injected.join(", "), styled(authority, "warning")]));
       }
-      if (declaredBuilds.length > 0) console.log(`declared builds: ${declaredBuilds.join(", ")}`);
+      if (declaredBuilds.length > 0) console.log(style.render([styled("declared builds: ", "accent"), declaredBuilds.join(", ")]));
     }
     return result.state === "ACCEPTED" && result.report.finalization_error === null ? 0 : 1;
   } finally {

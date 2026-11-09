@@ -106,6 +106,14 @@ function record(value: unknown): Record<string, unknown> {
 }
 function toolTarget(name: string, input: Record<string, unknown>): string {
   // Deliberately exclude Write/Edit contents, Bash command strings, env and stdin.
+  switch (name) {
+    case "mcp__dep-registry__generateBuildWorkflow":
+      return typeof input.name === "string" ? input.name : "";
+    case "mcp__dep-registry__inspectWorkflow":
+      return [input.kind, input.id].filter((value) => typeof value === "string").join(" · ");
+    case "mcp__dep-registry__declareDependency":
+      return Array.isArray(input.buildWorkflowIds) ? input.buildWorkflowIds.filter((value) => typeof value === "string").join(", ") : "";
+  }
   const keys = name === "Task" || name === "Agent" ? ["subagent_type", "description"] : ["file_path", "path", "pattern", "glob"];
   return keys.flatMap((key) => typeof input[key] === "string" ? [String(input[key])] : []).join(" · ");
 }
