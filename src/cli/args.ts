@@ -1,6 +1,8 @@
 import type { InjectionSpec } from "../runtime/inject.js";
 
 export type CliFormat = "human" | "json";
+export type CliVerbosity = "detailed" | "summary";
+export type CliProgress = "auto" | "plain" | "off";
 
 export interface PreflightCommand {
   kind: "preflight";
@@ -52,6 +54,9 @@ export interface ConfigCommand {
 }
 
 export interface RunCommand {
+  verbosity: CliVerbosity;
+  progress: CliProgress;
+  color: boolean;
   kind: "run";
   /** Git repository containing the base C project. */
   repo: string;
@@ -142,6 +147,9 @@ function parseLimits(args: string[]): LimitsCommand {
 }
 
 function parseRun(args: string[]): RunCommand {
+  let verbosity: CliVerbosity = "detailed";
+  let progress: CliProgress = "auto";
+  let color = true;
   let repo = ".";
   let task: string | null = null;
   let session: string | null = null;
@@ -152,6 +160,19 @@ function parseRun(args: string[]): RunCommand {
   let sawRepo = false;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
+    if (arg === "--verbosity") {
+      const value = nextValue(args, ++index, arg);
+      if (value !== "detailed" && value !== "summary") throw new CliUsageError("--verbosity must be detailed or summary");
+      verbosity = value;
+      continue;
+    }
+    if (arg === "--progress") {
+      const value = nextValue(args, ++index, arg);
+      if (value !== "auto" && value !== "plain" && value !== "off") throw new CliUsageError("--progress must be auto, plain or off");
+      progress = value;
+      continue;
+    }
+    if (arg === "--no-color") { color = false; continue; }
     if (arg === "--task") {
       task = nextValue(args, ++index, "--task");
       continue;
@@ -187,7 +208,7 @@ function parseRun(args: string[]): RunCommand {
     sawRepo = true;
   }
   if (task === null) throw new CliUsageError("run requires --task <text>");
-  return { kind: "run", repo, task, session, sessionRoot, worktreeRoot, injections, format };
+  return { kind: "run", repo, task, session, sessionRoot, worktreeRoot, injections, format, verbosity, progress, color };
 }
 
 function parsePreflight(args: string[]): PreflightCommand {
@@ -345,6 +366,8 @@ export const CLI_HELP = `Usage:
   refactor-subagent preflight [repo] [--format human|json]
   refactor-subagent run [repo] --task <text> [--session <id>] [--session-root <dir>]
                             [--worktree-root <dir>] [--inject <src>=<dest>]
+                            [--format human|json] [--verbosity detailed|summary]
+                            [--progress auto|plain|off] [--no-color]
   refactor-subagent workflow run <entry.ts> [options]
   refactor-subagent workflow build <entry.ts> --id <id> --revision <n> [options]
   refactor-subagent workflow list [--cwd <dir>] [--format human|json]
@@ -356,6 +379,17 @@ test-writer's verification strategy, the candidate worktrees, the refactor sessi
 then differential build + test execution and the verdict. Where each stage's
 INPUT comes from is configuration (see "Stage sources" below); by default every
 authoring/refactor stage is AI-driven.
+
+Run display:
+  --verbosity detailed       AI text, tool activity, native output and full report (default)
+  --verbosity summary        Important activity and results, without AI text or native output
+  --progress auto            Live status on terminals, plain lines elsewhere; off for JSON (default)
+  --progress plain           Plain live events on stderr, also with --format json
+  --progress off             Final report only
+  --no-color                 Disable colors (NO_COLOR is also respected)
+Progress goes to stderr; the final human/JSON report goes to stdout.
+Detailed display does not require RFR_LOG_LEVEL=trace. The durable report is
+saved as artifacts/run-summary.json. A session id must be unique; it is not a resume command.
 
 Stage sources (accepted by "run"), later wins:
   --pipeline-file <path>      Extra pipeline layer, merged in order (repeatable)

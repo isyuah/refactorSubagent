@@ -31,8 +31,9 @@ import {
   extractPipelineArgs,
   resolvePipeline,
 } from "../src/config/pipeline.js";
-import { runStageFlow } from "../src/runtime/stage-flow.js";
+import { runStageFlow, StageFlowFinalizationError, type StageFlowResult } from "../src/runtime/stage-flow.js";
 import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
+import { RunDisplay, formatRunReport } from "../src/cli/display.js";
 
 installOwnedProcessSignalHandlers();
 
@@ -131,50 +132,78 @@ async function executeRun(
   const flow = buildStageFlow(resolved.pipeline);
   const sessionId = command.session ?? `run-${Date.now().toString(36)}`;
   const sessionRoot = command.sessionRoot === null ? repo : resolve(command.sessionRoot);
-  const result = await runStageFlow({
-    repoPath: repo,
-    task: command.task,
-    sessionRoot,
-    sessionId,
-    ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
-    ...(command.injections.length > 0 ? { injections: command.injections } : {}),
-    limitOverrides: overrides,
-    flow,
-  });
-  const declaredBuilds = result.declared?.declaredSet.builds.map((build) => build.id) ?? [];
-  const summary = {
-    state: result.state,
-    session: sessionId,
-    repo,
-    log_dir: result.logDir,
-    pipeline: describePipeline(resolved.pipeline),
-    pipeline_layers: resolved.sources,
-    injected_stages: result.provenance.injected,
-    verification_authoritative: result.provenance.verification_authoritative,
-    declared_builds: declaredBuilds,
-    baseline_build: result.verification?.baselineBuild?.status ?? null,
-    candidate_build: result.verification?.candidateBuild?.status ?? null,
-    comparison: result.verification?.expectationComparison?.overall ??
-      result.verification?.comparison?.overall ?? null,
-    refactor_summary: result.refactorSummary.slice(0, 500),
-  };
-  if (command.format === "json") {
-    console.log(JSON.stringify(summary, null, 2));
-  } else {
-    console.log(`state: ${summary.state}`);
-    console.log(`session: ${sessionId}`);
-    console.log(`log: ${result.logDir}`);
-    console.log(`pipeline: ${summary.pipeline}`);
-    for (const layer of resolved.sources) console.log(`pipeline layer: ${layer}`);
-    if (result.provenance.injected.length > 0) {
-      const authority = result.provenance.verification_authoritative
-        ? ""
-        : " (verification replaced: verdict is non-authoritative)";
-      console.log(`injected stages: ${result.provenance.injected.join(", ")}${authority}`);
+  const display = new RunDisplay({ format: command.format, verbosity: command.verbosity,
+    progress: command.progress, color: command.color });
+  const limits = resolveLimits({ repoRoot: repo, overrides });
+  const onExit = (): void => { display.stop(); };
+  const onInterrupt = (): void => { display.interrupt("SIGINT"); };
+  const onTerminate = (): void => { display.interrupt("SIGTERM"); };
+  process.once("exit", onExit);
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+  display.start({ repo, task: command.task, session: sessionId,
+    log_dir: join(sessionRoot, ".refactor", "e2e", sessionId), pipeline: describePipeline(resolved.pipeline),
+    pipeline_sources: resolved.sources, pipeline_config: resolved.pipeline, pipeline_overrides: pipelineOverrides.values,
+    limits: limits.limits, limit_sources: limits.sources, limit_overrides: overrides.values });
+  try {
+    let result: StageFlowResult;
+    try {
+      result = await runStageFlow({
+        repoPath: repo,
+        task: command.task,
+        sessionRoot,
+        sessionId,
+        ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
+        ...(command.injections.length > 0 ? { injections: command.injections } : {}),
+        limitOverrides: overrides,
+        flow,
+        onProgress: display.receive,
+        configuration: { pipeline: resolved.pipeline, sources: resolved.sources, overrides: pipelineOverrides.values ?? [] },
+      });
+    } catch (error) {
+      if (!(error instanceof StageFlowFinalizationError)) throw error;
+      result = error.result;
     }
-    if (declaredBuilds.length > 0) console.log(`declared builds: ${declaredBuilds.join(", ")}`);
+    display.stop();
+    const declaredBuilds = result.declared?.declaredSet.builds.map((build) => build.id) ?? [];
+    const summary = {
+      state: result.state,
+      session: sessionId,
+      repo,
+      log_dir: result.logDir,
+      pipeline: describePipeline(resolved.pipeline),
+      pipeline_layers: resolved.sources,
+      injected_stages: result.provenance.injected,
+      verification_authoritative: result.provenance.verification_authoritative,
+      declared_builds: declaredBuilds,
+      baseline_build: result.verification?.baselineBuild?.status ?? null,
+      candidate_build: result.verification?.candidateBuild?.status ?? null,
+      comparison: result.verification?.expectationComparison?.overall ??
+        result.verification?.comparison?.overall ?? null,
+      refactor_summary: result.refactorSummary.slice(0, 500),
+      report: result.report,
+    };
+    if (command.format === "json") {
+      console.log(JSON.stringify(summary, null, 2));
+    } else {
+      console.log(formatRunReport(result.report, command.verbosity));
+      console.log(`pipeline: ${summary.pipeline}`);
+      for (const layer of resolved.sources) console.log(`pipeline layer: ${layer}`);
+      if (result.provenance.injected.length > 0) {
+        const authority = result.provenance.verification_authoritative
+          ? ""
+          : " (verification replaced: verdict is non-authoritative)";
+        console.log(`injected stages: ${result.provenance.injected.join(", ")}${authority}`);
+      }
+      if (declaredBuilds.length > 0) console.log(`declared builds: ${declaredBuilds.join(", ")}`);
+    }
+    return result.state === "ACCEPTED" && result.report.finalization_error === null ? 0 : 1;
+  } finally {
+    display.stop();
+    process.off("exit", onExit);
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
   }
-  return result.state === "ACCEPTED" ? 0 : 1;
 }
 
 async function executeWorkflowBuild(

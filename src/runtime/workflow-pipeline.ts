@@ -20,6 +20,7 @@ import type { BuildWorkflowResolution } from "../workflow/build-workflow.js";
 import { executeBuildWorkflow, type BuildWorkflowExecution } from "../workflow/build-executor.js";
 import { classifyCTestBaseline, compareCTestSuites, createCTestCandidate } from "./ctest-comparator.js";
 import { runCTest } from "./ctest-runner.js";
+import { workflowProgress, nativeLogPath, ctestProgressSummary } from "./workflow-progress.js";
 import { runTestSide } from "../workflow/test-executor.js";
 import { compareExpectations } from "../workflow/expectation-compare.js";
 import {
@@ -263,9 +264,11 @@ async function verifyWorkflows(
     };
   }
 
+  request.logger?.phase("COMPARISON");
   const comparison = compareCTestSuites(baseline, candidate);
   request.store.saveArtifact(comparison);
   request.logger?.artifact("ctest-comparison-result.json", comparison);
+  request.logger?.progress({ type: "comparison", comparison: ctestProgressSummary(comparison) });
   submit(comparison);
   return {
     state: request.store.state,
@@ -368,6 +371,7 @@ async function runSelfDrivenCore(
     return empty({ baselineBuild, candidateBuild });
   }
 
+  request.logger?.phase("COMPARISON");
   const comparison = compareExpectations(baselineRun.expectations, candidateRun.expectations);
   const consistent = comparison.overall === "consistent";
   const reason = consistent
@@ -399,6 +403,15 @@ async function runSelfDrivenCore(
   });
   request.store.saveArtifact(comparisonArtifact);
   request.logger?.artifact("expectation-comparison-result.json", comparisonArtifact);
+  request.logger?.progress({ type: "comparison", comparison: {
+    overall: comparison.overall, total: Math.max(baselineRun.expectations.length, candidateRun.expectations.length),
+    matched: comparison.matched.length, mismatched: comparison.mismatched.length, errors: comparison.errors, reason,
+    checks: [...comparison.matched.map((item) => ({ ...item, reason: "", matched: true })),
+      ...comparison.mismatched.map((item) => ({ ...item, matched: false }))].map((item) => ({
+        name: item.declaration.name, matched: item.matched, reason: item.reason,
+        baseline: item.baselineValue, candidate: item.candidateValue })),
+    evidence_paths: ["expectation-comparison-result.json", "expectation-baseline.json", "expectation-candidate.json"],
+  } });
   submit(comparisonArtifact);
   return {
     state: request.store.state,
@@ -419,23 +432,36 @@ async function runObservedTest(
 ) {
   request.logger?.phase(`${side.toUpperCase()}_TEST_WORKFLOW`);
   request.integrity.check(`before ${side} test workflow`);
-  const result = await runTestSide(request.test.entry, cwd, {
-    host: request.host,
-    project: request.project,
-    policy: testWorkflowPolicy(request),
-    input: { kind: "test-workflow-input", version: 1 },
-    timeoutMs: request.limits.stages.testWorkflowMs ?? undefined,
-  });
-  request.logger?.artifact(`${side}-test-workflow-run.json`, result);
-  request.integrity.check(`after ${side} test workflow`);
-  const executionFailure = invalidExecution(result.events);
-  if (executionFailure !== null) throw new Error(`${side} test workflow has an invalid process execution: ${executionFailure}`);
-  if (result.status === "pass" && !result.events.some((event) => event.ok &&
-      ((event.capability === "process" && (event.method === "run" || event.method === "wait")) ||
-       (event.capability === "fs" && ["readFile", "snapshot", "diff"].includes(event.method))))) {
-    throw new Error(`${side} test workflow did not run or read any implementation artifact`);
+  const started = performance.now();
+  const logPath = nativeLogPath(request.logger, `${side}-test-workflow.log`);
+  request.logger?.progress({ type: "test", side, status: "running" });
+  try {
+    const result = await runTestSide(request.test.entry, cwd, {
+      onProgress: workflowProgress(request.logger, { side, log_path: logPath }),
+      host: request.host,
+      project: request.project,
+      policy: testWorkflowPolicy(request),
+      input: { kind: "test-workflow-input", version: 1 },
+      timeoutMs: request.limits.stages.testWorkflowMs ?? undefined,
+    });
+    request.logger?.artifact(`${side}-test-workflow-run.json`, result);
+    request.integrity.check(`after ${side} test workflow`);
+    const executionFailure = invalidExecution(result.events);
+    if (executionFailure !== null) throw new Error(`${side} test workflow has an invalid process execution: ${executionFailure}`);
+    if (result.status === "pass" && !result.events.some((event) => event.ok &&
+        ((event.capability === "process" && (event.method === "run" || event.method === "wait")) ||
+         (event.capability === "fs" && ["readFile", "snapshot", "diff"].includes(event.method))))) {
+      throw new Error(`${side} test workflow did not run or read any implementation artifact`);
+    }
+    request.logger?.progress({ type: "test", side, status: result.status === "pass" ? "pass" : "failed",
+      duration_ms: Math.round(performance.now() - started), failure: result.failure,
+      checks: result.expectations.length, evidence_path: `${side}-test-workflow-run.json` });
+    return result;
+  } catch (error) {
+    request.logger?.progress({ type: "test", side, status: "failed", duration_ms: Math.round(performance.now() - started),
+      failure: error instanceof Error ? error.message : String(error) });
+    throw error;
   }
-  return result;
 }
 
 function testWorkflowPolicy(request: WorkflowVerificationRequest) {
@@ -474,6 +500,7 @@ async function executeBuildList(
       cwd,
       side,
       `${side}-build-${index + 1}-${item.id.replace(/[^A-Za-z0-9._-]/g, "_")}`,
+      item.id,
     );
     last = result;
     if (result.status !== "pass") {
@@ -498,7 +525,7 @@ async function executeBuild(
   cwd: string,
   build: "baseline" | "candidate",
 ): Promise<BuildWorkflowExecution> {
-  return executeBuildFor(request, request.build, cwd, build, `${build}-build`);
+  return executeBuildFor(request, request.build, cwd, build, `${build}-build`, request.declaredSet?.builds[0]?.id ?? request.build.manifest.id);
 }
 
 /** Execute one build workflow resolution in one worktree. */
@@ -508,6 +535,7 @@ async function executeBuildFor(
   cwd: string,
   side: "baseline" | "candidate",
   artifactName: string,
+  buildId = resolution.manifest.id,
 ): Promise<BuildWorkflowExecution> {
   request.integrity.check(`before ${side} build ${resolution.manifest.id}`);
   request.logger?.phase(`${side.toUpperCase()}_BUILD`);
@@ -516,44 +544,56 @@ async function executeBuildFor(
     workflow_revision: resolution.manifest.revision,
     cwd,
   });
-  const result = await executeBuildWorkflow({
-    cwd,
-    output: resolution.output,
-    host: request.host,
-    project: request.project,
-    entry: resolution.entry,
-    policy: {
-      readableGlobs: ["**"],
-      writableGlobs: resolution.output !== null && isWorkflowDriven(resolution.output)
-        ? ["**"]
-        : resolution.output === null
+  const started = performance.now();
+  const logPath = nativeLogPath(request.logger, `${artifactName}.log`);
+  request.logger?.progress({ type: "build", side, id: buildId, status: "running" });
+  try {
+    const result = await executeBuildWorkflow({
+      onProgress: workflowProgress(request.logger, { side, build_id: buildId, log_path: logPath }),
+      cwd,
+      output: resolution.output,
+      host: request.host,
+      project: request.project,
+      entry: resolution.entry,
+      policy: {
+        readableGlobs: ["**"],
+        writableGlobs: resolution.output !== null && isWorkflowDriven(resolution.output)
           ? ["**"]
-          : ["build/**"],
-      // Build scripts may run this worktree's artifacts for smoke checks.
-      executableGlobs: ["**"],
-      allowedTools: resolution.output === null
-        ? []
-        : requiredBuildTools(resolution.output),
-      maxProcesses: request.limits.resources.build.maxProcesses,
-      maxOutputBytes: request.limits.resources.build.maxOutputBytes,
-      maxFileBytes: request.limits.resources.build.maxFileBytes,
-      processTimeoutMs: request.limits.commands.processMs,
-      readyTimeoutMs: request.limits.commands.readyMs,
-    },
-    timeoutMs: request.limits.stages.buildMs ?? undefined,
-  });
-  request.logger?.artifact(`${artifactName}.json`, result);
-  request.integrity.check(`after ${side} build ${resolution.manifest.id}`);
-  const executionFailure = invalidExecution(result.events);
-  if (executionFailure !== null) throw new Error(`${side} build has an invalid process execution: ${executionFailure}`);
-  for (const step of result.steps) {
-    request.logger?.info(`${side} build step ${step.name}: ${step.status}`, {
-      exit_code: step.exitCode,
-      duration_ms: step.durationMs,
-      error: step.error,
+          : resolution.output === null
+            ? ["**"]
+            : ["build/**"],
+        // Build scripts may run this worktree's artifacts for smoke checks.
+        executableGlobs: ["**"],
+        allowedTools: resolution.output === null
+          ? []
+          : requiredBuildTools(resolution.output),
+        maxProcesses: request.limits.resources.build.maxProcesses,
+        maxOutputBytes: request.limits.resources.build.maxOutputBytes,
+        maxFileBytes: request.limits.resources.build.maxFileBytes,
+        processTimeoutMs: request.limits.commands.processMs,
+        readyTimeoutMs: request.limits.commands.readyMs,
+      },
+      timeoutMs: request.limits.stages.buildMs ?? undefined,
     });
+    request.logger?.artifact(`${artifactName}.json`, result);
+    request.integrity.check(`after ${side} build ${resolution.manifest.id}`);
+    const executionFailure = invalidExecution(result.events);
+    if (executionFailure !== null) throw new Error(`${side} build has an invalid process execution: ${executionFailure}`);
+    for (const step of result.steps) {
+      request.logger?.info(`${side} build step ${step.name}: ${step.status}`, {
+        exit_code: step.exitCode,
+        duration_ms: step.durationMs,
+        error: step.error,
+      });
+    }
+    request.logger?.progress({ type: "build", side, id: buildId, status: result.status === "pass" ? "pass" : "failed",
+      duration_ms: Math.round(performance.now() - started), failure: result.failure, evidence_path: `${artifactName}.json` });
+    return result;
+  } catch (error) {
+    request.logger?.progress({ type: "build", side, id: buildId, status: "failed", duration_ms: Math.round(performance.now() - started),
+      failure: error instanceof Error ? error.message : String(error), evidence_path: `${artifactName}.json` });
+    throw error;
   }
-  return result;
 }
 
 function isWorkflowDriven(output: BuildWorkflowOutput): boolean {
@@ -570,17 +610,17 @@ async function runSuite(
   request.integrity.check(`before ${build} CTest`);
   request.logger?.phase(`${build.toUpperCase()}_CTEST`);
   const logName = `${build}-ctest.log`;
-  request.logger?.logFile(logName, "");
+  const logPath = nativeLogPath(request.logger, logName);
+  const onProgress = workflowProgress(request.logger, { side: build, log_path: logPath });
+  request.logger?.progress({ type: "test", side: build, status: "running" });
   request.logger?.startHeartbeat(10_000);
   try {
     const result = await runCTest({
       repoDir,
       spec,
       host: request.host,
+      onProgress,
       requiredTopLevelTests: requiredTopLevelTests(request.test),
-      onOutput: (stream, chunk) => {
-        request.logger?.appendLogFile(logName, `[${stream}] ${chunk}`);
-      },
     });
     request.logger?.artifact(`${build}-ctest-result.json`, result);
     request.integrity.check(`after ${build} CTest`);
@@ -590,6 +630,9 @@ async function runSuite(
       duration_ms: result.duration_ms,
       failed_tests: result.failed_tests.map((failure) => failure.name),
     });
+    request.logger?.progress({ type: "test", side: build, status: result.status === "pass" ? "pass" : "failed",
+      duration_ms: result.duration_ms, failure: result.failure?.explanation ?? null,
+      ctest_tests: result.summary.total, evidence_path: `${build}-ctest-result.json` });
     return result;
   } finally {
     request.logger?.stopHeartbeat();

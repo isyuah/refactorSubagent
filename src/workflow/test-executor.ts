@@ -3,6 +3,7 @@ import type {
   ProjectDetection,
 } from "../artifacts/index.js";
 import { runWorkflow } from "./runner.js";
+import type { WorkflowProgressObserver } from "../runtime/progress.js";
 import {
   compareExpectations,
   type ExpectationComparisonOutcome,
@@ -14,6 +15,7 @@ import type {
 } from "./types.js";
 
 export interface ExecuteTestWorkflowOptions {
+  readonly onProgress?: WorkflowProgressObserver;
   /** Workflow source entry (self-driven test workflow). */
   readonly entry: string;
   /** Absolute baseline worktree dir. */
@@ -104,6 +106,7 @@ export async function runTestSide(
   entry: string,
   cwd: string,
   options: {
+    readonly onProgress?: WorkflowProgressObserver;
     readonly host?: HostPreflight;
     readonly project?: ProjectDetection;
     readonly policy?: WorkflowCapabilityPolicy;
@@ -112,6 +115,7 @@ export async function runTestSide(
   },
 ): Promise<TestRunSide> {
   const result = await runWorkflow({
+    onProgress: options.onProgress,
     entry,
     cwd,
     input: options.input ?? { kind: "test-workflow-input", version: 1 },
@@ -134,6 +138,7 @@ async function runOnce(
   cwd: string,
 ): Promise<TestRunSide> {
   return runTestSide(options.entry, cwd, {
+    onProgress: options.onProgress,
     host: options.host,
     project: options.project,
     policy: options.policy,

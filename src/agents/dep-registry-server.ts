@@ -4,7 +4,7 @@ import type {
   DependencyRegistry,
   InspectQuery,
 } from "./dep-registry.js";
-import { VerificationAnalysisInput, type VerificationAnalysisStore } from "./verification-analysis.js";
+import { VerificationAnalysisInput, type VerificationAnalysisStore, type VerificationAnalysis } from "./verification-analysis.js";
 
 /**
  * dep-registry MCP server binding. Exposes the host-side dependency registry
@@ -31,6 +31,7 @@ const GenerateInput = z.object({
 });
 
 export interface DependencyMcpServerOptions {
+  readonly onVerificationAnalysis?: (result: { path: string; report: VerificationAnalysis }) => void;
   readonly registry: DependencyRegistry;
   readonly serverName?: string;
   readonly verificationAnalysis?: VerificationAnalysisStore;
@@ -179,6 +180,7 @@ export function createDependencyMcpServer(
         handler: async (args: Record<string, unknown>) => {
           try {
             const result = verificationAnalysis.submit(args);
+            options.onVerificationAnalysis?.(result);
             return {
               content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
             };

@@ -12,12 +12,14 @@ import type {
 } from "./capability-protocol.js";
 import { LocalCapabilityBroker } from "./capabilities.js";
 import { runWorkflow } from "./runner.js";
+import type { WorkflowProgressObserver } from "../runtime/progress.js";
 import type {
   ProcessResult,
   WorkflowCapabilityPolicy,
   WorkflowEvent,
 } from "./types.js";
 export interface ExecuteBuildWorkflowOptions {
+  readonly onProgress?: WorkflowProgressObserver;
   readonly cwd: string;
   /** Workflow source entry; required for workflow-driven builds. */
   readonly entry?: string;
@@ -56,6 +58,7 @@ export async function executeBuildWorkflow(
     workspaceRoot: options.cwd,
     host: options.host,
     policy: options.policy,
+    onProgress: options.onProgress,
   });
   const steps: BuildWorkflowStepResult[] = [];
   const events: WorkflowEvent[] = [];
@@ -205,6 +208,7 @@ async function runDrivenWorkflow(
 ): Promise<{ readonly artifact: BuildArtifact } | { readonly error: string }> {
   if (options.entry === undefined) return { error: "workflow-driven build requires the workflow entry" };
   const driven = await runWorkflow({
+    onProgress: options.onProgress,
     entry: options.entry,
     cwd: options.cwd,
     facts: { host: options.host, project: options.project },

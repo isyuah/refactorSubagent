@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { probeHost } from "../src/runtime/host-preflight.js";
 import { runCTest } from "../src/runtime/ctest-runner.js";
 import { runWorkflow } from "../src/workflow/runner.js";
+import type { ProgressUpdate } from "../src/runtime/progress.js";
 import { exec } from "../testset/runner/exec.js";
 
 const measured = probeHost(process.cwd());
@@ -175,32 +176,38 @@ describe("owned process lifecycle", () => {
   }
 
   test("workflow timeout stops a running tool and retains earlier capability evidence", async () => {
+    const progress: ProgressUpdate[] = [];
     const f = fixture(`export default async (ctx) => {
       await ctx.fs.readFile('marker.txt');
       return ctx.process.run({ program: 'bun', args: ['tool.ts'] });
     };`);
     try {
-      const result = await bounded(f.run({ timeoutMs: windows ? 40_000 : 1000 }), f.cleanup);
+      const result = await bounded(f.run({ timeoutMs: windows ? 40_000 : 1000, onProgress: (event) => progress.push(event) }), f.cleanup);
       expect(result.status).toBe("timeout");
       expect(f.pids()).toHaveLength(1);
       expect(f.pids().some(alive)).toBeFalse();
       expect(result.events).toContainEqual(expect.objectContaining({ capability: "fs", method: "readFile", ok: true }));
+      expect(progress.some((event) => event.type === "command-start")).toBeTrue();
+      expect(progress.some((event) => event.type === "command-end" && event.status === "stopped")).toBeTrue();
     } finally { await f.dispose(); }
   }, caseTimeout);
 
   test("cancellation interrupts a pending readiness probe and reaps its tool", async () => {
+    const progress: ProgressUpdate[] = [];
     const f = fixture(`export default async (ctx) => ctx.process.start({
       program: 'bun', args: ['tool.ts'], ready: { kind: 'file', path: 'never-ready', timeoutMs: 60000 }
     });`);
     const controller = new AbortController();
     try {
-      const task = f.run({ signal: controller.signal });
+      const task = f.run({ signal: controller.signal, onProgress: (event) => progress.push(event) });
       await until(() => f.pids().length === 1);
       controller.abort();
       const result = await bounded(task, f.cleanup, 5000);
       expect(result.status).toBe("failed");
       expect(result.failure).toContain("cancel");
       expect(f.pids().some(alive)).toBeFalse();
+      expect(progress.some((event) => event.type === "command-start")).toBeTrue();
+      expect(progress.some((event) => event.type === "command-end" && event.status === "stopped")).toBeTrue();
     } finally { await f.dispose(); }
   }, caseTimeout);
 
@@ -296,12 +303,14 @@ describe("owned process lifecycle", () => {
   }, caseTimeout);
 
   test("CTest timeout takes precedence over incomplete declared tests and reaps TERM-resistant tools", async () => {
+    const progress: ProgressUpdate[] = [];
     const f = fixture("export default () => null");
     const quote = (s: string) => s.replaceAll("\\", "/").replaceAll('"', '\\"');
     writeFileSync(join(f.root, "CTestTestfile.cmake"), `add_test(stubborn "${quote(process.execPath)}" "${quote(join(f.root, "tool.ts"))}")\n`);
     try {
       const result = await bounded(runCTest({
         repoDir: f.root, host, requiredTopLevelTests: ["stubborn"],
+        onProgress: (event) => progress.push(event),
         spec: {
           kind: "ctest-suite-spec", version: 1, build_dir: ".", configuration: "Debug",
           extra_args: [], environment: {}, parallelism: null, timeout_ms: windows ? 30_000 : 5000,
@@ -310,6 +319,8 @@ describe("owned process lifecycle", () => {
       expect(result.status).toBe("timeout");
       expect(f.pids(), Buffer.from(result.stdout_b64, "base64").toString("utf8")).toHaveLength(1);
       expect(f.pids().some(alive)).toBeFalse();
+      expect(progress[0]?.type).toBe("command-start");
+      expect(progress.at(-1)).toMatchObject({ type: "command-end", status: "timeout" });
     } finally { await f.dispose(); }
   }, caseTimeout);
 

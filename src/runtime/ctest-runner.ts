@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { StringDecoder } from "node:string_decoder";
+import type { WorkflowProgressObserver } from "./progress.js";
 import { spawnOwnedProcess } from "../../shared/owned-process.js";
 import type {
   CTestFailure,
@@ -8,6 +10,7 @@ import type {
 } from "../artifacts/index.js";
 
 export interface CTestRunOptions {
+  onProgress?: WorkflowProgressObserver;
   repoDir: string;
   spec: CTestSuiteSpec;
   host: HostPreflight;
@@ -46,23 +49,38 @@ export async function runCTest(
   if (options.spec.parallelism !== null) args.push("-j", String(options.spec.parallelism));
 
   const started = Date.now();
-  const owned = spawnOwnedProcess({
-    program: ctest.path,
-    args,
-    cwd: options.repoDir,
-    env: { ...process.env, ...options.spec.environment },
-    stdin: "ignore",
-  });
+  const progressStarted = performance.now();
+  options.onProgress?.({ type: "command-start", id: "ctest", program: ctest.path, args, cwd: options.repoDir });
+  let owned: ReturnType<typeof spawnOwnedProcess>;
+  try {
+    owned = spawnOwnedProcess({
+      program: ctest.path,
+      args,
+      cwd: options.repoDir,
+      env: { ...process.env, ...options.spec.environment },
+      stdin: "ignore",
+    });
+  } catch (error) {
+    options.onProgress?.({ type: "command-end", id: "ctest", status: "spawn_error", exit_code: null,
+      duration_ms: Math.round(performance.now() - progressStarted), error: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
   const child = owned.child;
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
+  const outDecoder = new StringDecoder("utf8");
+  const errDecoder = new StringDecoder("utf8");
   child.stdout!.on("data", (chunk: Buffer) => {
     stdout.push(chunk);
     options.onOutput?.("stdout", chunk.toString("utf8"));
+    const text = outDecoder.write(chunk);
+    if (text) options.onProgress?.({ type: "command-output", id: "ctest", stream: "stdout", text });
   });
   child.stderr!.on("data", (chunk: Buffer) => {
     stderr.push(chunk);
     options.onOutput?.("stderr", chunk.toString("utf8"));
+    const text = errDecoder.write(chunk);
+    if (text) options.onProgress?.({ type: "command-output", id: "ctest", stream: "stderr", text });
   });
 
   let stopped: "timeout" | "cancelled" | null = null;
@@ -77,6 +95,12 @@ export async function runCTest(
   options.signal?.addEventListener("abort", cancelled, { once: true });
   if (options.signal?.aborted) cancelled();
   const exit = await owned.exited;
+  for (const [stream, text] of [["stdout", outDecoder.end()], ["stderr", errDecoder.end()]] as const) {
+    if (text) options.onProgress?.({ type: "command-output", id: "ctest", stream, text });
+  }
+  options.onProgress?.({ type: "command-end", id: "ctest", status: stopped ?? (exit.error ? "spawn_error" : "exited"),
+    exit_code: stopped ? null : exit.code, duration_ms: Math.round(performance.now() - progressStarted),
+    error: stopped ? `ctest ${stopped}` : exit.error?.message ?? null });
   if (timer !== null) clearTimeout(timer);
   options.signal?.removeEventListener("abort", cancelled);
 

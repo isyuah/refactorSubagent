@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { BuildWorkflowOutput } from "../src/artifacts/index.js";
 import { probeHost } from "../src/runtime/host-preflight.js";
 import { executeBuildWorkflow } from "../src/workflow/build-executor.js";
+import type { ProgressUpdate } from "../src/runtime/progress.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -84,7 +85,9 @@ describe("BuildWorkflow executor", () => {
           cmake: { ...measured.cmake, default_generator: "obsolete-preflight-generator" },
         };
 
+        const progress: ProgressUpdate[] = [];
         const result = await executeBuildWorkflow({
+          onProgress: (event) => progress.push(event),
           cwd: root,
           output: output("build/executor_smoke", generator),
           host,
@@ -96,6 +99,8 @@ describe("BuildWorkflow executor", () => {
         expect(result.steps.map((step) => step.name)).toEqual(["configure", "build"]);
         expect(result.steps.every((step) => step.status === "exited" && step.exitCode === 0)).toBeTrue();
         expect(result.missingArtifacts).toEqual([]);
+        expect(progress.filter((event) => event.type === "command-start")).toHaveLength(2);
+        expect(progress.filter((event) => event.type === "command-end").every((event) => event.exit_code === 0)).toBeTrue();
         expect(result.events).toEqual([
           expect.objectContaining({ capability: "process", method: "run", ok: true }),
           expect.objectContaining({ capability: "process", method: "run", ok: true }),

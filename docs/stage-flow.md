@@ -56,6 +56,7 @@ const result = await runStageFlow({
 });
 result.state;       // ACCEPTED / REJECTED / ABORTED
 result.provenance;  // { injected: ["workflows","refactor"], verification_authoritative: true }
+result.report;      // 清理后定稿的耗时、两侧结果、比较、候选提交与 SDK 统计
 ```
 
 省略的槽位使用默认实现。可用的无 AI 预置实现：
@@ -66,6 +67,18 @@ result.provenance;  // { injected: ["workflows","refactor"], verification_author
 | `patchRefactorStage(file)` | 用补丁代替 refactor 会话（宿主仍自己提交并测量改动集） |
 | `fixedRefactorStage(summary)` | 不改代码（配合 `prepare` 复用已有候选分支） |
 | `existingBranchPrepareStage({ branch, baseSha })` | 复用已有候选分支，不新建 |
+
+调用方可以通过 `StageFlowRequest.onProgress(event)` 订阅带类型的运行事件。
+事件包括阶段开始/结束、环境事实、验证方案、AI 正常文字与工具元数据、工作目录、
+构建/测试结果和实际进程的开始、输出、结束。`elapsed_ms` 使用单调时钟，`time` 为展示用时间戳；
+`context` 标明原版/候选版、构建编号和完整日志路径。心跳单独标记，不代表实际活动。
+观察者抛异常会被禁用并记录诊断，不改变验证判据。
+
+`result.report` 同时保存到 `<runDir>/artifacts/run-summary.json`，构建结果包含全部声明，
+提前中止后尚未执行的部分标为 `not-run`。验证阶段总耗时包含内部构建、测试与比较，不能再次相加。
+CLI 的展示参数与报告位置见 [README](../README.md#在具体项目中运行与查看进度)。
+正常清理失败时仍尽力保存报告，并抛出带 `result` 的 `StageFlowFinalizationError`；
+`report.finalization_error` 保留收尾原因，`state` 保留实际门禁结论，CLI 仍以失败退出。
 
 ## 3. application 用法（配置）
 

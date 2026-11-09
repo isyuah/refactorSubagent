@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import pino from "pino";
 import type { Logger as PinoLogger } from "pino";
+import type { ProgressObserver, ProgressUpdate } from "./progress.js";
 
 /**
  * Level-gated observability for long-running agent/e2e runs.
@@ -47,6 +48,8 @@ export interface Logger {
   info(message: string, details?: Record<string, unknown>): void;
   warn(message: string, details?: Record<string, unknown>): void;
   error(message: string, details?: Record<string, unknown>): void;
+  /** Live presentation is independent of the durable log's level threshold. */
+  progress?(update: ProgressUpdate): void;
 }
 
 export interface E2EState {
@@ -83,6 +86,27 @@ export class E2ELogger implements Logger {
   private lastEvent = "run started";
   private abortReason: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly progressStarted = performance.now();
+  private readonly observers = new Set<ProgressObserver>();
+
+  elapsedMs(): number { return Math.max(0, Math.round(performance.now() - this.progressStarted)); }
+
+  subscribe(observer: ProgressObserver): () => void {
+    this.observers.add(observer);
+    return () => { this.observers.delete(observer); };
+  }
+
+  progress(update: ProgressUpdate): void {
+    const event = { ...update, time: new Date().toISOString(), elapsed_ms: this.elapsedMs(), phase: this.phaseName };
+    for (const observer of this.observers) {
+      try { observer(event); }
+      catch (error) {
+        // Presentation failures must not turn a valid candidate into a rejection.
+        this.observers.delete(observer);
+        this.pino.warn({ event: "observer-error", error: String(error) }, "progress observer disabled after failure");
+      }
+    }
+  }
 
   constructor(root: string, runId: string, level: LogLevel = resolveLogLevel()) {
     this.level = level;
@@ -210,6 +234,8 @@ export class E2ELogger implements Logger {
     }
     this.lastEvent = message;
     this.persistState();
+    if (event === "phase") this.progress({ type: "phase", name: this.phaseName });
+    else if (event !== "artifact") this.progress({ type: "log", level, message, details, heartbeat: event === "heartbeat" });
   }
 
   private persistState(): void {

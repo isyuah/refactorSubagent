@@ -1,6 +1,6 @@
 # Behavior-Preserving Refactoring Agent：项目现状与后续路线
 
-> 文档日期：2026-11-03（§1–§11 为当前状态；带日期的验证记录对应各自里程碑，历史架构见文末附录）
+> 文档日期：2026-11-04（§1–§11 为当前状态；带日期的验证记录对应各自里程碑，历史架构见文末附录）
 >
 > 当前定位：面向 C 代码的行为保持型重构原型。闭环已在 Windows + MinGW + Claude Agent SDK 环境完成真实端到端验证（含首个 `ACCEPTED`）；已补齐 Windows/Linux 工程检查与 CI 配置，并统一进程超时、取消和回收。验证记录见 §8.5–§8.6，平台级宿主隔离仍待实现。
 
@@ -140,7 +140,9 @@ src/
 │  ├─ stage-flow.ts              阶段契约 + 组合器（AI 与预置阶段共用）
 │  ├─ stage-presets.ts           无 AI 预置阶段（预置 workflow / 补丁 / 既有分支）
 │  ├─ e2e-log.ts                 结构化运行日志（JSONL + state.json）
-│  ├─ e2e-dashboard.ts           运行观测 WebUI + SSE
+│  ├─ e2e-dashboard.ts           历史 WebUI + SSE（当前废弃，不维护）
+│  ├─ progress.ts                带类型的运行事件与统一报告
+│  ├─ workflow-progress.ts       实际进程输出的日志与事件适配
 │  ├─ session-store.ts           AI 会话转录镜像
 │  ├─ fs-snapshot.ts             文件系统快照和副作用 diff
 │  └─ log.ts                     pino 日志与心跳
@@ -945,6 +947,35 @@ driver 不再向 SDK 传轮数上限；显式配置仍可覆盖，现有会话�
 - 证据：`runs/linux-process-reap-20261103/` 的 `regression-before.txt`、`regression-after.txt`、
   `fast-repeat-fixed.jsonl`、`lifecycle-fixed-linux.txt`、`check-fixed-linux.txt`。
   此轮未重跑大型离线套件、未调用模型或重跑远端 CI；macOS 未实跑。
+
+### 8.29 普通 CLI 进度与结果报告（2026-11-04）
+
+在 `codex/cli-progress` 分支补全普通 `run` 的显示，采用历史事件加底部状态行，无新增终端框架。
+默认 `--verbosity detailed` 展示正常 AI 回复、工具目标、真实命令和进程输出；`summary` 显示阶段、
+验证方案、执行结果与失败诊断。`--progress auto|plain|off` 和 `--no-color` 控制终端展示，
+实时信息只写 stderr，结束报告只写 stdout；JSON 默认关闭实时展示。
+
+实现边界：
+
+- `StageFlowRequest.onProgress` 提供统一的类型化订阅；接通阶段、SDK 消息、验证方案提交、
+  声明式与动态构建、测试能力代理和 CTest，CLI 无需轮询文件或匹配英文日志。
+- 启动显示配置、来源、限制与 SDK 默认模型；运行显示两侧目录、阶段耗时、真实活动时间、
+  各构建/步骤与验证范围。心跳不视为实际活动；普通 AI 回复与日志级别独立，内部思考和工具载荷不直接展示。
+- `StageFlowResult.report` 和 `artifacts/run-summary.json` 保存清理后的统一报告，包含全部构建、
+  未执行项、失配值、候选提交、改动文件和 SDK 提供的用量。保留旧 CLI JSON 顶层字段与测试集读取方式。
+- 大值预览限制 1,024 字符；摘要最多显示 10 个失配。阶段耗时使用单调时钟，验证子阶段不再次加到总耗时。
+  费用仅累计根会话；缺失数据不估算。清理失败保留验证结论及证据，继续以失败退出。
+- 不更改构建/验证顺序、比较判据与原有成功/失败退出语义；不新增反馈循环、审批或恢复任务，不维护废弃看板。
+
+验证状态（Windows，Bun 1.3.14）：`bun run check` 退出码 0，244 项通过、2 项仅适用 Linux 的测试跳过，
+测试集执行器自检通过。新增的 17 项离线验证单独复验通过，包含 SDK 回放、终端渲染、真实小进程输出，
+以及五个无模型 CLI 场景：接受、行为失配、候选构建失败、缺少产物与提前中止；
+确认 stdout 可直接解析、全部构建均报告、报告与落盘一致，清理失败仍保留证据并维持失败退出。
+针对性的超时、取消、CTest 超时与声明式构建验证通过；最终类型检查及 `git diff --check` 通过。
+全量检查还暴露旧调查测试连续四次主机探测超过默认 5 秒的问题（独立复验耗时 6.6 秒）；
+只将该测试自身的等待上限设为 60 秒，未修改程序运行预算或验证判据。
+没有调用真实模型，没有运行 libuv 等大型测试集；本轮证据与两种模式的实际 CLI 输出位于 `runs/cli-progress/`。
+尚未推送、创建 PR 或由用户验收。
 
 ## 9. 已知限制与风险
 

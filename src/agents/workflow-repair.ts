@@ -109,6 +109,7 @@ Requirements:
 
 async function defaultRunAgent(o: WorkflowRepairAgentOptions): Promise<DriverRun> {
   return runAgent({
+    role: "source-repair",
     cwd: o.cwd,
     prompt: o.prompt,
     systemPrompt: o.systemPrompt,

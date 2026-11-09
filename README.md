@@ -35,6 +35,61 @@ bun run scripts/cli.ts run <repo> --task "<重构任务>" --session s1
 bun run scripts/cli.ts limits <repo>       # 当前生效的超时/资源阈值及其来源
 ```
 
+## 在具体项目中运行与查看进度
+
+目标目录需要是已有提交的 Git 仓库，并包含 C 源文件。先提交需要作为基准的代码，
+再给出具体重构任务；使用新的会话名，已有会话不会被覆盖。
+
+```bash
+# 默认详细模式：阶段、AI 正常回复、工具活动、构建和测试输出
+bun scripts/cli.ts run <repo> --task "提取重复的参数校验逻辑，保持行为不变" --session task-001
+
+# 摘要模式：保留阶段、验证方案、步骤结果和失败原因
+bun scripts/cli.ts run <repo> --task "..." --session task-002 --verbosity summary
+
+# 保存可直接解析的 JSON，同时把按行进度保存到另一个文件
+bun scripts/cli.ts run <repo> --task "..." --session task-003 --format json --progress plain > result.json 2> progress.log
+```
+
+| 参数 | 默认值与行为 |
+|---|---|
+| `--verbosity detailed` | 默认；显示正常 AI 文字、工具名称与目标、命令输出和完整失配结果 |
+| `--verbosity summary` | 省略 AI 回复正文和正常命令输出；失败时显示输出末尾，最多列出前 10 个失配项 |
+| `--progress auto` | 默认；文字模式自动适配终端，JSON 模式关闭实时展示 |
+| `--progress plain` | 强制逐行实时展示，JSON 模式也可使用 |
+| `--progress off` | 关闭实时展示，仍输出结束报告 |
+| `--no-color` | 禁用颜色；也尊重 `NO_COLOR` 环境变量 |
+
+进度始终写入 **stderr**，结束报告写入 **stdout**。交互终端保留事件历史并在底部刷新当前阶段、
+总耗时、阶段耗时和无实际活动的时间；非交互终端每 10 秒输出状态。心跳与工具存活消息不会重置活动时间。
+阶段不显示推测的进度百分比；声明比较的数量称为“检查项”，不代表测试用例数。
+
+启动信息包括实际配置及来源、模型与限制、主机工具、基准提交、候选分支和工作目录。
+验证方案提交后展示采用的验证方式、理由、覆盖行为、真实依赖、模拟依赖和覆盖缺口。
+构建和测试显示原版/候选版、构建编号、真实执行命令、工作目录及耗时。
+`RFR_LOG_LEVEL` 控制落盘日志的级别，与 `--verbosity` 独立；显示正常 AI 回复无需启用 trace。
+界面不显示模型内部思考、完整工具参数、写入文件内容、环境变量或能力协议。
+
+结束报告保留 `ACCEPTED`、`REJECTED`、`ABORTED` 及其原因，列出各阶段耗时、全部构建的两侧结果、
+未执行部分、比较统计、完整重构说明、改动文件和提交。详细模式展示所有失配项及两侧观测值，
+每个大值最多预览 1,024 个字符，完整值保存在证据文件中。
+SDK 提供时展示会话轮数、用量和费用；缺失时不估算，子会话费用不重复计入合计。
+
+证据默认保存在 `<repo>/.refactor/e2e/<session>/`，也可用 `--session-root <目录>` 改变存放根目录：
+
+- `artifacts/run-summary.json`：清理完成后定稿的统一报告，与 CLI JSON 的 `report` 字段相同。
+- `logs/`：构建、测试与 CTest 的原始进程输出；具体失败信息也保存在对应执行结果 JSON 中。
+- `artifacts/expectation-*.json` 或 `ctest-*.json`：两侧完整观测与比较证据。
+- `run.jsonl`、`state.json`、`sessions/`：运行事件、状态与 SDK 会话记录。
+
+`--format json` 保留既有顶层字段并追加 `report`，测试集原有读取方式继续有效。
+提前失败只报告已获得的信息。收到中断后停止状态刷新、回收所属进程并保留已有证据；
+强制中断时最终报告可能尚未生成。若清理或产物推广失败，报告单独记录 `finalization_error`，
+保留实际验证结论，同时以失败退出。
+
+候选改动保存在输出的分支和提交中，**不会自动合并回原分支**；`ACCEPTED` 表示本次验证范围内通过。
+可以先按报告里的 `git diff` 命令审查差异，再自行决定如何集成。网页看板目前废弃，普通运行以 CLI 为准。
+
 ## 测试集（把能力评估跑成分数）
 
 用法、套件设计、校准与实测记录都在 [`docs/testset/`](docs/testset/)：

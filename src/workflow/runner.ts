@@ -11,8 +11,10 @@ import {
 import { checkWorkflowSource } from "./source-policy.js";
 import { LocalCapabilityBroker } from "./capabilities.js";
 import { spawnOwnedProcess } from "../../shared/owned-process.js";
+import type { WorkflowProgressObserver } from "../runtime/progress.js";
 
 export interface RunWorkflowOptions {
+  onProgress?: WorkflowProgressObserver;
   entry: string;
   cwd: string;
   input?: unknown;
@@ -38,6 +40,7 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
     host: options.facts?.host,
     project: options.facts?.project,
     policy: options.policy,
+    onProgress: options.onProgress,
   });
   const owned = spawnOwnedProcess({
     program: process.execPath,

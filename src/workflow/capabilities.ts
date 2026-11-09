@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
+import type { WorkflowProgressObserver } from "../runtime/progress.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawnOwnedProcess, type OwnedProcess, type ProcessExit } from "../../shared/owned-process.js";
 import {
@@ -53,6 +55,7 @@ const SYSTEM_ENV_KEYS = new Set([
 ]);
 
 export interface CapabilityHost {
+  readonly onProgress?: WorkflowProgressObserver;
   readonly workspaceRoot: string;
   readonly host?: HostPreflight;
   readonly project?: ProjectDetection;
@@ -67,6 +70,7 @@ export interface CapabilityBroker {
 interface RunningProcess {
   readonly owned: OwnedProcess;
   readonly startedAt: number;
+  readonly progressStartedAt: number;
   readonly spec: ProcessStartSpec;
   readonly stdout: Buffer[];
   readonly stderr: Buffer[];
@@ -84,6 +88,7 @@ interface RunningProcess {
  * validated JSON requests; all filesystem and process operations stay here.
  */
 export class LocalCapabilityBroker implements CapabilityBroker {
+  private readonly onProgress: WorkflowProgressObserver | undefined;
   private readonly workspaceRoot: string;
   private readonly host: HostPreflight | undefined;
   private readonly policy: Required<WorkflowCapabilityPolicy>;
@@ -93,8 +98,10 @@ export class LocalCapabilityBroker implements CapabilityBroker {
   private closePromise: Promise<void> | null = null;
   private readonly lifetime = new AbortController();
   private readonly events: WorkflowEvent[] = [];
+  private readonly stepStarted = new Map<string, number>();
 
   constructor(options: CapabilityHost) {
+    this.onProgress = options.onProgress;
     const requestedRoot = resolve(options.workspaceRoot);
     this.workspaceRoot = realpathSync(requestedRoot);
     this.host = options.host;
@@ -137,6 +144,15 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       ...(execution !== null ? { execution: { status: execution.status, exitCode: execution.exitCode, signal: execution.signal } } : {}),
     };
     this.events.push(event);
+    if (request.capability === "plan") {
+      const id = typeof request.args[0] === "string" ? request.args[0] : "plan";
+      if (ok && request.method === "begin") this.stepStarted.set(id, performance.now());
+      const started = this.stepStarted.get(id);
+      this.onProgress?.({ type: "step", id, title: this.planSteps.get(id)?.title ?? "工作流步骤声明",
+        status: ok ? request.method : "failed",
+        ...(started !== undefined ? { duration_ms: Math.round(performance.now() - started) } : {}),
+        ...(error ? { error } : request.method === "fail" && typeof request.args[1] === "string" ? { error: request.args[1] } : {}) });
+    }
     return {
       type: "capability-response",
       id: request.id,
@@ -442,6 +458,8 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       throw new Error(`process cwd is not a directory: ${normalized.cwd ?? "."}`);
     }
     const env = this.buildEnv(normalized.env);
+    const id = `p${String(this.nextProcessId++)}`;
+    this.onProgress?.({ type: "command-start", id, program, args: normalized.args ?? [], cwd });
     let owned: OwnedProcess;
     try {
       owned = spawnOwnedProcess({
@@ -451,14 +469,15 @@ export class LocalCapabilityBroker implements CapabilityBroker {
         env,
       });
     } catch (cause) {
+      this.onProgress?.({ type: "command-end", id, status: "spawn_error", exit_code: null, duration_ms: 0, error: errorMessage(cause) });
       throw new Error(`failed to spawn '${normalized.program}': ${errorMessage(cause)}`);
     }
 
-    const id = `p${String(this.nextProcessId++)}`;
     const child = owned.child;
     const running: RunningProcess = {
       owned,
       startedAt: Date.now(),
+      progressStartedAt: performance.now(),
       spec: normalized,
       stdout: [],
       stderr: [],
@@ -471,8 +490,21 @@ export class LocalCapabilityBroker implements CapabilityBroker {
       stopRequested: false,
     };
     this.running.set(id, running);
-    child.stdout?.on("data", (chunk: Buffer) => appendOutput(running, running.stdout, chunk));
-    child.stderr?.on("data", (chunk: Buffer) => appendOutput(running, running.stderr, chunk));
+    const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+    const output = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+      const remaining = Math.max(0, (running.spec.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES) - running.outputBytes);
+      appendOutput(running, running[stream], chunk);
+      const text = decoders[stream].write(chunk.subarray(0, remaining));
+      if (text) this.onProgress?.({ type: "command-output", id, stream, text });
+    };
+    child.stdout?.on("data", (chunk: Buffer) => output("stdout", chunk));
+    child.stderr?.on("data", (chunk: Buffer) => output("stderr", chunk));
+    void running.exit.then(() => {
+      for (const stream of ["stdout", "stderr"] as const) {
+        const text = decoders[stream].end();
+        if (text) this.onProgress?.({ type: "command-output", id, stream, text });
+      }
+    });
     if (normalized.timeoutMs !== undefined) {
       running.timeoutTimer = setTimeout(() => {
         running.timedOut = true;
@@ -538,6 +570,9 @@ export class LocalCapabilityBroker implements CapabilityBroker {
           : running.stopRequested
             ? "stopped"
             : "exited";
+    this.onProgress?.({ type: "command-end", id, status, exit_code: status === "exited" ? exit.code : null,
+      duration_ms: Math.round(performance.now() - running.progressStartedAt),
+      error: [failure, exit.error?.message].filter((message) => message != null).join("; ") || null });
     return {
       status,
       exitCode: status === "exited" ? exit.code : null,

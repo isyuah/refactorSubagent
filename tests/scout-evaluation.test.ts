@@ -80,7 +80,8 @@ describe("isolated investigation evaluation boundaries", () => {
       if (failure === "timeout") expect(result.timedOut).toBe(true);
       if (failure === "source-change") expect(result.sourceChanges).toEqual(["src/main.c"]);
     }
-  });
+  // Four real host probes plus MCP round trips can exceed Bun's default 5s on Windows.
+  }, 60_000);
 
   test("every scenario's reference is anchored to complete fixture source across the difficulty tiers", () => {
     const { suite } = loadSuite(SUITE);

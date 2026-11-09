@@ -39,6 +39,7 @@ export async function runRefactor(
 ): Promise<{ summary: string }> {
   const limits = sessionHooks?.limits ?? DEFAULT_LIMITS.sessions.refactor;
   const run = await runAgent({
+    role: "refactor",
     cwd: worktreeDir,
     prompt: refactorPrompt(task),
     systemPrompt: REFACTOR_SYSTEM,
