@@ -53,6 +53,11 @@ export interface BuildWorkflowExecution {
    * executable allowlist) derive from it instead of assuming a build dir.
    */
   readonly assertedArtifacts: readonly string[];
+  /**
+   * Declared id of the build that failed within a multi-build set (set by
+   * the list executor's failure path; undefined for single-build runs).
+   */
+  readonly buildId?: string;
 }
 
 /** Execute a validated BuildWorkflow through the brokered process boundary. */

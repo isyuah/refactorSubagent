@@ -31,9 +31,19 @@ import {
   extractPipelineArgs,
   resolvePipeline,
 } from "../src/config/pipeline.js";
-import { runStageFlow } from "../src/runtime/stage-flow.js";
+import { runStageFlow, verifyStageWithReuse, continuedWorkflowsStage, type StageFlowResult, type WorkflowsStage } from "../src/runtime/stage-flow.js";
+import { halt } from "../src/runtime/stage-flow.js";
 import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
-import { runStageFlowResume } from "../src/runtime/stage-resume.js";
+import { existingBranchPrepareStage, fixedRefactorStage, presetWorkflowsStage } from "../src/runtime/stage-presets.js";
+import { loadReusableWorkflowsStage, loadWorkflowsCheckpointView, runStageFlowResume } from "../src/runtime/stage-resume.js";
+import {
+  composeBuildRepairBrief,
+  continuedRefactorStage,
+  mergeRepairedBuilds,
+  runBuildWriterRepairSession,
+} from "../src/runtime/feedback/repair.js";
+import { runFeedbackLoop } from "../src/runtime/feedback/coordinator.js";
+import { readFileSync } from "node:fs";
 
 installOwnedProcessSignalHandlers();
 
@@ -137,28 +147,254 @@ async function executeRun(
   // the pipeline config / --stage selected, and injections are forwarded so
   // the resumed run verifies the same environment as the failed one.
   const resumeFrom = command.resume;
-  const result = resumeFrom !== null
-    ? await runStageFlowResume({
-        repoPath: repo,
-        task: command.task,
-        sessionRoot,
-        sessionId,
-        sourceSessionId: resumeFrom,
-        ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
-        ...(command.injections.length > 0 ? { injections: command.injections } : {}),
-        baseFlow: flow,
-        limitOverrides: overrides,
-      })
-    : await runStageFlow({
-        repoPath: repo,
-        task: command.task,
-        sessionRoot,
-        sessionId,
-        ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
-        ...(command.injections.length > 0 ? { injections: command.injections } : {}),
-        limitOverrides: overrides,
-        flow,
-      });
+  const runOnce = (
+    round: number,
+    task: string,
+    sid: string,
+    pinnedWorkflows?: WorkflowsStage | null,
+  ): Promise<StageFlowResult> =>
+    runStageFlow({
+      repoPath: repo,
+      task,
+      sessionRoot,
+      sessionId: sid,
+      ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
+      ...(command.injections.length > 0 ? { injections: command.injections } : {}),
+      limitOverrides: overrides,
+      // A pinned exam (round 1's checkpointed workflows) overrides the
+      // configured stage source, so retry rounds stay comparable.
+      flow: pinnedWorkflows !== undefined && pinnedWorkflows !== null
+        ? { ...flow, workflows: pinnedWorkflows }
+        : flow,
+    });
+  let result: StageFlowResult;
+  let autoRetryMeta: { rounds: number; stoppedBecause: string; lastSession: string } | null = null;
+  if (resumeFrom !== null) {
+    if (command.autoRetry > 0) {
+      // stderr: stdout stays machine-readable under --format json.
+      console.error("提示：--auto-retry 仅作用于全新运行；本次恢复按单次执行。");
+    }
+    result = await runStageFlowResume({
+      repoPath: repo,
+      task: command.task,
+      sessionRoot,
+      sessionId,
+      sourceSessionId: resumeFrom,
+      ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
+      ...(command.injections.length > 0 ? { injections: command.injections } : {}),
+      baseFlow: flow,
+      limitOverrides: overrides,
+    });
+  } else if (command.autoRetry > 0) {
+    // The feedback loop: route each failure to the lane that owns it —
+    // refactor dialogue continuation, exam-script continuation, or a repair
+    // build-writer — then re-execute only what the repair touched.
+    const e2eDirOf = (sid: string) => join(sessionRoot, ".refactor", "e2e", sid);
+    const readArtifact = (sid: string, name: string): unknown => {
+      try {
+        return JSON.parse(readFileSync(join(e2eDirOf(sid), "artifacts", name), "utf8"));
+      } catch {
+        return null;
+      }
+    };
+    const feedbackOutcome = await runFeedbackLoop({
+      baseTask: command.task,
+      budget: command.autoRetry,
+      // Progress notices go to stderr: stdout stays machine-readable under --format json.
+      notify: (message) => console.error(message),
+      stateDir: join(sessionRoot, ".refactor", "feedback", sessionId),
+      sessionIdFor: (round) => (round === 1 ? sessionId : `${sessionId}-fb${String(round)}`),
+      runInitial: () => runOnce(1, command.task, sessionId),
+      loadPinnedWorkflows: () => loadReusableWorkflowsStage(repo, sessionRoot, sessionId),
+      locateExamEntry: () => {
+        const view = loadWorkflowsCheckpointView(repo, sessionRoot, sessionId);
+        if (view === null) return null;
+        return view.entryRoot !== null ? join(view.entryRoot, view.testEntry) : join(repo, view.testEntry);
+      },
+      composeBuildBrief: (evidence, round) => {
+        const view = loadWorkflowsCheckpointView(repo, sessionRoot, sessionId);
+        if (view === null || view.builds.length === 0) return null;
+        // Locate the failed build honestly: by attributed id when the
+        // round-1 evidence carries one, otherwise only when a single build
+        // makes the target unambiguous. Multi-build sets without an id
+        // must not be briefed against a guessed build.
+        const failed = evidence.buildId === undefined
+          ? view.builds.length === 1
+            ? view.builds[0]!
+            : null
+          : view.builds.find((build) => build.id === evidence.buildId) ?? null;
+        if (failed === null) return null;
+        const entryRoot = view.entryRoot ?? repo;
+        const entryAbs = join(entryRoot, failed.entry);
+        let source: string | undefined;
+        try {
+          source = readFileSync(entryAbs, "utf8");
+        } catch {
+          source = undefined;
+        }
+        return composeBuildRepairBrief(evidence, {
+          round,
+          failedBuildId: failed.id,
+          failedBuildEntry: entryAbs,
+          failedBuildSource: source,
+          otherSideOutcome:
+            evidence.side === "candidate"
+              ? "基线侧使用同一方案构建成功。"
+              : "构建在基线侧失败，候选侧尚未执行。",
+        });
+      },
+      runBuildRepair: async (brief, round) => {
+        const host = readArtifact(sessionId, "host-preflight.json") as never;
+        const project = readArtifact(sessionId, "project-detection.json") as never;
+        if (host === null || project === null) return null;
+        // Bound the repair session with the authoring budget: without an
+        // overall deadline only the stall watchdog would limit it.
+        const repairLimits = resolveLimits({ repoRoot: repo, overrides }).limits.sessions.testWriter;
+        return runBuildWriterRepairSession({
+          repoDir: repo,
+          sessionRoot,
+          sessionId: `${sessionId}-fb${String(round)}-bw`,
+          task: command.task,
+          host,
+          project,
+          brief,
+          limits: {
+            maxTurns: repairLimits.maxTurns,
+            model: repairLimits.model,
+            deadlineMs: repairLimits.deadlineMs,
+            stallMs: repairLimits.stallMs,
+          },
+        });
+      },
+      loadBaselineObservations: (previousSessionId) => {
+        const artifact = readArtifact(previousSessionId, "expectation-baseline.json") as
+          | { expectations?: unknown }
+          | null;
+        if (artifact === null || !Array.isArray(artifact.expectations)) return null;
+        return artifact.expectations as never;
+      },
+      runRepairRound: (round, context) => {
+        const base = {
+          repoPath: repo,
+          task: command.task,
+          sessionRoot,
+          sessionId: `${sessionId}-fb${String(round)}`,
+          ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
+          ...(command.injections.length > 0 ? { injections: command.injections } : {}),
+          limitOverrides: overrides,
+        };
+        if (context.lane === "refactor") {
+          return runStageFlow({
+            ...base,
+            flow: {
+              workflows: context.pinnedWorkflows,
+              prepare: existingBranchPrepareStage({
+                branch: context.candidateBranch,
+                baseSha: context.baseSha,
+              }),
+              refactor: continuedRefactorStage({
+                dialogueId: context.dialogueId,
+                feedback: context.feedback,
+                dialogueRoot: e2eDirOf(sessionId),
+              }),
+              verify: verifyStageWithReuse(
+                context.reusedBaseline !== null
+                  ? { reusedBaseline: { expectations: context.reusedBaseline } }
+                  : {},
+              ),
+            },
+          });
+        }
+        if (context.lane === "test") {
+          return runStageFlow({
+            ...base,
+            flow: {
+              workflows: continuedWorkflowsStage({
+                dialogueId: context.dialogueId,
+                feedback: context.feedback,
+                testEntry: context.testEntry,
+                dialogueRoot: e2eDirOf(sessionId),
+              }),
+              prepare: existingBranchPrepareStage({
+                branch: context.candidateBranch,
+                baseSha: context.baseSha,
+              }),
+              refactor: fixedRefactorStage(
+                `feedback: candidate branch ${context.candidateBranch} carries the measured change`,
+              ),
+            },
+          });
+        }
+        // build lane: the pinned exam entry composed with the FIXED build.
+        const view = loadWorkflowsCheckpointView(repo, sessionRoot, sessionId);
+        if (view === null) {
+          // The coordinator guaranteed the pin earlier; a vanished checkpoint
+          // here fails the round loudly via a halting workflows stage.
+          return runStageFlow({
+            ...base,
+            flow: {
+              workflows: async () =>
+                halt("feedback build lane: round-1 checkpoint vanished mid-round", {
+                  category: "resolution",
+                  component: "feedback-build-lane",
+                  retryable: false,
+                }),
+            },
+          });
+        }
+        // The repaired build replaces its declared slot; every other
+        // declared build keeps running (a shrunken set would verify a
+        // different contract than round 1 did). An unmappable repair
+        // halts loudly instead of guessing.
+        const builds = mergeRepairedBuilds(view.builds, context.fixedBuild, context.failedBuildId);
+        if (builds === null) {
+          return runStageFlow({
+            ...base,
+            flow: {
+              workflows: async () =>
+                halt(
+                  `feedback build lane: repaired build ${context.fixedBuild.id} does not map into the round-1 build set (${view.builds.map((build) => build.id).join(", ")})`,
+                  {
+                    category: "resolution",
+                    component: "feedback-build-lane",
+                    retryable: false,
+                  },
+                ),
+            },
+          });
+        }
+        return runStageFlow({
+          ...base,
+          flow: {
+            workflows: presetWorkflowsStage({
+              builds: builds,
+              testEntry: view.entryRoot !== null ? join(view.entryRoot, view.testEntry) : view.testEntry,
+              workflowId: view.workflowId,
+              revision: view.workflowRevision,
+              ...(view.entryRoot !== null ? { entryRoot: view.entryRoot } : {}),
+            }),
+            prepare: existingBranchPrepareStage({
+              branch: context.candidateBranch,
+              baseSha: context.baseSha,
+            }),
+            refactor: fixedRefactorStage(
+              `feedback: candidate branch ${context.candidateBranch} carries the measured change`,
+            ),
+          },
+        });
+      },
+    });
+    result = feedbackOutcome.result;
+    if (feedbackOutcome.rounds.length > 1) {
+      autoRetryMeta = {
+        rounds: feedbackOutcome.rounds.length,
+        stoppedBecause: feedbackOutcome.stoppedBecause,
+        lastSession: feedbackOutcome.rounds.at(-1)!.sessionId,
+      };
+    }
+  } else {
+    result = await runOnce(1, command.task, sessionId);
+  }
   const declaredBuilds = result.declared?.declaredSet.builds.map((build) => build.id) ?? [];
   const summary = {
     state: result.state,
@@ -170,6 +406,7 @@ async function executeRun(
     injected_stages: result.provenance.injected,
     verification_authoritative: result.provenance.verification_authoritative,
     ...(result.provenance.resume !== undefined ? { resumed_from: result.provenance.resume } : {}),
+    ...(autoRetryMeta !== null ? { auto_retry: autoRetryMeta } : {}),
     declared_builds: declaredBuilds,
     baseline_build: result.verification?.baselineBuild?.status ?? null,
     candidate_build: result.verification?.candidateBuild?.status ?? null,
@@ -199,6 +436,11 @@ async function executeRun(
     if (result.provenance.resume !== undefined) {
       console.log(
         `resumed from: ${result.provenance.resume.source_session} (reused: ${result.provenance.resume.reused_stages.join(", ") || "none"})`,
+      );
+    }
+    if (autoRetryMeta !== null) {
+      console.log(
+        `auto retry: ${autoRetryMeta.rounds} rounds (${autoRetryMeta.stoppedBecause}); final session: ${autoRetryMeta.lastSession}`,
       );
     }
     if (result.provenance.injected.length > 0) {

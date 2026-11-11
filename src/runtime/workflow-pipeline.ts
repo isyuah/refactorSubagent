@@ -30,7 +30,12 @@ import {
 import type { WorktreePair } from "./worktree.js";
 import type { E2ELogger } from "./e2e-log.js";
 import type { Limits } from "../config/limits.js";
-import type { WorkflowEvent } from "../workflow/types.js";
+import type { ExpectationDeclaration, WorkflowEvent } from "../workflow/types.js";
+import type { z } from "zod";
+
+/** Expectation shape as persisted in the expectation artifacts (zod-inferred:
+ *  schema-validated on load, so the optional value/pattern are trusted). */
+export type ReusedExpectation = z.infer<typeof ExpectationBaseline>["expectations"][number];
 import type { StageFailureAttribution } from "./stage-flow.js";
 import { VerificationIntegrity, type IntegrityInput } from "./verification-integrity.js";
 import {
@@ -63,6 +68,18 @@ export interface WorkflowVerificationRequest {
   /** Resolved host limits; every stage budget and resource cap comes from here. */
   readonly limits: Limits;
   readonly knownEnvironmentPatterns?: readonly RegExp[];
+  /**
+   * Baseline observation reuse (feedback-loop repair rounds): the previous
+   * round's measured baseline expectations, replayed instead of re-running
+   * the baseline build+test. Honored ONLY in the self-driven path and ONLY
+   * when the caller has verified the reuse guards (same repo base, identical
+   * pinned exam source hash, identical declared build hashes); the pipeline
+   * re-submits the stored artifact so the state machine still sees and
+   * validates every gate. Absent = measure the baseline side as usual.
+   */
+  readonly reusedBaseline?: {
+    readonly expectations: readonly ReusedExpectation[];
+  };
 }
 
 export interface WorkflowVerificationOutcome {
@@ -343,6 +360,74 @@ async function runSelfDrivenCore(
     ...extra,
   });
 
+  // Baseline-side reuse (feedback repair rounds): when the caller verified
+  // the reuse guards, the previous round's baseline build+test stand and this
+  // round replays the stored expectations instead of re-measuring them. The
+  // artifact is re-parsed and re-submitted, so every state-machine gate and
+  // the R6 recompute still see full evidence.
+  if (request.reusedBaseline !== undefined) {
+    const baselineArtifact = ExpectationBaseline.parse({
+      kind: "expectation-baseline",
+      version: 1,
+      workflow_passed: true,
+      expectations: request.reusedBaseline.expectations,
+    });
+    request.store.saveArtifact(baselineArtifact);
+    request.logger?.artifact("expectation-baseline.json", baselineArtifact);
+    request.logger?.info("baseline observations reused from the previous feedback round", {
+      expectations: baselineArtifact.expectations.length,
+    });
+    if (!submit(baselineArtifact)) {
+      return empty({
+        abortAttribution: testFailureAttribution("baseline", { status: "artifact-submission-rejected" }),
+      });
+    }
+    const patch: PatchRecord = {
+      kind: "patch-record",
+      version: 1,
+      ...request.patch,
+      base_commit_sha: request.worktrees.baseSha,
+    };
+    if (!submit(patch)) return empty({});
+
+    const candidateBuild = await executeBuildList(request, request.worktrees.candidateDir, "candidate", buildList);
+    if (candidateBuild.status !== "pass") {
+      results.push(orch.abort(`candidate BuildWorkflow failed: ${candidateBuild.failure ?? "unknown failure"}`));
+      return empty({
+        candidateBuild,
+        abortAttribution: buildFailureAttribution("candidate", candidateBuild),
+      });
+    }
+    const candidateRun = await runObservedTest(request, request.worktrees.candidateDir, "candidate");
+    if (candidateRun.status !== "pass") {
+      results.push(orch.abort(`candidate test workflow failed: ${candidateRun.failure ?? candidateRun.status}`));
+      return empty({
+        candidateBuild,
+        abortAttribution: testFailureAttribution("candidate", candidateRun),
+      });
+    }
+    const candidateArtifact = ExpectationCandidate.parse({
+      kind: "expectation-candidate",
+      version: 1,
+      workflow_passed: true,
+      expectations: candidateRun.expectations,
+    });
+    request.store.saveArtifact(candidateArtifact);
+    request.logger?.artifact("expectation-candidate.json", candidateArtifact);
+    if (!submit(candidateArtifact)) {
+      return empty({
+        candidateBuild,
+        abortAttribution: testFailureAttribution("candidate", { status: "artifact-submission-rejected" }),
+      });
+    }
+    return finishSelfDriven(request, results, submit, {
+      baselineBuild: null,
+      candidateBuild,
+      baselineExpectations: baselineArtifact.expectations,
+      candidateExpectations: candidateRun.expectations,
+    });
+  }
+
   // Run every build in the (declaration) set on the baseline worktree.
   const baselineBuild = await executeBuildList(request, request.worktrees.baselineDir, "baseline", buildList);
   if (baselineBuild.status !== "pass") {
@@ -420,6 +505,32 @@ async function runSelfDrivenCore(
   }
 
   const comparison = compareExpectations(baselineRun.expectations, candidateRun.expectations);
+  return finishSelfDriven(request, results, submit, {
+    baselineBuild,
+    candidateBuild,
+    baselineExpectations: baselineRun.expectations,
+    candidateExpectations: candidateRun.expectations,
+  });
+}
+
+/** Shared tail of the self-driven path: compare, persist, submit, decide. */
+function finishSelfDriven(
+  request: CheckedVerificationRequest,
+  results: SubmitResult[],
+  submit: (artifact: unknown) => boolean,
+  sides: {
+    baselineBuild: BuildWorkflowExecution | null;
+    candidateBuild: BuildWorkflowExecution | null;
+    baselineExpectations: readonly ReusedExpectation[];
+    candidateExpectations: readonly ReusedExpectation[];
+  },
+): WorkflowVerificationOutcome {
+  const comparison = compareExpectations(
+    // Schema-validated declarations; the record-time API guarantees the
+    // observed value is present for every relation that needs one.
+    sides.baselineExpectations as readonly ExpectationDeclaration[],
+    sides.candidateExpectations as readonly ExpectationDeclaration[],
+  );
   const consistent = comparison.overall === "consistent";
   const reason = consistent
     ? `all ${String(comparison.matched.length)} expectation(s) consistent`
@@ -454,8 +565,8 @@ async function runSelfDrivenCore(
   return {
     state: request.store.state,
     results,
-    baselineBuild,
-    candidateBuild,
+    baselineBuild: sides.baselineBuild,
+    candidateBuild: sides.candidateBuild,
     baseline: null,
     candidate: null,
     comparison: null,
@@ -530,6 +641,7 @@ async function executeBuildList(
     if (result.status !== "pass") {
       return {
         ...result,
+        buildId: item.id,
         failure: `build ${item.id} failed: ${result.failure ?? result.status}`,
       };
     }
@@ -687,7 +799,11 @@ function buildFailureAttribution(
     category: "build",
     component: `build-workflow:${side}`,
     retryable: true,
-    detail: { status: execution.status, failure: execution.failure },
+    detail: {
+      status: execution.status,
+      failure: execution.failure,
+      ...(execution.buildId !== undefined ? { build_id: execution.buildId } : {}),
+    },
   };
 }
 

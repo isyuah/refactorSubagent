@@ -108,6 +108,10 @@ export async function runPipelineCase(
     "--session-root", sessionRoot,
     "--pipeline-file", pipelinePath,
     "--format", "json",
+    // Judgement cases assert the FIRST verdict: the CLI's feedback loop is a
+    // user feature, not part of what these cases measure, so pin it off
+    // regardless of the CLI default.
+    "--auto-retry", "0",
   ];
   for (const injection of c.inject) args.push("--inject", `${injection.source}=${injection.dest}`);
   for (const [key, value] of Object.entries(c.limits)) {

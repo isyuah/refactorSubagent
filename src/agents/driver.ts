@@ -48,6 +48,13 @@ export interface DriverRun {
   /** True only when the stall watchdog fired: a dead stream, distinct from the
    *  overall deadline. Undefined in older stub results — treat as false. */
   stalled?: boolean;
+  /** SDK conversation id of this run. Save it to continue the SAME conversation
+   *  later via `resumeSessionId`. Undefined when the SDK did not report one. */
+  sessionId?: string;
+  /** True when a resume was requested but the SDK answered under a DIFFERENT
+   *  conversation id — a new conversation, not a continuation. The host must
+   *  treat this as a failed resume, never as success. */
+  resumeMismatch?: boolean;
 }
 
 export interface DriverOptions {
@@ -92,6 +99,14 @@ export interface DriverOptions {
   mcpServers?: Record<string, McpServerConfig>;
   /** Extra tool names to auto-allow (e.g. mcp__server__tool). */
   extraAllowedTools?: string[];
+  /**
+   * Continue an existing conversation instead of starting a new one. Pass the
+   * `sessionId` a previous DriverRun returned. The SDK loads that
+   * conversation's history and appends this prompt to it. Tool allowlists,
+   * MCP servers and skills are re-applied; the conversation history itself
+   * (including the original system prompt) comes from the stored session.
+   */
+  resumeSessionId?: string;
 }
 
 
@@ -121,7 +136,11 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       ...(o.skills !== undefined ? { skills: o.skills } : {}),
       ...(o.agents !== undefined ? { agents: o.agents } : {}),
       ...(o.mcpServers !== undefined ? { mcpServers: o.mcpServers } : {}),
-      systemPrompt: o.systemPrompt,
+      // Conversation continuation: append this prompt to a stored conversation.
+      // Without forkSession the SDK continues the SAME id, so a mismatching
+      // session_id in the result exposes a silent fallback to a new chat.
+      ...(o.resumeSessionId !== undefined ? { resume: o.resumeSessionId } : {}),
+      ...(o.systemPrompt !== undefined ? { systemPrompt: o.systemPrompt } : {}),
       ...(o.maxTurns !== undefined && o.maxTurns !== null ? { maxTurns: o.maxTurns } : {}),
       ...(o.model !== undefined && o.model !== null ? { model: o.model } : {}),
       abortController,
@@ -133,6 +152,8 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
   let structuredOutput: unknown;
   let isError = true;
   let timedOut = false;
+  let sessionId: string | undefined;
+  let resumeMismatch = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   if (timeoutMs !== undefined) {
     timer = setTimeout(() => {
@@ -178,6 +199,9 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
         isError = msg.is_error;
         if ("result" in msg) result = msg.result;
         if ("structured_output" in msg) structuredOutput = msg.structured_output;
+        if ("session_id" in msg && typeof msg.session_id === "string") {
+          sessionId = msg.session_id;
+        }
       }
     }
   } catch (error) {
@@ -202,7 +226,14 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
     result = result.length === 0 ? reason : `${result}\n${reason}`;
     isError = true;
   }
-  return { result, structuredOutput, isError, timedOut, stalled };
+  // A resume must land in the SAME conversation. A different id means the SDK
+  // silently started a new chat (session missing, expired, or unsupported) —
+  // surface it so callers never mistake a fresh chat for a continuation.
+  if (o.resumeSessionId !== undefined && sessionId !== undefined && sessionId !== o.resumeSessionId) {
+    resumeMismatch = true;
+    isError = true;
+  }
+  return { result, structuredOutput, isError, timedOut, stalled, sessionId, resumeMismatch };
 }
 
 function normalizeTimeout(timeoutMs: number | undefined): number | undefined {

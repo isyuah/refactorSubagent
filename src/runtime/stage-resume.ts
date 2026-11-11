@@ -15,6 +15,7 @@ import {
   type StageFlow,
   type StageFlowResult,
   type StageName,
+  type WorkflowsStage,
 } from "./stage-flow.js";
 import {
   existingBranchPrepareStage,
@@ -117,6 +118,10 @@ export interface RefactorCheckpoint {
 const WorkflowsCheckpointData = z.object({
   entry_root: z.string().min(1).optional(),
   test_entry: z.string().min(1),
+  /** Exam source hash — the reuse guard record (baseline-observation reuse). */
+  test_source_hash: z.string().optional(),
+  /** Authoring dialogue id — the exam-repair lane's continuation handle. */
+  dialogue_id: z.string().optional(),
   workflow_id: z.string().min(1),
   workflow_revision: z.number().int().positive(),
   builds: z.array(
@@ -135,6 +140,94 @@ const RefactorCheckpointData = z.object({
   commit_sha: z.string().min(1),
   summary: z.string(),
 });
+
+/** Parsed view of a session's workflows checkpoint (paths relative to entryRoot). */
+export interface WorkflowsCheckpointView {
+  readonly testEntry: string;
+  readonly entryRoot: string | null;
+  readonly workflowId: string;
+  readonly workflowRevision: number;
+  readonly builds: readonly {
+    readonly id: string;
+    readonly entry: string;
+    readonly sourceHash: string;
+    readonly runLocal: boolean;
+  }[];
+}
+
+/** Read a session's workflows checkpoint as data (no stage built). Null when
+ *  missing or malformed — callers stop honestly instead of guessing. */
+export function loadWorkflowsCheckpointView(
+  repoPath: string,
+  sessionRoot: string,
+  sourceSessionId: string,
+): WorkflowsCheckpointView | null {
+  let checkpoints: readonly StageCheckpoint[];
+  try {
+    const store = SessionStore.open(sessionRoot, sourceSessionId);
+    const loaded = loadStageCheckpoints(store.sessionDir);
+    if (loaded.error !== null) return null;
+    checkpoints = loaded.checkpoints;
+  } catch {
+    return null;
+  }
+  const entry = checkpointOf(checkpoints, "workflows");
+  if (entry === null) return null;
+  const parsed = WorkflowsCheckpointData.safeParse(entry.data);
+  if (!parsed.success) return null;
+  return {
+    testEntry: parsed.data.test_entry,
+    entryRoot: parsed.data.entry_root ?? null,
+    workflowId: parsed.data.workflow_id,
+    workflowRevision: parsed.data.workflow_revision,
+    builds: parsed.data.builds.map((build) => ({
+      id: build.id,
+      entry: build.entry,
+      sourceHash: build.source_hash,
+      runLocal: build.run_local,
+    })),
+  };
+}
+
+/**
+ * Rebuild the PINNED workflows stage from a session's workflows checkpoint —
+ * the same exam the source run used. Auto-retry needs this: every retry round
+ * must run the identical test workflow, otherwise two rounds' failure
+ * signatures are not comparable and loop detection breaks down.
+ *
+ * Returns null when the checkpoint is missing, malformed, or its sources no
+ * longer verify on disk — the caller then falls back to its own stage source.
+ */
+export function loadReusableWorkflowsStage(
+  repoPath: string,
+  sessionRoot: string,
+  sourceSessionId: string,
+): WorkflowsStage | null {
+  let checkpoints: readonly StageCheckpoint[];
+  try {
+    const store = SessionStore.open(sessionRoot, sourceSessionId);
+    const loaded = loadStageCheckpoints(store.sessionDir);
+    if (loaded.error !== null) return null;
+    checkpoints = loaded.checkpoints;
+  } catch {
+    // The whole session archive is gone (deleted/cleaned) — nothing to pin.
+    return null;
+  }
+  const entry = checkpointOf(checkpoints, "workflows");
+  if (entry === null) return null;
+  const parsed = WorkflowsCheckpointData.safeParse(entry.data);
+  if (!parsed.success) return null;
+  const entryRoot = parsed.data.entry_root ?? repoPath;
+  const sources = [parsed.data.test_entry, ...parsed.data.builds.map((b) => b.entry)];
+  if (sources.some((source) => !existsSync(join(entryRoot, source)))) return null;
+  return presetWorkflowsStage({
+    builds: parsed.data.builds.map((b) => ({ id: b.id, entry: b.entry, runLocal: b.run_local })),
+    testEntry: parsed.data.test_entry,
+    workflowId: parsed.data.workflow_id,
+    revision: parsed.data.workflow_revision,
+    ...(parsed.data.entry_root !== undefined ? { entryRoot: parsed.data.entry_root } : {}),
+  });
+}
 
 /**
  * Decide what the resume can reuse, WITHOUT executing anything. Throws only

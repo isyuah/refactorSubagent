@@ -37,7 +37,7 @@ export async function runRefactor(
     readonly logger?: Logger;
     readonly sessionStore?: SessionStore;
   },
-): Promise<{ summary: string }> {
+): Promise<{ summary: string; dialogueId?: string }> {
   const limits = sessionHooks?.limits ?? DEFAULT_LIMITS.sessions.refactor;
   const run = await runAgent({
     cwd: worktreeDir,
@@ -60,5 +60,11 @@ export async function runRefactor(
       detail: { is_error: true, timed_out: run.timedOut, stalled: run.stalled === true },
     });
   }
-  return { summary: run.result };
+  // The conversation id lets the feedback loop continue THIS dialogue after a
+  // failed verification instead of paying for a fresh session to re-read the
+  // project (the continuation carries the full authoring context).
+  return {
+    summary: run.result,
+    ...(run.sessionId !== undefined ? { dialogueId: run.sessionId } : {}),
+  };
 }
