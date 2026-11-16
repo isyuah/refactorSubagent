@@ -1,6 +1,8 @@
 import type { VerificationAnalysis } from "../agents/verification-analysis.js";
 import type { FailureReport, HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import type { Limits } from "../config/limits.js";
+import type { FeedbackUpdate } from "./feedback/types.js";
+import type { FeedbackReport } from "./feedback/progress.js";
 import type { Pipeline } from "../config/pipeline.js";
 
 export interface RunConfiguration {
@@ -17,7 +19,7 @@ export interface WorkspaceSummary {
 
 export type Side = "baseline" | "candidate";
 export type RunStage = "preflight" | "workflows" | "prepare" | "refactor" | "verify" | "cleanup";
-export type ExecutionStatus = "running" | "pass" | "failed" | "not-run";
+export type ExecutionStatus = "running" | "pass" | "failed" | "not-run" | "reused";
 export interface ExecutionContext {
   readonly side: Side;
   readonly build_id?: string;
@@ -62,6 +64,7 @@ export interface CandidateSummary {
   readonly changed_files: readonly string[];
 }
 export type ProgressUpdate = (
+  | { readonly type: "feedback"; readonly feedback: FeedbackUpdate }
   | { readonly type: "phase"; readonly name: string }
   | { readonly type: "resume"; readonly source_session: string; readonly reused_stages: readonly RunStage[] }
   | { readonly type: "stage"; readonly name: RunStage; readonly action: "start" | "end"; readonly failed?: boolean }
@@ -138,6 +141,7 @@ export interface RunReport {
   readonly cost_usd: number | null;
   readonly log_dir: string;
   readonly report_path: string;
+  readonly feedback?: FeedbackReport;
 }
 
 /** One consumer for both the live terminal and the durable final report. */

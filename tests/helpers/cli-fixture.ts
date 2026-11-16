@@ -66,7 +66,7 @@ export function cliFixture(scenario: CliScenario, parent = tmpdir()) {
     refactor: { mode: "patch", patchFile: patch },
   } }));
   return { root, repo, sessionRoot, pipeline,
-    args: ["run", repo, "--task", "离线验证 CLI 信息展示", "--session", `fixture-${scenario}`, "--session-root", sessionRoot, "--pipeline-file", pipeline],
+    args: ["run", repo, "--task", "离线验证 CLI 信息展示", "--session", `fixture-${scenario}`, "--session-root", sessionRoot, "--pipeline-file", pipeline, "--auto-retry", "0"],
     original: () => readFileSync(join(repo, "main.c"), "utf8"),
   };
 }

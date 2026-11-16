@@ -307,4 +307,39 @@ describe("CLI progress and report contracts", () => {
     // Display-only text does not unexpectedly enlarge the durable info log.
     expect(readFileSync(join(logger.runDir, "run.jsonl"), "utf8")).not.toContain("visible without trace");
   });
+  test("feedback rounds keep repair counts, clear old activity, and honor JSON silence", () => {
+    let clock = 0;
+    const live = display({ progress: "auto", color: true, env: {}, now: () => clock }, true);
+    const json = display({ format: "json", progress: "auto" });
+    const updates: ProgressUpdate[] = [
+      { type: "feedback", feedback: { action: "start", owner_session: "original", resumed_from: "aborted", budget_total: 3, budget_used: 1, state_dir: "evidence/feedback" } },
+      { type: "feedback", feedback: { action: "round-start", round: 5, session: "resumed", repair: null } },
+      { type: "agent-tool", action: "start", id: "unfinished", agent_id: "old", role: "test-writer", name: "Read", target: "unfinished.c" },
+      { type: "feedback", feedback: { action: "round-end", round: 5, session: "resumed", state: "REJECTED", reason: "output differs", log_dir: "evidence/resumed" } },
+      { type: "feedback", feedback: { action: "repair-start", round: 6, session: "resumed-fb6", lane: "refactor", evidence: { summary: "REJECTED", mismatches: [{ name: "output", reason: "differs" }] }, budget_total: 3, budget_used: 2, dialogue_id: "old-dialogue", reuse_baseline: true } },
+      { type: "feedback", feedback: { action: "round-start", round: 6, session: "resumed-fb6", repair: "refactor" } },
+      { type: "phase", name: "WORKFLOW_SESSION" },
+      { type: "log", level: "info", message: "heartbeat", heartbeat: true },
+    ];
+    for (const [index, update] of updates.entries()) {
+      clock = index * 1000;
+      live.renderer.receive(event(update, clock)); json.renderer.receive(event(update, clock));
+    }
+    clock += 10_000;
+    live.renderer.tick();
+    const text = stripVTControlCharacters(live.text());
+    expect(text).toContain("1/3");
+    expect(text).toContain("2/3");
+    expect(text).toContain("第 6 轮");
+    expect(text).toContain("继续原重构对话");
+    expect(text).toContain("原版构建与测试观测复用");
+    expect(text).toContain("未收到完成结果");
+    const status = stripVTControlCharacters(live.chunks.at(-1)!);
+    expect(status).toContain("无活动 11.0s");
+    expect(status).not.toContain("当前: 读取文件");
+    expect(json.text()).toBe("");
+    live.renderer.interrupt("SIGINT"); json.renderer.stop();
+    expect(stripVTControlCharacters(live.text())).toContain("收到 SIGINT");
+  });
+
 });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -89,6 +89,34 @@ describe("LocalDependencyRegistry.generate", () => {
     await restored.generate(input);
     expect((await restored.resolveBuildEntry(first.workflowId))?.entry).toBe(entry);
     expect(readVerificationMaterials(entry)).toHaveLength(1);
+  });
+
+  test("adopted builds from an earlier round resolve without their own session dir", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rfr-depreg-adopt-"));
+    const sessionRoot = mkdtempSync(join(tmpdir(), "rfr-depreg-adopt-sess-"));
+    try {
+      // The earlier round's build file lives under the OLD session's run dir;
+      // the repair round's registry (new session id) adopts it explicitly.
+      const oldEntry = join(root, ".refactor", "runs", "round-1", "workflows", "build", "app-original-run.ts");
+      mkdirSync(join(oldEntry, ".."), { recursive: true });
+      writeFileSync(oldEntry, VALID_BUILD_SOURCE);
+      const reg = new LocalDependencyRegistry({
+        workspaceRoot: root,
+        sessionRoot,
+        sessionId: "round-2",
+        adoptBuilds: [{ id: "app-original-run", entry: oldEntry }],
+      });
+      expect((await reg.knownBuildIds()).includes("app-original-run")).toBe(true);
+      const resolved = await reg.resolveBuildEntry("app-original-run");
+      expect(resolved?.entry).toBe(oldEntry);
+      // A fresh registry WITHOUT adoption still cannot see it (the honest
+      // default the fix replaced).
+      const blind = new LocalDependencyRegistry({ workspaceRoot: root, sessionRoot, sessionId: "round-2" });
+      expect(await blind.resolveBuildEntry("app-original-run")).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(sessionRoot, { recursive: true, force: true });
+    }
   });
 
   test("auxiliary inputs and host-computed hashes survive a registry restart", async () => {

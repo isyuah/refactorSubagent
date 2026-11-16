@@ -1,5 +1,6 @@
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { CliFormat, CliProgress, CliVerbosity } from "./args.js";
+import type { FeedbackLane, FeedbackStopReason, FeedbackUpdate } from "../runtime/feedback/types.js";
 import type { Limits } from "../config/limits.js";
 import type { ExecutionContext, RunProgressEvent, RunReport } from "../runtime/progress.js";
 import type { Pipeline } from "../config/pipeline.js";
@@ -34,6 +35,7 @@ export interface RunStartup {
   readonly limits: Limits;
   readonly limit_sources: readonly string[];
   readonly limit_overrides?: readonly string[];
+  readonly auto_retry?: number;
 }
 
 const PHASES: Readonly<Record<string, string>> = {
@@ -42,6 +44,8 @@ const PHASES: Readonly<Record<string, string>> = {
   BASELINE_BUILD: "构建原版", CANDIDATE_BUILD: "构建候选版",
   BASELINE_TEST_WORKFLOW: "测试原版", CANDIDATE_TEST_WORKFLOW: "测试候选版",
   BASELINE_CTEST: "原版 CTest", CANDIDATE_CTEST: "候选版 CTest",
+  BUILD_REPAIR: "修复构建方案", FEEDBACK_REFACTOR: "修复候选代码", FEEDBACK_TEST: "修复测试脚本",
+  FEEDBACK_BUILD: "修复构建方案", FEEDBACK_DONE: "运行结束",
   COMPARISON: "比较两侧结果", CLEANUP: "清理工作目录与保存结果",
 };
 const STAGES: Readonly<Record<string, string>> = {
@@ -52,7 +56,15 @@ const STRATEGIES: Readonly<Record<string, string>> = {
   "reuse-existing": "复用现有产物或测试", "library-consumer": "编写库调用程序",
   "source-harness": "编写独立辅助程序", undetermined: "尚未确定",
 };
-const ROLES: Readonly<Record<string, string>> = { "test-writer": "测试编写", "build-writer": "构建编写", refactor: "代码重构", "source-repair": "脚本策略修复" };
+const ROLES: Readonly<Record<string, string>> = { "test-writer": "测试编写", "build-writer": "构建编写", refactor: "代码重构", "source-repair": "脚本策略修复", "build-repair": "构建方案修复" };
+
+const REPAIR_LABELS: Readonly<Record<FeedbackLane, string>> = { refactor: "候选代码修复", test: "测试脚本修复", build: "构建方案修复" };
+const FEEDBACK_STOPS: Readonly<Record<FeedbackStopReason | "finalization-error", string>> = {
+  accepted: "验证通过", "budget-exhausted": "已达到自动修复次数上限", "no-progress": "连续两轮的方案或代码及失败原因相同，停止重复修复",
+  "routed-stop": "当前问题无法自动修复", "repair-failed": "未获得可用的修复方案",
+  "missing-dialogue": "缺少原 AI 对话，无法继续修复", "missing-patch": "缺少可继续使用的候选代码或验证方案",
+  "missing-input": "缺少修复所需的信息", "finalization-error": "结果保存或清理失败，已保留验证结论",
+};
 
 export function duration(ms: number): string {
   if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
@@ -109,6 +121,11 @@ export class RunDisplay {
   private closed = false;
   private interrupted = false;
   private logDir = "";
+  private logRoot = "";
+  private round: number | null = null;
+  private repair: FeedbackLane | null = null;
+  private repairsUsed = 0;
+  private repairBudget = 0;
   private readonly pending = new Map<string, string>();
   private readonly tails = new Map<string, string>();
   private readonly reusedStages = new Set<string>();
@@ -127,6 +144,7 @@ export class RunDisplay {
 
   start(input: RunStartup): void {
     this.logDir = input.log_dir;
+    this.logRoot = dirname(input.log_dir);
     if (!this.enabled) return;
     this.line(styled("开始运行", "heading"));
     this.lines([field("任务", input.task), field("仓库", input.repo), field("会话", input.session),
@@ -136,6 +154,7 @@ export class RunDisplay {
     this.line(...field("限制配置来源", input.limit_sources.join(", ") || "内置默认"));
     if (input.limit_overrides?.length) this.line(...field("命令行限制覆盖", input.limit_overrides.join("; ")));
     this.lines(limitLines(input.limits));
+    if (input.auto_retry !== undefined) this.line(...field("自动修复上限", input.auto_retry === 0 ? "关闭（只执行，不自动修复）" : `${input.auto_retry} 次；首次执行不计入，恢复时继承已用次数`));
     this.timer = setInterval(() => this.tick(), this.animated ? 1000 : 10_000);
     this.timer.unref();
   }
@@ -148,6 +167,7 @@ export class RunDisplay {
         !(event.type === "agent-activity" && event.heartbeat)) this.lastActivity = event.elapsed_ms;
     const label = styled(`[${duration(event.elapsed_ms)}]`, "muted");
     switch (event.type) {
+      case "feedback": this.feedbackEvent(event.feedback, event.elapsed_ms); break;
       case "resume":
         for (const stage of event.reused_stages) this.reusedStages.add(stage);
         this.line(label, " ", ...field("恢复自会话", event.source_session));
@@ -224,12 +244,13 @@ export class RunDisplay {
     const tool = [...this.activeTools.values()].at(-1);
     const activity: TextPart[] = tool ? [" | ", styled(`当前: ${toolPresentation(tool.name).label}`, "accent"),
       this.activeTools.size > 1 ? `（另 ${this.activeTools.size - 1} 项）` : ""] : [];
-    const parts = [styled(`状态: ${phase}`, "heading"), ...activity, ` | 总耗时 ${duration(elapsed)} | 阶段 ${duration(elapsed - this.phaseStarted)} | 无活动 ${duration(elapsed - this.lastActivity)}`];
+    const round = this.round === null ? "" : `第 ${this.round} 轮 · 修复 ${this.repairsUsed}/${this.repairBudget} · `;
+    const parts = [styled(`状态: ${round}${phase}`, "heading"), ...activity, ` | 总耗时 ${duration(elapsed)} | 阶段 ${duration(elapsed - this.phaseStarted)} | 无活动 ${duration(elapsed - this.lastActivity)}`];
     if (!this.animated) { this.line(...parts); return; }
     this.clearStatus();
     // Unicode grapheme boundaries and display cells keep long CJK labels from wrapping.
     const cells = Math.max(1, (this.output.columns ?? 80) - 1);
-    const compact = [styled(fitTerminal(phase, 10), "heading"),
+    const compact = [styled(`${this.round === null ? "" : `第${this.round}轮 ${this.repairsUsed}/${this.repairBudget} `}${fitTerminal(phase, 10)}`, "heading"),
       ...(tool ? [" | ", styled(fitTerminal(toolPresentation(tool.name).label, 12), "accent"), this.activeTools.size > 1 ? ` +${this.activeTools.size - 1}` : ""] : []),
       ` | 总 ${duration(elapsed)} | 阶段 ${duration(elapsed - this.phaseStarted)} | 无活动 ${duration(elapsed - this.lastActivity)}`];
     const plain = new TerminalStyle().render(parts);
@@ -247,9 +268,7 @@ export class RunDisplay {
     }
     this.pending.clear();
     const elapsed = this.currentElapsed();
-    for (const tool of this.activeTools.values()) this.toolLine(tool, this.interrupted ? "已中断；未收到完成结果" : "未收到完成结果",
-      "warning", elapsed, ` · 已等待 ${duration(elapsed - tool.elapsed_ms)}`);
-    this.activeTools.clear();
+    this.finishTools(elapsed);
     this.completedTools.clear();
     this.tails.clear();
     this.closed = true;
@@ -266,6 +285,9 @@ export class RunDisplay {
     if (this.hasStatus) { this.write("\r\u001b[2K"); this.hasStatus = false; }
   }
   private phaseLabel(name: string): string {
+    if (name === "WORKFLOW_SESSION" && this.repair === "test") return "修复测试脚本并重新校验";
+    if (name === "REFACTOR" && this.repair === "refactor") return "修复候选代码";
+    if (name === "PREPARE" && this.repair !== null) return "从已有候选分支准备工作目录";
     if (name === "WORKFLOW_SESSION" && this.reusedStages.has("workflows")) return "复用验证脚本并重新校验";
     if (name === "REFACTOR" && this.reusedStages.has("refactor")) return "复用已保存的候选改动";
     return PHASES[name] ?? name;
@@ -274,6 +296,78 @@ export class RunDisplay {
   private lines(lines: readonly TextLine[]): void { for (const line of lines) this.line(...line); }
   private line(...parts: TextPart[]): void { this.clearStatus(); this.write(`${this.style.render(parts)}\n`); }
   private write(text: string): void { this.output.write(text); }
+  private finishTools(elapsed: number): void {
+    for (const tool of this.activeTools.values()) this.toolLine(tool, this.interrupted ? "已中断；未收到完成结果" : "未收到完成结果",
+      "warning", elapsed, ` · 已等待 ${duration(elapsed - tool.elapsed_ms)}`);
+    this.activeTools.clear();
+  }
+  private feedbackEvent(update: FeedbackUpdate, elapsed: number): void {
+    const label = styled(`[${duration(elapsed)}]`, "muted");
+    switch (update.action) {
+      case "start":
+        this.repairsUsed = update.budget_used;
+        this.repairBudget = update.budget_total;
+        this.line(label, " ", ...field("自动修复", `${update.budget_used}/${update.budget_total} 次已用${update.budget_total === 0 ? "（已关闭）" : ""}`));
+        if (update.resumed_from) this.line(...field("恢复运行", `从 ${update.resumed_from} 继续，已用修复次数 ${update.budget_used} 次；原运行 ${update.owner_session}`));
+        this.line(...field("反馈记录", update.state_dir));
+        break;
+      case "round-start":
+        this.finishTools(elapsed);
+        this.round = update.round;
+        this.repair = update.repair;
+        this.logDir = join(this.logRoot, update.session);
+        this.reusedStages.clear();
+        if (update.repair === "refactor" || update.repair === "build") this.reusedStages.add("workflows");
+        if (update.repair === "test" || update.repair === "build") this.reusedStages.add("refactor");
+        this.phase = "INIT";
+        this.phaseStarted = elapsed;
+        this.line(label, " ", styled(`第 ${update.round} 轮${update.repair ? "重新执行" : "执行"}`, "heading"),
+          " · ", styled(update.session, "muted"));
+        this.line(...field("本轮结果目录", this.logDir));
+        break;
+      case "round-end":
+        this.finishTools(elapsed);
+        this.line(label, " ", styled(`第 ${update.round} 轮结果: `, "accent"), styled(update.state, statusTone(update.state)));
+        if (update.reason) this.line(...field("原因", update.reason, update.state === "ACCEPTED" ? "success" : "warning"));
+        break;
+      case "repair-start": {
+        this.round = update.round;
+        this.repair = update.lane;
+        this.repairsUsed = update.budget_used;
+        this.repairBudget = update.budget_total;
+        this.phase = `FEEDBACK_${update.lane.toUpperCase()}`;
+        this.phaseStarted = elapsed;
+        if (update.lane === "build") this.logDir = join(this.logRoot, `${update.session}-bw`);
+        this.line(label, " ", styled(`自动修复 ${update.budget_used}/${update.budget_total}`, "heading"), " · ", styled(REPAIR_LABELS[update.lane], "agent"));
+        this.line(...field("失败原因", update.evidence.summary === "REJECTED" ? "候选版与原版的行为不一致" : update.evidence.summary, "warning"));
+        if (update.evidence.side) this.line(...field("发生位置", update.evidence.side === "baseline" ? "原版" : "候选版"), update.evidence.buildId ? ` · 构建 ${update.evidence.buildId}` : "");
+        if (update.evidence.mismatches?.length) this.line(...field("失配检查项", String(update.evidence.mismatches.length), "error"));
+        if (update.dialogue_id) this.line(styled("AI 对话: ", "agent"), "继续原", update.lane === "refactor" ? "重构" : "测试编写", "对话 · ", styled(update.dialogue_id.slice(0, 12), "muted"));
+        else this.line(styled("AI 对话: ", "agent"), "新建构建方案修复会话");
+        const plan = update.lane === "refactor"
+          ? `保留构建与测试方案；修复候选代码后重新构建、测试候选版并比较；${update.reuse_baseline ? "原版构建与测试观测复用" : "原版构建与测试重新执行"}`
+          : update.lane === "test"
+            ? "保留候选代码；修复测试脚本后重新校验方案，按当前流程重新构建、测试两侧并比较"
+            : "保留候选代码与测试脚本；修复构建方案后重新构建、测试两侧并比较";
+        this.line(...field("后续执行", plan));
+        this.line(...field("剩余修复次数", String(Math.max(0, update.budget_total - update.budget_used))));
+        for (const path of update.evidence.evidencePaths ?? []) this.line(...field("失败证据", path));
+        break;
+      }
+      case "build-repaired":
+        this.line(label, " ", styled("构建方案已保存", "success"), " · ", ...field("新方案", update.build_id));
+        break;
+      case "stop":
+        this.phase = "FEEDBACK_DONE";
+        this.phaseStarted = elapsed;
+        this.repairsUsed = update.budget_used;
+        this.line(label, " ", styled("自动修复结束: ", "heading"), styled(FEEDBACK_STOPS[update.reason], update.reason === "accepted" ? "success" : "warning"),
+          ` · 已用 ${update.budget_used}/${update.budget_total} 次`);
+        if (update.detail) this.line(...field("停止说明", update.detail, "warning"));
+        break;
+    }
+  }
+
   private toolEvent(event: ToolEvent): void {
     const key = `${event.agent_id}\u0000${event.id}`;
     if (this.completedTools.has(key)) return;
@@ -374,7 +468,29 @@ export function formatRunReport(report: RunReport, verbosity: CliVerbosity, opti
     ...report.configuration.overrides.map((value) => field("命令行阶段覆盖", value)));
   lines.push(field("限制配置来源", report.limit_sources.join(", ") || "内置默认"),
     ...report.limit_overrides.map((value) => field("命令行限制覆盖", value)), ...limitLines(report.limits));
-  lines.push([styled("阶段耗时:", "heading")], ...report.stage_timings.map((stage) => ["  ", styled(`${STAGES[stage.name]}: `, "accent"),
+  if (report.feedback) {
+    const feedback = report.feedback;
+    lines.push([styled("自动修复与重新执行:", "heading")], field("已用修复次数", `${feedback.budget_used}/${feedback.budget_total}；本次新增 ${feedback.budget_used - feedback.budget_used_before} 次`),
+      field("结束原因", FEEDBACK_STOPS[feedback.stopped_because], feedback.stopped_because === "accepted" ? "success" : "warning"));
+    if (feedback.resumed_from) lines.push(field("恢复自", `${feedback.resumed_from}；继承已用次数 ${feedback.budget_used_before}`));
+    if (feedback.stop_detail) lines.push(field("停止说明", feedback.stop_detail, "warning"));
+    for (const round of feedback.rounds) {
+      lines.push([styled(`  第 ${round.round} 轮`, "accent"), ` · ${round.repair ? REPAIR_LABELS[round.repair] : feedback.resumed_from ? "恢复执行" : "首次执行"} · `,
+        styled(round.state, statusTone(round.state)), ` · ${duration(round.elapsed_ms)} · `, styled(round.session, "muted")]);
+      if (round.reason && round.state !== "ACCEPTED") lines.push(field("    原因", preview(round.reason), "warning"));
+      const buildRepair = feedback.build_repairs.find((repair) => repair.round === round.round);
+      if (buildRepair) lines.push(field("    构建方案修复", `${duration(buildRepair.elapsed_ms)}（在本轮执行前单独进行） · ${buildRepair.delivered ? "已保存方案" : "未交付方案"}`));
+      if (verbosity === "detailed") lines.push(...round.stage_timings.filter((timing) => timing.status !== "not-run")
+        .map((timing) => field(`    ${STAGES[timing.name]}`, `${statusText(timing.status)} · ${duration(timing.elapsed_ms)}`)));
+      lines.push(field("    本轮报告", round.report_path));
+    }
+    for (const repair of feedback.build_repairs) {
+      if (!feedback.rounds.some((round) => round.round === repair.round)) lines.push(field(`  第 ${repair.round} 轮构建方案修复`, `${duration(repair.elapsed_ms)} · 未进入重新验证`, "warning"));
+      lines.push(field(`  第 ${repair.round} 轮构建修复日志`, repair.log_dir));
+    }
+    lines.push(field("反馈状态与历史", feedback.state_dir));
+  }
+  lines.push([styled(report.feedback ? "最后一轮阶段耗时:" : "阶段耗时:", "heading")], ...report.stage_timings.map((stage) => ["  ", styled(`${STAGES[stage.name]}: `, "accent"),
     styled(statusText(stage.status), statusTone(stage.status)), ` · ${duration(stage.elapsed_ms)}`]));
   if (verbosity === "detailed") lines.push([styled("验证子阶段（已包含在验证总耗时内）:", "heading")], ...report.phases
     .filter((phase) => /^(BASELINE_|CANDIDATE_|COMPARISON)/.test(phase.name))
@@ -421,7 +537,7 @@ export function formatRunReport(report: RunReport, verbosity: CliVerbosity, opti
     `${agent.session_id ? ` · 会话 ${agent.session_id}` : ""}${agent.parent_id ? "（子会话，用量不重复累计）" : ""}: ${usageText(agent)}`]);
   if (report.cost_usd !== null) lines.push(field("已报告的根会话费用合计", `$${report.cost_usd.toFixed(6)}`));
   lines.push(field("log", report.log_dir), field("完整报告", report.report_path),
-    field("当前状态与中止原因", join(report.log_dir, "state.json")), field("AI 会话记录", join(report.log_dir, "sessions")));
+    field("当前状态与中止原因", join(report.log_dir, "state.json")), field("AI 会话记录", report.feedback?.dialogue_dir ?? join(report.log_dir, "sessions")));
   return lines.map((line) => style.render(line)).join("\n");
 }
 

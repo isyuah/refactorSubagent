@@ -6,6 +6,7 @@ import type { RunReport } from "../src/runtime/progress.js";
 import type { HarnessSummary } from "../testset/runner/drivers.js";
 import { cliFixture, type CliScenario } from "./helpers/cli-fixture.js";
 import { defaultPrepareStage, halt, isHalt, runStageFlow, StageFlowFinalizationError } from "../src/runtime/stage-flow.js";
+import { runFeedbackStageFlow } from "../src/runtime/feedback/run.js";
 import { buildStageFlow, resolvePipeline } from "../src/config/pipeline.js";
 import { formatRunReport } from "../src/cli/display.js";
 
@@ -42,6 +43,15 @@ describe("offline CLI run output", () => {
     }
     expect(new Set(sessions).size).toBe(2);
     expect(f.original()).toBe("int value(void) { return 1; }\n");
+    const originalReport = join(f.sessionRoot, ".refactor", "e2e", sessions[0]!, "artifacts", "run-summary.json");
+    const before = readFileSync(originalReport, "utf8");
+    const duplicate = Bun.spawn([process.execPath, cli, ...args, "--session", sessions[0]!, "--format", "json", "--progress", "off"],
+      { stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+    const [out, error, code] = await Promise.all([new Response(duplicate.stdout).text(), new Response(duplicate.stderr).text(), duplicate.exited]);
+    expect(code).toBe(1);
+    expect(out).toBe("");
+    expect(error).toContain("session exists");
+    expect(readFileSync(originalReport, "utf8")).toBe(before);
   }, 90_000);
 
   for (const cancel of [true, false]) {
@@ -146,7 +156,7 @@ describe("offline CLI run output", () => {
   test("a cleanup failure retains the gate verdict and durable evidence while still rejecting successful completion", async () => {
     const f = cliFixture("accept");
     try {
-      await runStageFlow({ repoPath: f.repo, task: "cleanup failure evidence", sessionId: "cleanup-failure", sessionRoot: f.sessionRoot,
+      await runFeedbackStageFlow({ repoPath: f.repo, task: "cleanup failure evidence", sessionId: "cleanup-failure", sessionRoot: f.sessionRoot,
         flow: { ...buildStageFlow(resolvePipeline({ repoRoot: f.repo, overrides: { files: [f.pipeline] } }).pipeline),
           prepare: async (ctx, input) => {
             const prepared = await defaultPrepareStage(ctx, input);
@@ -156,11 +166,13 @@ describe("offline CLI run output", () => {
               throw new Error("fixture cleanup failure");
             } } };
           } },
-      });
+      }, { budget: 3, resumeFrom: null });
       throw new Error("expected finalization failure");
     } catch (error) {
       if (!(error instanceof StageFlowFinalizationError)) throw error;
       expect(error.result.state).toBe("ACCEPTED");
+      expect(error.result.report.feedback?.stopped_because).toBe("finalization-error");
+      expect(error.result.report.feedback?.rounds).toHaveLength(1);
       expect(error.result.report.finalization_error).toBe("fixture cleanup failure");
       expect(error.result.report.stage_timings.find((stage) => stage.name === "cleanup")?.status).toBe("failed");
       expect(JSON.parse(readFileSync(error.result.report.report_path, "utf8"))).toEqual(error.result.report);

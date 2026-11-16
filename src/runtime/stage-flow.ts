@@ -27,7 +27,11 @@ import { StageFailureError } from "./stage-failure.js";
 import { FileSessionStore } from "./session-store.js";
 import { detectCProject } from "./project-detector.js";
 import { probeHost } from "./host-preflight.js";
-import { runWorkflowVerification, type WorkflowVerificationOutcome } from "./workflow-pipeline.js";
+import {
+  runWorkflowVerification,
+  type WorkflowVerificationOutcome,
+  type WorkflowVerificationRequest,
+} from "./workflow-pipeline.js";
 import { applyInjections, type InjectionSpec } from "./inject.js";
 import { TrackedRepositoryGuard, type IntegrityInput } from "./verification-integrity.js";
 import {
@@ -149,6 +153,8 @@ export interface StageFlowRequest {
    */
   readonly injections?: readonly InjectionSpec[];
   readonly sessionId: string;
+  /** Shared AI transcript directory for all rounds of one feedback run. */
+  readonly dialogueRoot?: string;
   /** CLI layers on top of the user/project config files (see config/limits). */
   readonly limitOverrides?: LayerOverrides;
   readonly knownEnvironmentPatterns?: readonly RegExp[];
@@ -198,6 +204,17 @@ export interface StageFlowResult {
   readonly store: SessionStore;
   readonly state: string;
   readonly refactorSummary: string;
+  /** SDK conversation id of the refactor dialogue (null when the flow never
+   *  reached a refactor session or the session reported none). The feedback
+   *  loop continues this conversation on repair rounds. */
+  readonly refactorDialogueId: string | null;
+  /** SDK conversation id of the test-writer dialogue (null when the flow never
+   *  reached an authoring session or it reported none). The feedback loop
+   *  continues this conversation on exam-repair rounds. */
+  readonly workflowsDialogueId: string | null;
+  /** Host-measured candidate facts (null before the refactor commit). Repair
+   *  rounds rebuild from this branch and base. */
+  readonly patch: PatchFacts | null;
   readonly declared: DeclaredAgentResolution | null;
   readonly verification: WorkflowVerificationOutcome | null;
   readonly provenance: StageProvenance;
@@ -240,6 +257,9 @@ export interface WorkflowsOutcome {
   /** Root the declared entries were resolved against and must stay inside.
    *  Defaults to the repository when the stage does not say otherwise. */
   readonly entryRoot?: string;
+  /** SDK conversation id of the authoring dialogue; the feedback loop
+   *  continues THIS conversation when the exam needs a script repair. */
+  readonly dialogueId?: string;
 }
 
 /** Branch + worktree pair the refactor stage edits and verification measures. */
@@ -251,6 +271,10 @@ export interface CandidateWorkspace {
 
 export interface RefactorOutcome {
   readonly summary: string;
+  /** SDK conversation id of the refactor dialogue; the feedback loop
+   *  continues THIS conversation on repair rounds instead of paying for a
+   *  fresh session to re-read the whole project. */
+  readonly dialogueId?: string;
 }
 
 /** Host-measured candidate facts handed to the verification stage. */
@@ -304,15 +328,18 @@ export interface StageFlow {
   readonly verify?: VerifyStage;
 }
 
+const hostVerificationStages = new WeakSet<VerifyStage>();
+
 /**
  * Run one complete pipeline: the host composes the stages, owns the state
  * machine, and measures everything that a verdict depends on.
  */
 export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResult> {
   const flow = req.flow ?? {};
+  const authoritativeVerify = flow.verify === undefined || hostVerificationStages.has(flow.verify);
   const provenance: StageProvenance = {
-    injected: STAGE_NAMES.filter((name) => flow[name] !== undefined),
-    verification_authoritative: flow.verify === undefined,
+    injected: STAGE_NAMES.filter((name) => name === "verify" ? !authoritativeVerify : flow[name] !== undefined),
+    verification_authoritative: authoritativeVerify,
     ...(req.resume !== undefined
       ? {
           resume: {
@@ -347,7 +374,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
   // under the run dir so slow runs can be analyzed at full fidelity without
   // raising the run.jsonl log level. One adapter per run; the SDK key is
   // {projectKey, sessionId} so each session lands in its own file.
-  const sessionStore = new FileSessionStore(logger.runDir);
+  const sessionStore = new FileSessionStore(req.dialogueRoot ?? logger.runDir);
   const ctx: StageContext = {
     repoPath: req.repoPath,
     task: req.task,
@@ -365,6 +392,9 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
   let declared: DeclaredAgentResolution | null = null;
   let verification: WorkflowVerificationOutcome | null = null;
   let refactorSummary = "";
+  let refactorDialogueId: string | null = null;
+  let workflowsDialogueId: string | null = null;
+  let measuredPatch: PatchFacts | null = null;
   let worktrees: WorktreePair | null = null;
   // The catch-all attributes a thrown error to the stage in progress; halts
   // carry their own stage at the call site.
@@ -372,7 +402,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
   // Stage-completion facts for resume; rewritten after each completed stage.
   const checkpoints: StageCheckpoint[] = [];
   const done = (): Omit<StageFlowResult, "report"> =>
-    result(store, logger, declared, verification, refactorSummary, provenance);
+    result(store, logger, declared, verification, refactorSummary, refactorDialogueId, workflowsDialogueId, measuredPatch, provenance);
 
   const execute = async (): Promise<Omit<StageFlowResult, "report">> => {
     try {
@@ -418,6 +448,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
         return done();
       }
       declared = workflows.declared;
+      if (workflows.dialogueId !== undefined) workflowsDialogueId = workflows.dialogueId;
       checkpoints.push({ stage: "workflows", at: now(), data: workflowsCheckpointData(req.repoPath, workflows) });
       saveStageCheckpoints(store, checkpoints);
 
@@ -447,6 +478,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
         return done();
       }
       refactorSummary = refactored.summary;
+      if (refactored.dialogueId !== undefined) refactorDialogueId = refactored.dialogueId;
       logger.artifact("refactor-summary.json", { summary: refactored.summary });
       logger.info("refactor stage completed", { stage_source: flow.refactor === undefined ? "agent" : "injected" });
 
@@ -470,10 +502,12 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
         changed_files: changedFiles,
         summary: summaryLine.slice(0, 500),
       };
+      measuredPatch = patch;
       logger.artifact("patch-candidate.json", patch);
       logger.progress({ type: "candidate", candidate: patch });
       // Refactor checkpoint: written only after the host measured the commit,
-      // so a resume never replays an unmeasured half-state.
+      // so a resume never replays an unmeasured half-state. The dialogue id
+      // rides along so a feedback round can continue the SAME conversation.
       checkpoints.push({
         stage: "refactor",
         at: now(),
@@ -482,6 +516,7 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
           base_sha: patch.base_sha,
           commit_sha: patch.commit_sha,
           summary: patch.summary,
+          ...(refactorDialogueId !== null ? { dialogue_id: refactorDialogueId } : {}),
         },
       });
       saveStageCheckpoints(store, checkpoints);
@@ -639,8 +674,9 @@ export const defaultWorkflowsStage: WorkflowsStage = async (ctx, input) => {
   ctx.logger.startHeartbeat(5_000);
   const sessionStarted = performance.now();
   let declared: DeclaredAgentResolution;
+  let testWriterDialogueId: string | undefined;
   try {
-    declared = await runDeclaredResolution({
+    const authored = await runDeclaredResolution({
       repoDir: ctx.repoPath,
       sessionRoot: ctx.store.sessionDir,
       sessionId: ctx.sessionId,
@@ -652,6 +688,8 @@ export const defaultWorkflowsStage: WorkflowsStage = async (ctx, input) => {
       limits: ctx.limits.sessions.testWriter,
       policyRepairs: ctx.limits.stages.policyRepairs,
     });
+    declared = authored.resolution;
+    testWriterDialogueId = authored.dialogueId;
   } finally {
     ctx.logger.stopHeartbeat();
   }
@@ -667,8 +705,65 @@ export const defaultWorkflowsStage: WorkflowsStage = async (ctx, input) => {
     test_entry: declared.testResolution.entry,
     test_id: declared.workflowId,
   });
-  return { declared };
+  return {
+    declared,
+    ...(testWriterDialogueId !== undefined ? { dialogueId: testWriterDialogueId } : {}),
+  };
 };
+
+/**
+ * A workflows stage that CONTINUES the round-1 authoring conversation with
+ * failure feedback (exam script-repair lane). Deliverable gates inside the
+ * session machinery apply unchanged; the exam is re-authored at the SAME
+ * round-1 path so both sides of the repair round run one identical new exam.
+ */
+export function continuedWorkflowsStage(spec: {
+  readonly dialogueId: string;
+  readonly feedback: string;
+  readonly testEntry: string;
+  /** Round 1's e2e dir — the resume reads the authoring conversation from
+   *  the store it was persisted to. */
+  readonly dialogueRoot: string;
+  /** Effective-plan builds (absolute entries) adopted into this round's
+   *  registry, so a re-declared dependency set keeps resolving them. */
+  readonly adoptBuilds?: readonly { readonly id: string; readonly entry: string }[];
+}): WorkflowsStage {
+  return async (ctx, input) => {
+    ctx.logger.info("continuing test-writer dialogue with failure feedback");
+    ctx.logger.startHeartbeat(5_000);
+    let declared: DeclaredAgentResolution;
+    let dialogueId: string | undefined;
+    try {
+      const authored = await runDeclaredResolution({
+        repoDir: ctx.repoPath,
+        sessionRoot: ctx.store.sessionDir,
+        sessionId: ctx.sessionId,
+        task: ctx.task,
+        host: input.preflight.host,
+        project: input.preflight.project,
+        logger: ctx.logger,
+        sessionStore: ctx.sessionStore,
+        limits: ctx.limits.sessions.testWriter,
+        policyRepairs: ctx.limits.stages.policyRepairs,
+        testEntryOverride: spec.testEntry,
+        resume: { dialogueId: spec.dialogueId, feedback: spec.feedback },
+        resumeStoreRoot: spec.dialogueRoot,
+        ...(spec.adoptBuilds !== undefined ? { adoptBuilds: spec.adoptBuilds } : {}),
+      });
+      declared = authored.resolution;
+      dialogueId = authored.dialogueId;
+    } finally {
+      ctx.logger.stopHeartbeat();
+    }
+    ctx.logger.artifact("declared-build-set.json", declared.declaredSet);
+    ctx.logger.artifact("workflow-resolution-test.json", declared.testResolution);
+    ctx.logger.artifact("test-workflow.json", { kind: "test-workflow-source", source: declared.testSource });
+    return {
+      declared,
+      ...(dialogueId !== undefined ? { dialogueId } : {}),
+    };
+  };
+}
 
 /** Host default: create the candidate branch and both worktrees. */
 export const defaultPrepareStage: PrepareStage = async (ctx) => {
@@ -706,14 +801,46 @@ export const defaultRefactorStage: RefactorStage = async (ctx, input) => {
     }),
   );
   ctx.logger.info("Claude refactor agent completed", {});
-  return { summary: refactor.summary };
+  return {
+    summary: refactor.summary,
+    ...(refactor.dialogueId !== undefined ? { dialogueId: refactor.dialogueId } : {}),
+  };
 };
 
 /** Host default: differential build + test execution and the verdict. */
 export const defaultVerifyStage: VerifyStage = async (ctx, input) => {
+  return runWorkflowVerification(verifyRequestOf(ctx, input));
+};
+hostVerificationStages.add(defaultVerifyStage);
+
+/**
+ * A verify stage variant for feedback repair rounds: identical to the
+ * default, plus optional baseline-observation reuse. The caller is
+ * responsible for the reuse guards (the coordinator checks them); the
+ * pipeline itself re-validates and re-submits every artifact either way.
+ */
+export function verifyStageWithReuse(options: {
+  reusedBaseline?: {
+    readonly expectations: readonly import("./workflow-pipeline.js").ReusedExpectation[];
+  };
+}): VerifyStage {
+  const verify: VerifyStage = async (ctx, input) => {
+    const request = verifyRequestOf(ctx, input);
+    return runWorkflowVerification({
+      ...request,
+      ...(options.reusedBaseline !== undefined
+        ? { reusedBaseline: options.reusedBaseline }
+        : {}),
+    });
+  };
+  hostVerificationStages.add(verify);
+  return verify;
+}
+
+function verifyRequestOf(ctx: StageContext, input: VerifyStageInput): WorkflowVerificationRequest {
   const { declared } = input.workflows;
   const firstBuild = declared.buildResolutions[0]!;
-  return runWorkflowVerification({
+  return {
     repoPath: ctx.repoPath,
     worktrees: input.candidate.worktrees,
     store: ctx.store,
@@ -757,8 +884,8 @@ export const defaultVerifyStage: VerifyStage = async (ctx, input) => {
     ...(ctx.knownEnvironmentPatterns !== undefined
       ? { knownEnvironmentPatterns: ctx.knownEnvironmentPatterns }
       : {}),
-  });
-};
+  };
+}
 
 /**
  * The reason recorded for the ABORTED transition. The orchestrator stores it in
@@ -872,6 +999,9 @@ function result(
   declared: DeclaredAgentResolution | null,
   verification: WorkflowVerificationOutcome | null,
   refactorSummary: string,
+  refactorDialogueId: string | null,
+  workflowsDialogueId: string | null,
+  measuredPatch: PatchFacts | null,
   provenance: StageProvenance,
 ): Omit<StageFlowResult, "report"> {
   // Read the attribution back from the store instead of threading it through
@@ -882,6 +1012,9 @@ function result(
     store,
     state: store.state,
     refactorSummary,
+    refactorDialogueId,
+    workflowsDialogueId,
+    patch: measuredPatch,
     declared,
     verification,
     provenance,
@@ -986,6 +1119,11 @@ function workflowsCheckpointData(
   return {
     entry_root: entryRoot.split("\\").join("/"),
     test_entry: relative(entryRoot, declared.testResolution.entry).split("\\").join("/"),
+    // The exam source hash is the reuse guard: a repair round may reuse the
+    // baseline observations only while this hash (plus the builds' hashes and
+    // the repo HEAD) is unchanged.
+    test_source_hash: declared.testResolution.sourceHash,
+    ...(outcome.dialogueId !== undefined ? { dialogue_id: outcome.dialogueId } : {}),
     workflow_id: declared.workflowId,
     workflow_revision: declared.workflowRevision,
     builds: declared.declaredSet.builds.map((b) => ({
@@ -993,6 +1131,7 @@ function workflowsCheckpointData(
       entry: relative(entryRoot, join(repoPath, b.entry)).split("\\").join("/"),
       source_hash: b.source_hash,
       run_local: b.run_local,
+      materials: b.materials ?? [],
     })),
   };
 }
@@ -1054,9 +1193,24 @@ async function runDeclaredResolution(options: {
   readonly limits: SessionLimits;
   /** Rewrite sessions allowed per rejected workflow source. */
   readonly policyRepairs: number;
-}): Promise<DeclaredAgentResolution> {
+  /** Absolute TestWorkflow entry override (feedback repair rounds keep the
+   *  round-1 exam path; default = this session's own run dir). */
+  readonly testEntryOverride?: string;
+  /** Continue a prior authoring conversation (exam script repair lane). */
+  readonly resume?: {
+    readonly dialogueId: string;
+    readonly feedback: string;
+  };
+  /** Session-store override for resume: the continuation must read the
+   *  conversation from the store root it was persisted to (round 1's e2e
+   *  dir), not this round's own store. */
+  readonly resumeStoreRoot?: string;
+  /** Builds from the effective plan (earlier rounds of this run, absolute
+   *  entries) — adopted read-only so exam repairs keep resolving them. */
+  readonly adoptBuilds?: readonly { readonly id: string; readonly entry: string }[];
+}): Promise<{ resolution: DeclaredAgentResolution; dialogueId?: string }> {
   const testRelDir = join(".refactor", "runs", options.sessionId, "workflows", "test");
-  const testEntry = join(options.repoDir, testRelDir, "test-workflow.ts");
+  const testEntry = options.testEntryOverride ?? join(options.repoDir, testRelDir, "test-workflow.ts");
   const session = await runWorkflowSession({
     repoDir: options.repoDir,
     sessionRoot: options.sessionRoot,
@@ -1066,8 +1220,12 @@ async function runDeclaredResolution(options: {
     host: options.host,
     project: options.project,
     logger: options.logger,
-    sessionStore: options.sessionStore,
+    sessionStore: options.resumeStoreRoot !== undefined
+      ? new FileSessionStore(options.resumeStoreRoot)
+      : options.sessionStore,
     limits: options.limits,
+    ...(options.resume !== undefined ? { resume: options.resume } : {}),
+    adoptBuilds: options.adoptBuilds,
   });
   if (!session.ok) {
     const f = asWorkflowSessionFailure(session.failure);
@@ -1088,13 +1246,16 @@ async function runDeclaredResolution(options: {
   });
 
   // Rebuild the registry (run-local files restored from disk) to resolve
-  // declared build ids to their workflow entries.
+  // declared build ids to their workflow entries. Adopted builds carry the
+  // effective plan's earlier-round builds into repair rounds (their files
+  // live under ANOTHER session's run dir and never reached the library).
   const registry = new LocalDependencyRegistry({
     workspaceRoot: options.repoDir,
     sessionRoot: options.sessionRoot,
     sessionId: options.sessionId,
     host: options.host,
     project: options.project,
+    ...(options.adoptBuilds !== undefined ? { adoptBuilds: options.adoptBuilds } : {}),
   });
   const buildSources: { id: string; entry: string; runLocal: boolean }[] = [];
   for (const id of session.declaredBuilds) {
@@ -1152,7 +1313,7 @@ async function runDeclaredResolution(options: {
     });
   }
 
-  return buildDeclaredResolution({
+  const resolution = buildDeclaredResolution({
     repoDir: options.repoDir,
     testEntry,
     workflowId: `test-${options.sessionId}`,
@@ -1160,6 +1321,10 @@ async function runDeclaredResolution(options: {
     builds: buildSources,
     resolved,
   });
+  return {
+    resolution,
+    ...(session.dialogueId !== undefined ? { dialogueId: session.dialogueId } : {}),
+  };
 }
 
 /**

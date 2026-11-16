@@ -37,6 +37,8 @@ export interface WorkflowSessionOptions {
   /** Absolute session root where run-local artifacts live. */
   readonly sessionRoot: string;
   readonly sessionId: string;
+  /** Current builds inherited from earlier feedback rounds. */
+  readonly adoptBuilds?: readonly { readonly id: string; readonly entry: string }[];
   /** Natural-language task describing what behavior to verify. */
   readonly task: string;
   /** Absolute path where the produced TestWorkflow source must be written. */
@@ -51,13 +53,26 @@ export interface WorkflowSessionOptions {
   readonly logger?: Logger;
   /** Mirror the full AI session transcript to this store. */
   readonly sessionStore?: SessionStore;
+  /**
+   * Continue a prior authoring conversation instead of starting a new one
+   * (feedback-repair lane for script-shaped test-workflow failures). The
+   * feedback message replaces the authoring prompt; the deliverable gates
+   * below still apply unchanged (file written this session, fresh
+   * declareDependency, fresh analysis submission).
+   */
+  readonly resume?: {
+    readonly dialogueId: string;
+    readonly feedback: string;
+  };
 }
 
 /** Options handed to the underlying agent runner (narrowed for testability). */
 export interface WorkflowSessionAgentOptions {
   readonly cwd: string;
   readonly prompt: string;
-  readonly systemPrompt: string;
+  /** Authoring system prompt. Absent on resume (the stored conversation
+   *  carries its own; combining both is an untested SDK path). */
+  readonly systemPrompt?: string;
   readonly allowedTools: readonly string[];
   readonly extraAllowedTools: readonly string[];
   readonly agents: Record<string, unknown>;
@@ -68,10 +83,13 @@ export interface WorkflowSessionAgentOptions {
   readonly model?: string | null;
   readonly timeoutMs?: number;
   readonly stallTimeoutMs?: number | null;
-  /** Run-scoped logger; session events are mirrored by the runner. */
+  /** Run-scoped logger for session-level events (mirrored by driver). */
   readonly logger?: Logger;
   /** Mirror the full AI session transcript to this store. */
   readonly sessionStore?: SessionStore;
+  /** Continue this prior conversation (SDK resume) instead of a new chat.
+   *  Forwarded verbatim as the driver's `resumeSessionId`. */
+  readonly resumeSessionId?: string;
 }
 
 /**
@@ -108,6 +126,9 @@ export interface WorkflowSessionResult {
   readonly ok: boolean;
   /** Final assistant text. */
   readonly summary: string;
+  /** SDK conversation id; the feedback loop continues THIS dialogue when the
+   *  exam itself needs a script-error repair. */
+  readonly dialogueId?: string;
   /** Declared build workflow ids (final state of declareDependency). */
   readonly declaredBuilds: readonly string[];
   /** True when the produced test workflow source exists at testEntry. */
@@ -221,6 +242,7 @@ export async function runWorkflowSession(
     sessionId: options.sessionId,
     host: options.host,
     project: options.project,
+    adoptBuilds: options.adoptBuilds,
   });
   const verificationAnalysis = new VerificationAnalysisStore(
     join(repoDir, ".refactor", "runs", options.sessionId, "workflows", "verification-analysis.json"),
@@ -241,7 +263,9 @@ export async function runWorkflowSession(
   const agents: Record<string, unknown> = {
     "build-writer": buildWriterDefinition(serverName, preflight),
   };
-  const prompt = SESSION_PROMPT(options.task, options.testEntry, preflight);
+  const prompt = options.resume !== undefined
+    ? resumedSessionPrompt(options.resume.feedback, options.testEntry)
+    : SESSION_PROMPT(options.task, options.testEntry, preflight);
 
   const runner = options.runAgentFn ?? defaultRunAgent;
   let run: DriverRun;
@@ -249,7 +273,10 @@ export async function runWorkflowSession(
     run = await runner({
       cwd: repoDir,
       prompt,
-      systemPrompt: TEST_WORKFLOW_SYSTEM,
+      // On resume the stored conversation carries its original system prompt;
+      // a fresh one alongside resume is an untested SDK combination, so the
+      // continuation keeps the session's own prompt.
+      ...(options.resume === undefined ? { systemPrompt: TEST_WORKFLOW_SYSTEM } : {}),
       allowedTools: [...TEST_WRITER_AGENT_TOOLS],
       extraAllowedTools: mcpTools,
       agents,
@@ -261,6 +288,7 @@ export async function runWorkflowSession(
       stallTimeoutMs: limits.stallMs,
       logger: options.logger,
       sessionStore: options.sessionStore,
+      ...(options.resume !== undefined ? { resumeSessionId: options.resume.dialogueId } : {}),
     });
   } finally {
     verificationAnalysis.close();
@@ -270,7 +298,17 @@ export async function runWorkflowSession(
   const declaredBuilds = await registry.currentDeclared();
   const declaredExplicitly = await registry.declaredExplicitly();
   let failure: WorkflowSessionFailureLike | null = null;
-  if (run.isError && run.result.length === 0) {
+  if (run.resumeMismatch === true) {
+    // The SDK answered under a DIFFERENT conversation id — that is a fresh
+    // chat, not a continuation. Treating it as success would spend the repair
+    // round without the authoring context, so fail loudly instead.
+    failure = {
+      category: "model-session",
+      reason: "test-writer resume landed in a different conversation (session id mismatch)",
+      retryable: false,
+      detail: { resume_mismatch: true, ...(run.sessionId !== undefined ? { returned_session_id: run.sessionId } : {}) },
+    };
+  } else if (run.isError && run.result.length === 0) {
     failure = {
       category: "model-session",
       reason: "test-writer session failed without output",
@@ -313,12 +351,24 @@ export async function runWorkflowSession(
   return {
     ok: failure === null,
     summary: run.result,
+    ...(run.sessionId !== undefined ? { dialogueId: run.sessionId } : {}),
     declaredBuilds,
     testEntryExists,
     verificationAnalysisPath: verificationAnalysis.hasSubmission() ? verificationAnalysis.path : null,
     timedOut: run.timedOut,
     failure,
   };
+}
+
+/** Feedback prompt appended to a CONTINUED authoring conversation. */
+function resumedSessionPrompt(feedback: string, testEntry: string): string {
+  return `${feedback}
+
+[续写提醒] 这是你此前出题对话的延续。本轮你只需按上面的反馈修复 TestWorkflow，但交付门槛不变：
+  1. 本次会话内重新调用 submitVerificationAnalysis 提交（可沿用上轮结论，内容有变则修正）。
+  2. 重新调用 declareDependency 声明完整构建集合。
+  3. 把修复后的完整 TestWorkflow 写到原路径：${testEntry}
+     覆盖面不得缩水：登记的检查点数量与场景不得少于上一版。`;
 }
 
 async function defaultRunAgent(
@@ -340,6 +390,7 @@ async function defaultRunAgent(
     stallTimeoutMs: o.stallTimeoutMs,
     logger: o.logger,
     sessionStore: o.sessionStore,
+    ...(o.resumeSessionId !== undefined ? { resumeSessionId: o.resumeSessionId } : {}),
   });
 }
 

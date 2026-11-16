@@ -80,6 +80,12 @@ export interface RunCommand {
   injections: readonly InjectionSpec[];
   /** Aborted session id to resume from its stage checkpoints (null = fresh run). */
   resume: string | null;
+  /**
+   * Maximum feedback repairs for one run, including attempts before --resume.
+   * Continue the responsible conversation (or launch a build repair session).
+   * 0 disables repairs; default 3.
+   */
+  autoRetry: number;
   format: CliFormat;
 }
 
@@ -170,6 +176,7 @@ function parseRun(args: string[]): RunCommand {
   let worktreeRoot: string | null = null;
   const injections: { source: string; dest: string }[] = [];
   let resume: string | null = null;
+  let autoRetry = 3;
   let format: CliFormat = "human";
   let sawRepo = false;
   for (let index = 0; index < args.length; index++) {
@@ -217,6 +224,10 @@ function parseRun(args: string[]): RunCommand {
       resume = nextValue(args, ++index, "--resume");
       continue;
     }
+    if (arg === "--auto-retry") {
+      autoRetry = parseNonNegativeInteger(nextValue(args, ++index, "--auto-retry"), "--auto-retry");
+      continue;
+    }
     if (arg === "--format") {
       format = parseFormat(nextValue(args, ++index, "--format"));
       continue;
@@ -226,7 +237,7 @@ function parseRun(args: string[]): RunCommand {
     repo = arg;
     sawRepo = true;
   }
-  const command = { kind: "run" as const, repo, session, sessionRoot, worktreeRoot, injections, resume, format, verbosity, progress, color, noInteractive };
+  const command = { kind: "run" as const, repo, session, sessionRoot, worktreeRoot, injections, resume, autoRetry, format, verbosity, progress, color, noInteractive };
   if (task === null || !task.trim()) throw new RunTaskRequiredError(command);
   return { ...command, task };
 }
@@ -377,6 +388,15 @@ function parsePositiveInteger(value: string, option: string): number {
   return parsed;
 }
 
+/** Like parsePositiveInteger but accepts 0 (e.g. --auto-retry 0 disables retrying). */
+function parseNonNegativeInteger(value: string, option: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new CliUsageError(`${option} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
 function parseFormat(value: string): CliFormat {
   if (value === "human" || value === "json") return value;
   throw new CliUsageError(`format must be 'human' or 'json', got '${value}'`);
@@ -386,7 +406,7 @@ export const CLI_HELP = `Usage:
   refactor-subagent preflight [repo] [--format human|json]
   refactor-subagent run [repo] [--task <text>] [--session <id>] [--session-root <dir>]
                             [--worktree-root <dir>] [--inject <src>=<dest>]
-                            [--resume <aborted-session-id>]
+                            [--resume <aborted-session-id>] [--auto-retry <max>]
                             [--format human|json] [--verbosity detailed|summary]
                             [--progress auto|plain|off] [--no-color] [--no-interactive]
   refactor-subagent workflow run <entry.ts> [options]
@@ -430,7 +450,25 @@ Resume (checkpoint restart):
                               Completed stages whose facts still verify on disk
                               (workflow sources, candidate branch, unchanged
                               repo HEAD) are reused; verification always re-runs.
-                              A fresh session id is generated unless --session is set.
+                              --session sets the new execution id; otherwise
+                              a new run id is generated.
+
+Feedback repairs:
+  --auto-retry <max>          Total repair attempts for this run (default 3).
+                              Behavior mismatches and candidate code failures
+                              continue the original refactor conversation.
+                              Test script errors continue the original writer;
+                              baseline build errors start a build repair agent.
+                              Repairs retain the latest complete workflow set.
+                              --resume retains attempts already spent and the
+                              original conversations; it does not reset the total.
+                              Stops on ACCEPTED, exhausted attempts, unchanged
+                              content and failure, or an unrepairable failure.
+                              0 disables automatic repairs.
+                              Live status shows the round, repair owner, cause,
+                              remaining attempts and what will be re-run/reused.
+                              report.feedback records this invocation's rounds;
+                              per-round evidence is kept in round-summary.json.
 
 Stage sources (accepted by "run"), later wins:
   --pipeline-file <path>      Extra pipeline layer, merged in order (repeatable)

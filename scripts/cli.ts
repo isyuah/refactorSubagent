@@ -30,12 +30,12 @@ import {
   extractPipelineArgs,
   resolvePipeline,
 } from "../src/config/pipeline.js";
-import { runStageFlow, StageFlowFinalizationError, type StageFlowResult } from "../src/runtime/stage-flow.js";
+import { StageFlowFinalizationError, type StageFlowResult } from "../src/runtime/stage-flow.js";
 import { installOwnedProcessSignalHandlers } from "../shared/owned-process.js";
 import { RunDisplay, formatRunReport } from "../src/cli/display.js";
 import { styled, TerminalStyle } from "../src/cli/terminal.js";
 import { CliInputCancelled, createRunSessionId, resolveCliInput } from "../src/cli/input.js";
-import { runStageFlowResume } from "../src/runtime/stage-resume.js";
+import { runFeedbackStageFlow } from "../src/runtime/feedback/run.js";
 
 try {
   const { overrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
@@ -149,26 +149,29 @@ async function executeRun(
   display.start({ repo, task: command.task, session: sessionId,
     log_dir: join(sessionRoot, ".refactor", "e2e", sessionId), pipeline: describePipeline(resolved.pipeline),
     pipeline_sources: resolved.sources, pipeline_config: resolved.pipeline, pipeline_overrides: pipelineOverrides.values,
-    limits: limits.limits, limit_sources: limits.sources, limit_overrides: overrides.values });
+    limits: limits.limits, limit_sources: limits.sources, limit_overrides: overrides.values, auto_retry: command.autoRetry });
   try {
     let result: StageFlowResult;
+    let autoRetryMeta: { rounds: number; stoppedBecause: string; lastSession: string } | null = null;
     try {
       const request = {
         repoPath: repo,
         task: command.task,
         sessionRoot,
         sessionId,
+        flow,
         ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
         ...(command.injections.length > 0 ? { injections: command.injections } : {}),
         limitOverrides: overrides,
         onProgress: display.receive,
         configuration: { pipeline: resolved.pipeline, sources: resolved.sources, overrides: pipelineOverrides.values ?? [] },
       };
-      // Resume overlays verified checkpoints while preserving current configuration
-      // and the same progress/report observers as a fresh run.
-      result = resumeFrom !== null
-        ? await runStageFlowResume({ ...request, sourceSessionId: resumeFrom, baseFlow: flow })
-        : await runStageFlow({ ...request, flow });
+      const outcome = await runFeedbackStageFlow(request, {
+        budget: command.autoRetry, resumeFrom,
+      });
+      result = outcome.result;
+      autoRetryMeta = { rounds: outcome.rounds.length, stoppedBecause: outcome.stoppedBecause,
+        lastSession: outcome.rounds.at(-1)!.sessionId };
     } catch (error) {
       if (!(error instanceof StageFlowFinalizationError)) throw error;
       result = error.result;
@@ -185,6 +188,7 @@ async function executeRun(
       injected_stages: result.provenance.injected,
       verification_authoritative: result.provenance.verification_authoritative,
       ...(result.provenance.resume !== undefined ? { resumed_from: result.provenance.resume } : {}),
+      ...(autoRetryMeta !== null ? { auto_retry: autoRetryMeta } : {}),
       declared_builds: declaredBuilds,
       baseline_build: result.verification?.baselineBuild?.status ?? null,
       candidate_build: result.verification?.candidateBuild?.status ?? null,

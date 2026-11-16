@@ -99,6 +99,9 @@ export interface DependencyRegistryOptions {
   readonly sessionId: string;
   readonly host?: HostPreflight;
   readonly project?: ProjectDetection;
+  /** Builds materialized by earlier rounds of the same run (absolute
+   *  entries) — adopted read-only so repair rounds keep resolving them. */
+  readonly adoptBuilds?: readonly { readonly id: string; readonly entry: string }[];
 }
 
 const RUN_DIR = join(".refactor", "runs");
@@ -163,6 +166,28 @@ export class LocalDependencyRegistry implements DependencyRegistry {
     this.host = options.host;
     this.project = options.project;
     this.restoreRunLocal();
+    this.adoptBuilds(options.adoptBuilds);
+  }
+
+  /**
+   * Pre-seed builds materialized by EARLIER rounds of the same run. A repair
+   * round's registry is rooted at its own session dir, which knows nothing
+   * about the round-1 builds (they never reached the shared library) — the
+   * host hands them over so inspectWorkflow/declareDependency still resolve
+   * them. Adopted entries are referenced, never mutated.
+   */
+  private adoptBuilds(adopted: DependencyRegistryOptions["adoptBuilds"]): void {
+    for (const build of adopted ?? []) {
+      if (this.runLocal.has(build.id)) continue;
+      this.runLocal.set(build.id, {
+        id: build.id,
+        kind: "build",
+        name: build.id,
+        description: "adopted from an earlier round of this run",
+        revision: 1,
+        entry: resolve(build.entry),
+      });
+    }
   }
 
   /** Recover run-local builds materialized on disk (host restarts/rebuilds registry). */

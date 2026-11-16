@@ -8,7 +8,7 @@ import { RunDisplay, formatRunReport } from "../src/cli/display.js";
 import type { CliVerbosity } from "../src/cli/args.js";
 import { DEFAULT_LIMITS } from "../src/config/limits.js";
 import type { Logger } from "../src/runtime/log.js";
-import { RunReportCollector, type ProgressUpdate } from "../src/runtime/progress.js";
+import { RunReportCollector, type RunReport, type ProgressUpdate } from "../src/runtime/progress.js";
 
 let verbosity: CliVerbosity = "detailed";
 let destination: string | undefined;
@@ -38,7 +38,7 @@ function replay(mode: CliVerbosity, capture = false): string {
   const output = capture ? { isTTY: true, write: (text: string) => chunks.push(text) } : process.stderr;
   let elapsed = 0;
   let phase = "INIT";
-  const collector = new RunReportCollector();
+  let collector = new RunReportCollector();
   const display = new RunDisplay({ format: "human", verbosity: mode, progress: "plain", color, output,
     now: () => elapsed, ...(capture ? { env: {} } : {}) });
   const emit = (update: ProgressUpdate, at = elapsed): void => {
@@ -52,8 +52,11 @@ function replay(mode: CliVerbosity, capture = false): string {
   const task = "[离线回放] 提取金额校验，保持行为不变";
   const logDir = "example-evidence/display-replay";
   display.start({ repo: "example/invoice-demo", task, session: "offline-display-replay", log_dir: logDir,
-    pipeline: "离线模拟消息；不执行模型、构建或测试", pipeline_sources: [], limits: DEFAULT_LIMITS, limit_sources: [] });
+    pipeline: "离线模拟消息；不执行模型、构建或测试", pipeline_sources: [], limits: DEFAULT_LIMITS, limit_sources: [], auto_retry: 3 });
   try {
+    emit({ type: "feedback", feedback: { action: "start", owner_session: "offline-display-replay", resumed_from: null,
+      budget_total: 3, budget_used: 0, state_dir: "example-evidence/feedback/offline-display-replay" } });
+    emit({ type: "feedback", feedback: { action: "round-start", round: 1, session: "offline-display-replay", repair: null } });
     emit({ type: "phase", name: "PREFLIGHT" });
     emit({ type: "stage", name: "preflight", action: "start" });
     emit({ type: "stage", name: "preflight", action: "end" }, 100);
@@ -120,10 +123,63 @@ function replay(mode: CliVerbosity, capture = false): string {
     emit({ type: "phase", name: "CLEANUP" });
     emit({ type: "stage", name: "cleanup", action: "start" });
     emit({ type: "stage", name: "cleanup", action: "end" }, elapsed + 20);
-    const report = collector.finish({ session: "offline-display-replay", repo: "example/invoice-demo", task, state: "REJECTED",
+    const firstReport = collector.finish({ session: "offline-display-replay", repo: "example/invoice-demo", task, state: "REJECTED",
       abort_reason: null, failure: null, resume: null, decision_reason: "空输入处理发生变化。", finalization_error: null, elapsed_ms: elapsed,
       limits: DEFAULT_LIMITS, limit_sources: [], limit_overrides: [], configuration: null,
       refactor_summary: "提取金额校验函数；模拟结果发现空输入行为改变，因此拒绝本次改动。", log_dir: logDir, report_path: `${logDir}/artifacts/run-summary.json` }, ["invoice-cli", "amount-harness"]);
+    emit({ type: "feedback", feedback: { action: "round-end", round: 1, session: "offline-display-replay", state: "REJECTED",
+      reason: "空输入处理发生变化。", log_dir: logDir } });
+    emit({ type: "feedback", feedback: { action: "repair-start", round: 2, session: "offline-display-replay-fb2", lane: "refactor",
+      evidence: { summary: "候选版把空输入当作金额 0", side: "candidate", mismatches: [{ name: "空输入", reason: "应当返回输入错误" }] },
+      budget_total: 3, budget_used: 1, dialogue_id: "original-refactor-conversation", reuse_baseline: true } }, elapsed + 100);
+    const secondStart = elapsed;
+    collector = new RunReportCollector();
+    emit({ type: "feedback", feedback: { action: "round-start", round: 2, session: "offline-display-replay-fb2", repair: "refactor" } });
+    emit({ type: "phase", name: "WORKFLOW_SESSION" });
+    emit({ type: "strategy", report: analysis, path: "example-evidence/verification-analysis.json" });
+    emit({ type: "workspace", branch: "refactor/offline-demo", base_sha: base, baseline_dir: "example-worktrees/baseline", candidate_dir: "example-worktrees/candidate" });
+    emit({ type: "phase", name: "REFACTOR" });
+    emit({ type: "stage", name: "refactor", action: "start" });
+    const repairAgent = new AgentProgress(logger, "refactor", "离线模拟");
+    repairAgent.accept({ type: "assistant", message: { id: "repair-reply", content: [{ type: "text", text: "收到空输入的失配证据。我会恢复原来的错误分支，保留其他重构。" }] } });
+    repairAgent.accept({ type: "result", session_id: "original-refactor-conversation", result: "空输入行为已修复。", num_turns: 1 });
+    emit({ type: "candidate", candidate: { branch: "refactor/offline-demo", base_sha: base, commit_sha: "3".repeat(40), changed_files: ["src/invoice.c"] } });
+    emit({ type: "stage", name: "refactor", action: "end" }, elapsed + 900);
+    emit({ type: "phase", name: "VERIFICATION" });
+    emit({ type: "stage", name: "verify", action: "start" });
+    for (const id of ["invoice-cli", "amount-harness"]) emit({ type: "build", side: "baseline", id, status: "reused", duration_ms: 0 });
+    emit({ type: "test", side: "baseline", status: "reused", checks: 3, duration_ms: 0 });
+    emit({ type: "phase", name: "CANDIDATE_BUILD" });
+    for (const id of ["invoice-cli", "amount-harness"]) {
+      emit({ type: "build", side: "candidate", id, status: "running" });
+      emit({ type: "build", side: "candidate", id, status: "pass", duration_ms: 100 }, elapsed + 100);
+    }
+    emit({ type: "phase", name: "CANDIDATE_TEST_WORKFLOW" });
+    emit({ type: "test", side: "candidate", status: "pass", checks: 3, duration_ms: 50 }, elapsed + 50);
+    emit({ type: "phase", name: "COMPARISON" });
+    emit({ type: "comparison", comparison: { overall: "consistent", total: 3, matched: 3, mismatched: 0,
+      checks: ["合法金额", "越界金额", "空输入"].map((name) => ({ name, matched: true, reason: "一致" })),
+      errors: [], reason: "3 个检查项行为一致。", evidence_paths: ["comparison.json"] } });
+    emit({ type: "stage", name: "verify", action: "end" });
+    emit({ type: "phase", name: "CLEANUP" });
+    emit({ type: "feedback", feedback: { action: "round-end", round: 2, session: "offline-display-replay-fb2", state: "ACCEPTED",
+      reason: null, log_dir: `${logDir}-fb2` } });
+    emit({ type: "feedback", feedback: { action: "stop", reason: "accepted", detail: null, budget_total: 3, budget_used: 1 } });
+    const lastReport = collector.finish({ session: "offline-display-replay-fb2", repo: "example/invoice-demo", task, state: "ACCEPTED",
+      abort_reason: null, failure: null, resume: null, decision_reason: "空输入行为已恢复，所有检查项一致。", finalization_error: null,
+      elapsed_ms: elapsed - secondStart, limits: DEFAULT_LIMITS, limit_sources: [], limit_overrides: [], configuration: null,
+      refactor_summary: "提取金额校验函数；根据反馈恢复空输入的错误处理，重新验证通过。",
+      log_dir: `${logDir}-fb2`, report_path: `${logDir}-fb2/artifacts/round-summary.json` }, ["invoice-cli", "amount-harness"]);
+    const report: RunReport = { ...lastReport, session: "offline-display-replay", elapsed_ms: elapsed,
+      report_path: `${logDir}/artifacts/run-summary.json`, feedback: {
+        owner_session: "offline-display-replay", resumed_from: null, budget_total: 3, budget_used_before: 0, budget_used: 1,
+        stopped_because: "accepted", stop_detail: null, state_dir: "example-evidence/feedback/offline-display-replay",
+        dialogue_dir: `${logDir}/sessions`, build_repairs: [],
+        rounds: [firstReport, lastReport].map((round, index) => ({ round: index + 1, session: round.session,
+          repair: index === 0 ? null : "refactor", state: round.state, reason: round.decision_reason,
+          elapsed_ms: round.elapsed_ms, stage_timings: round.stage_timings, log_dir: round.log_dir,
+          report_path: `${round.log_dir}/artifacts/round-summary.json` })),
+      } };
     display.stop();
     const formatted = `${formatRunReport(report, mode, { color, output: capture ? { isTTY: true } : process.stdout, ...(capture ? { env: {} } : {}) })}\n`;
     if (capture) chunks.push(formatted);

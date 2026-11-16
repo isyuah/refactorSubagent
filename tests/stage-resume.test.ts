@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Orchestrator } from "../src/orchestrator/orchestrator.js";
 import { SessionStore } from "../src/orchestrator/store.js";
 import { runStageFlow, halt } from "../src/runtime/stage-flow.js";
-import { planStageResume, runStageFlowResume } from "../src/runtime/stage-resume.js";
+import { planStageResume, runStageFlowResume, loadReusableWorkflowsStage } from "../src/runtime/stage-resume.js";
 import { patchRefactorStage, presetWorkflowsStage } from "../src/runtime/stage-presets.js";
 import type { FailureReport } from "../src/artifacts/index.js";
 
@@ -655,6 +655,53 @@ describe("resume review fixes", () => {
     expect(second.state).toBe("ACCEPTED");
     expect(second.provenance.resume?.reused_stages).toEqual(["workflows"]);
     expect(second.refactorSummary).toContain("preset patch");
+  }, 240_000);
+
+  test("#7 an edited exam or build source demotes workflows reuse (hash check)", async () => {
+    const fixture = createRepo();
+    await abortedAtVerify(fixture, "rf-hash-src");
+
+    // Sanity: right after the failure the checkpoint verifies and the exam
+    // can be pinned for the feedback loop.
+    expect(loadReusableWorkflowsStage(fixture.repo, fixture.sessionRoot, "rf-hash-src")).not.toBeNull();
+
+    // Someone edits the exam source after the checkpoint recorded its hash —
+    // the pinned "identical exam" claim is no longer honest.
+    const exam = join(fixture.repo, "workflows", "test.ts");
+    writeFileSync(exam, `${readFileSync(exam, "utf8")}\n/* tampered after checkpoint */\n`);
+
+    const plan = planStageResume({
+      repoPath: fixture.repo,
+      task: "resume-fix: edited exam source",
+      sessionRoot: fixture.sessionRoot,
+      sourceSessionId: "rf-hash-src",
+      sessionId: "rf-hash-plan",
+    });
+    expect(plan.reuseWorkflows).toBe(false);
+    expect(plan.notes.join("\n")).toContain("hash mismatch");
+    expect(loadReusableWorkflowsStage(fixture.repo, fixture.sessionRoot, "rf-hash-src")).toBeNull();
+
+    // A resume re-runs the workflows stage with the caller's sources instead
+    // of pinning the tampered exam against old observations.
+    const patch = writePatch(fixture, "hash-patch", (source) =>
+      source.replace("int main(void) {\n", "int main(void) {\n  /* resume fixture */\n"),
+    );
+    const second = await runStageFlowResume({
+      repoPath: fixture.repo,
+      task: "resume-fix: edited exam source",
+      sessionRoot: fixture.sessionRoot,
+      sourceSessionId: "rf-hash-src",
+      sessionId: "rf-hash-dst",
+      baseFlow: {
+        workflows: presetWorkflowsStage({
+          builds: [{ id: "gcc-app", entry: "workflows/build.ts" }],
+          testEntry: "workflows/test.ts",
+        }),
+        refactor: patchRefactorStage(patch),
+      },
+    });
+    expect(second.state).toBe("ACCEPTED");
+    expect(second.provenance.resume?.reused_stages).not.toContain("workflows");
   }, 240_000);
 });
 
