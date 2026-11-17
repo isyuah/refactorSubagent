@@ -1,10 +1,17 @@
 /** Real host execution with offline source delivery; never calls a model. */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { PassThrough, Writable } from "node:stream";
+import { createTestRenderer } from "@opentui/core/testing";
 import { stripVTControlCharacters } from "node:util";
 import { TestPreparation } from "../src/testing/preparation.js";
-import { TestReviewTerminal, preparationPages } from "../src/cli/test-review.js";
+import { preparationPages } from "../src/cli/test-report.js";
+import { RunScreen } from "../src/cli/tui/run.js";
+import { buildStageFlow, Pipeline } from "../src/config/pipeline.js";
+import { runStageFlow } from "../src/runtime/stage-flow.js";
+import type { RunProgressEvent } from "../src/runtime/progress.js";
+import { DEFAULT_LIMITS } from "../src/config/limits.js";
+import { Workbench } from "../src/cli/tui/workbench.js";
+import { PreparationScreen } from "../src/cli/tui/preparation.js";
 import { TerminalStyle, styled } from "../src/cli/terminal.js";
 import { cliFixture } from "../tests/helpers/cli-fixture.js";
 import { preparationReplay } from "../tests/helpers/test-preparation.js";
@@ -20,20 +27,18 @@ const preparation = new TestPreparation({ repo: fixture.repo, sessionRoot: fixtu
 try {
   await preparation.author();
   const saved = preparation.save(join(destination, "test-plan"));
-  const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false, setRawMode(mode: boolean) { this.isRaw = mode; return this; } });
+  const renderer = await createTestRenderer({ width: 120, height: 38, exitOnCtrlC: false, exitSignals: [] });
+  const ui = new Workbench(renderer.renderer, true);
+  const screen = new PreparationScreen(ui, preparation, { verbosity: "detailed" });
+  const completion = screen.run();
   const frames: string[] = [];
-  const output = Object.assign(new Writable({ write(chunk, _encoding, done) { frames.push(String(chunk)); done(); } }), { isTTY: true, columns: 108, rows: 36 });
-  const terminal = new TestReviewTerminal(preparation, { color: true, env: {}, input, output });
-  const completion = terminal.run();
-  const plain: string[] = [];
-  for (let page = 1; page <= 4; page++) {
-    input.emit("keypress", String(page), { name: String(page) });
-    plain.push(stripVTControlCharacters(frames.at(-1)!));
+  for (let section = 0; section < 4; section++) {
+    ui.selectSection(section);
+    await renderer.renderOnce(); await Promise.resolve(); await renderer.renderOnce();
+    frames.push(renderer.captureCharFrame());
   }
-  input.emit("keypress", "q", { name: "q" });
-  await completion;
-  writeFileSync(join(destination, "review.ansi"), frames.join(""));
-  writeFileSync(join(destination, "review.txt"), plain.join("\n\n"));
+  ui.onExit(); await completion; await ui.close();
+  writeFileSync(join(destination, "review.txt"), frames.join("\n\n"));
   for (const mode of ["detailed", "summary"] as const) {
     const style = new TerminalStyle({ color: true, output: { isTTY: true }, env: {} });
     const pages = preparationPages(preparation.view()).filter((_page, index) => mode === "detailed" || index === 0 || index === 2);
@@ -41,6 +46,29 @@ try {
     writeFileSync(join(destination, `${mode}.ansi`), report);
     writeFileSync(join(destination, `${mode}.txt`), stripVTControlCharacters(report));
   }
-  console.log(JSON.stringify({ mode: "offline-replay", status: preparation.view().content.metadata.trial.status, bundle: saved.directory,
-    tui: join(destination, "review.ansi"), text: join(destination, "review.txt") }, null, 2));
+  const pipeline = Pipeline.parse({ ...JSON.parse(readFileSync(fixture.pipeline, "utf8")), stages: {
+    workflows: { mode: "test-plan", directory: saved.directory }, prepare: { mode: "create" },
+    refactor: JSON.parse(readFileSync(fixture.pipeline, "utf8")).stages.refactor,
+  } });
+  const events: RunProgressEvent[] = [];
+  const result = await runStageFlow({ repoPath: fixture.repo, task: "离线演示：应用现成补丁并比较两侧", sessionId: "offline-tui-run", sessionRoot: fixture.sessionRoot,
+    flow: buildStageFlow(pipeline), onProgress: event => events.push(event) });
+  for (const verbosity of ["detailed", "summary"] as const) {
+    const native = await createTestRenderer({ width: 120, height: 38, exitOnCtrlC: false, exitSignals: [] });
+    const workbench = new Workbench(native.renderer, true);
+    const run = new RunScreen(workbench, verbosity);
+    run.start({ repo: fixture.repo, task: "离线演示：应用现成补丁并比较两侧", session: result.report.session,
+      log_dir: result.report.log_dir, limits: DEFAULT_LIMITS, limit_sources: [], pipeline: "预置方案与补丁", pipeline_sources: [], pipeline_config: pipeline });
+    for (const event of events) run.receive(event);
+    const finished = run.finish(result.report); const frames: string[] = [];
+    for (let section = 0; section < 8; section++) {
+      workbench.selectSection(section);
+      await native.renderOnce(); await Promise.resolve(); await native.renderOnce();
+      frames.push(native.captureCharFrame());
+    }
+    workbench.onExit(); await finished; await workbench.close();
+    writeFileSync(join(destination, `run.${verbosity}.txt`), frames.join("\n\n"));
+  }
+  console.log(JSON.stringify({ mode: "offline-replay", status: preparation.view().content.metadata.trial.status, run: result.state, report: result.report.report_path, bundle: saved.directory,
+    text: join(destination, "review.txt") }, null, 2));
 } finally { preparation.close(); }

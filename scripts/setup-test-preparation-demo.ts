@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { createTwoFilesPatch } from "diff";
 import { probeHost } from "../src/runtime/host-preflight.js";
 import { resolveHead } from "../src/runtime/worktree.js";
 import { saveTestPlan } from "../src/testing/bundle.js";
@@ -24,6 +25,9 @@ mkdirSync(destination, { recursive: true });
 cpSync(join(template, "repo"), repo, { recursive: true });
 const git = (args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", windowsHide: true }).trim();
 git(["init", "-q", "--initial-branch=main"]);
+git(["config", "core.autocrlf", "false"]);
+git(["config", "user.name", "Test preparation demo"]);
+git(["config", "user.email", "demo@example.invalid"]);
 git(["add", "."]);
 git(["-c", "user.name=Test preparation demo", "-c", "user.email=demo@example.invalid", "commit", "-qm", "Initial text_copy library"]);
 const host = probeHost(repo);
@@ -77,14 +81,33 @@ try {
     if (!isDeepStrictEqual(trial.observations.find(o => o.name === c.name)?.value, expected)) throw new Error(`示例观测不符合源码契约：${c.name}；证据：${trial.evidence_dir}`);
   }
   const saved = preparation.save(join(destination, "plans"));
-  const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  const original = readFileSync(join(repo, "src", "text_copy.c"), "utf8").replaceAll("\r\n", "\n");
+  const refactored = original.slice(0, original.indexOf("    if (length < capacity) {")) + `    size_t limit = length < capacity ? length : capacity - 1;
+    for (i = 0; i < limit; ++i) {
+        dst[i] = src[i];
+    }
+    dst[i] = '\\0';
+    result.copied = i;
+    result.status = length < capacity ? TEXT_COPY_OK : TEXT_COPY_TRUNCATED;
+    return result;
+}
+`;
+  const patch = join(destination, "refactor.patch");
+  writeFileSync(patch, createTwoFilesPatch("a/src/text_copy.c", "b/src/text_copy.c", original, refactored));
+  const offlinePipeline = join(destination, "offline-pipeline.json");
+  writeFileSync(offlinePipeline, JSON.stringify({ version: 1, stages: {
+    workflows: { mode: "test-plan", directory: saved.directory },
+    refactor: { mode: "patch", patchFile: patch },
+  } }, null, 2) + "\n");
+  const quote = (value: string): string => process.platform === "win32" ? "'" + value.replaceAll("'", "''") + "'" : "'" + value.replaceAll("'", "'\"'\"'") + "'";
   const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
   const commands = {
     review: `bun ${quote(cli)} tests review ${quote(repo)} --from ${quote(saved.directory)}`,
     prepare: `bun ${quote(cli)} tests prepare ${quote(repo)} --scope ${quote(scope)}`,
+    runOffline: `bun ${quote(cli)} run ${quote(repo)} --task ${quote(task)} --pipeline-file ${quote(offlinePipeline)} --auto-retry 0 --session-root ${quote(join(destination, "sessions"))}` ,
     run: `bun ${quote(cli)} run ${quote(repo)} --tests ${quote(saved.directory)} --task ${quote(task)}`,
   };
-  const result = { repo, plan: saved.directory, trial: { status: trial.status, duration_ms: trial.duration_ms, builds: trial.builds.length, observations: trial.observations.length }, scope, task, revisionRequest, commands };
+  const result = { repo, offlinePipeline, patch, plan: saved.directory, trial: { status: trial.status, duration_ms: trial.duration_ms, builds: trial.builds.length, observations: trial.observations.length }, scope, task, revisionRequest, commands };
   writeFileSync(join(destination, "experience.json"), JSON.stringify(result, null, 2) + "\n");
   console.log(JSON.stringify(result, null, 2));
 } finally {
