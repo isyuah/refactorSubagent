@@ -235,7 +235,11 @@ export class LaunchWizard {
     const limitsFile = join(directory, "limits.json");
     const pipelineFile = join(directory, "pipeline.json");
     writeFileSync(limitsFile, JSON.stringify(this.limits, null, 2) + "\n");
-    writeFileSync(pipelineFile, JSON.stringify(this.pipeline, null, 2) + "\n");
+    const pipeline = structuredClone(this.pipeline);
+    const workflows = pipeline.stages.workflows;
+    if (workflows.mode === "test-plan") workflows.directory = resolve(workflows.directory);
+    if (workflows.mode === "preset") workflows.entryRoot = resolve(workflows.entryRoot ?? this.command.repo);
+    writeFileSync(pipelineFile, JSON.stringify(pipeline, null, 2) + "\n");
     const command = launchCommandLine(this.command, limitsFile, pipelineFile);
     writeFileSync(join(directory, "command.txt"), command + "\n");
     await this.ui.message("启动命令已导出", command + "\n\n配置快照及命令：" + directory);
@@ -273,12 +277,12 @@ export function launchCommandLine(command: LaunchCommand, limitsFile: string, pi
   option("--limits-file", limitsFile);
   if (command.kind === "run") {
     option("--pipeline-file", pipelineFile); option("--task", command.task); option("--auto-retry", String(command.autoRetry));
-    option("--worktree-root", command.worktreeRoot); option("--resume", command.resume);
-    for (const injection of command.injections) option("--inject", `${injection.source}=${injection.dest}`);
+    option("--worktree-root", command.worktreeRoot === null ? null : resolve(command.worktreeRoot)); option("--resume", command.resume);
+    for (const injection of command.injections) option("--inject", `${resolve(injection.source)}=${injection.dest}`);
   } else {
-    option("--scope", command.scope); option("--from", command.from); option("--out", command.out);
+    option("--scope", command.scope); option("--from", command.from === null ? null : resolve(command.from)); option("--out", command.out === null ? null : resolve(command.out));
   }
-  option("--session", command.session); option("--session-root", command.sessionRoot);
+  option("--session", command.session); option("--session-root", command.sessionRoot === null ? null : resolve(command.sessionRoot));
   option("--ui", "tui"); option("--verbosity", command.verbosity);
   if (!command.color) args.push("--no-color");
   const quote = (value: string): string => process.platform === "win32" ? "'" + value.replaceAll("'", "''") + "'" : "'" + value.replaceAll("'", "'\"'\"'") + "'";

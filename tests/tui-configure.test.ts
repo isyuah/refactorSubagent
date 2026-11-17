@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCliArgs } from "../src/cli/args.js";
@@ -52,6 +52,21 @@ describe("OpenTUI launch configuration", () => {
       expect(pipeline.stages.refactor.mode).toBe("ai"); expect(pipeline.task).toBeUndefined();
       expect(JSON.parse(readFileSync(join(repo, ".refactor", "limits.json"), "utf8"))).toHaveProperty("sessions");
       await t.activate("action:cancel"); expect(await running).toBeInstanceOf(CliInputCancelled);
+    } finally { await t.close(); }
+  });
+  test("export saves effective configuration snapshots and a usable host-shell command without changing project defaults", async () => {
+    const repo = repository(); const destination = join(repo, "exports"); const t = await terminal(120, 38);
+    const wizard = new LaunchWizard(t.ui, command(repo, ["--task", "保留接口 'text_copy'", "--auto-retry", "2"]), { values: ["sessions.testWriter.maxTurns=12"] }, {});
+    const running = wizard.run().catch(error => error);
+    try {
+      await t.activate("action:export"); t.mockInput.pressEnter(); await t.frame();
+      t.mockInput.pressKey("a", { ctrl: true }); t.mockInput.pressKey("k", { ctrl: true }); await t.mockInput.pasteBracketedText(destination); await t.activate("dialog:submit"); await t.frame();
+      const directory = join(destination, readdirSync(destination)[0]!);
+      expect(JSON.parse(readFileSync(join(directory, "limits.json"), "utf8")).sessions.testWriter.maxTurns).toBe(12);
+      expect(JSON.parse(readFileSync(join(directory, "pipeline.json"), "utf8")).stages.workflows.mode).toBe("ai");
+      const commandText = readFileSync(join(directory, "command.txt"), "utf8"); expect(commandText).toContain("--limits-file"); expect(commandText).toContain("--pipeline-file"); expect(commandText).toContain("text_copy"); expect(commandText).toContain("--auto-retry");
+      expect(existsSync(join(repo, ".refactor", "pipeline.json"))).toBeFalse();
+      await t.activate("dialog:close"); await t.activate("action:cancel"); expect(await running).toBeInstanceOf(CliInputCancelled);
     } finally { await t.close(); }
   });
   test("resume keeps saved workflow inputs and can return to a fresh run", async () => {
