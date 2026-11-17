@@ -32,6 +32,11 @@ import { workflowSkillContext } from "./workflow-skills.js";
  */
 
 export interface WorkflowSessionOptions {
+  readonly signal?: AbortSignal;
+  /** Human review deliverable; only requested by the independent preparation flow. */
+  readonly brief?: string;
+  readonly review?: { readonly entry: string; readonly feedback?: string };
+
   /** Absolute repo root (source under test). */
   readonly repoDir: string;
   /** Absolute session root where run-local artifacts live. */
@@ -68,6 +73,7 @@ export interface WorkflowSessionOptions {
 
 /** Options handed to the underlying agent runner (narrowed for testability). */
 export interface WorkflowSessionAgentOptions {
+  readonly signal?: AbortSignal;
   readonly cwd: string;
   readonly prompt: string;
   /** Authoring system prompt. Absent on resume (the stored conversation
@@ -267,12 +273,28 @@ export async function runWorkflowSession(
     ? resumedSessionPrompt(options.resume.feedback, options.testEntry)
     : SESSION_PROMPT(options.task, options.testEntry, preflight);
 
+  const reviewPrompt = options.review === undefined ? "" : `
+This is test preparation for human review. The task describes the verification SCOPE,
+not an instruction to refactor. Never modify the implementation.
+Current revision repository: ${repoDir}. Earlier worktree paths may no longer exist.
+Verification scope: ${options.task}
+Use current files and these current host/project facts: ${preflight}
+Produce concrete
+scenario documentation as JSON at ${options.review.entry}:
+{"version":1,"scenarios":[{"id":"stable-id","title":"...","purpose":"...",
+"inputs":["..."],"observations":["exact ctx.expect name or CTest test name"],
+"sourceReferences":["file:line"]}]}
+Document actual delivered tests and their inputs, not intended future coverage.
+Human revision requests may add, remove or change scenarios; update the analysis,
+complete dependency declaration, test source and scenario document together.
+${options.review.feedback ?? ""}`;
   const runner = options.runAgentFn ?? defaultRunAgent;
   let run: DriverRun;
   try {
     run = await runner({
+      signal: options.signal,
       cwd: repoDir,
-      prompt,
+      prompt: prompt + reviewPrompt + (options.brief ?? ""),
       // On resume the stored conversation carries its original system prompt;
       // a fresh one alongside resume is an untested SDK combination, so the
       // continuation keeps the session's own prompt.
@@ -364,17 +386,18 @@ export async function runWorkflowSession(
 function resumedSessionPrompt(feedback: string, testEntry: string): string {
   return `${feedback}
 
-[续写提醒] 这是你此前出题对话的延续。本轮你只需按上面的反馈修复 TestWorkflow，但交付门槛不变：
+[续写提醒] 这是你此前出题对话的延续。本轮你只需按上面的反馈更新 TestWorkflow，交付门槛不变：
   1. 本次会话内重新调用 submitVerificationAnalysis 提交（可沿用上轮结论，内容有变则修正）。
   2. 重新调用 declareDependency 声明完整构建集合。
   3. 把修复后的完整 TestWorkflow 写到原路径：${testEntry}
-     覆盖面不得缩水：登记的检查点数量与场景不得少于上一版。`;
+     自动修复应保持覆盖范围；有明确人工修改意见时按人工要求调整，并同步说明变化。`;
 }
 
 async function defaultRunAgent(
   o: WorkflowSessionAgentOptions,
 ): Promise<DriverRun> {
   return runAgent({
+    signal: o.signal,
     role: "test-writer",
     cwd: o.cwd,
     prompt: o.prompt,

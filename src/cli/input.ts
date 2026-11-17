@@ -12,8 +12,8 @@ export interface CliInputOptions {
 
 /** Cancellation is a launch outcome, not a failed refactoring session. */
 export class CliInputCancelled extends Error {
-  constructor(readonly exitCode = 130) {
-    super("已取消运行；未创建会话，也未调用模型。");
+  constructor(readonly exitCode = 130, message = "已取消运行；未创建会话，也未调用模型。") {
+    super(message);
     this.name = "CliInputCancelled";
   }
 }

@@ -144,6 +144,8 @@ export interface DialogueHandles {
  * conversations continue, what each round recorded.
  */
 export interface FeedbackState {
+  /** Scope of an imported test plan, carried through later checkpoint resumes. */
+  verificationScope?: string;
   readonly kind: "feedback-state";
   readonly version: 1;
   /** Configured feedback budget (total attempts; 0 disables the loop). */

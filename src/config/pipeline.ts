@@ -1,3 +1,4 @@
+import { testPlanWorkflowsStage } from "../testing/stage.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -75,8 +76,9 @@ const WorkflowsPreset = z.object({
   workflowId: z.string().min(1).optional(),
   revision: z.number().int().positive().optional(),
 });
-const WorkflowsStageFile = z.union([WorkflowsAi.strict(), WorkflowsPreset.strict()]);
-const WorkflowsStage = z.union([WorkflowsAi, WorkflowsPreset]);
+const WorkflowsTestPlan = z.object({ mode: z.literal("test-plan"), directory: z.string().min(1) });
+const WorkflowsStageFile = z.union([WorkflowsAi.strict(), WorkflowsPreset.strict(), WorkflowsTestPlan.strict()]);
+const WorkflowsStage = z.union([WorkflowsAi, WorkflowsPreset, WorkflowsTestPlan]);
 
 const PrepareCreate = z.object({ mode: z.literal("create") });
 /** Hand over an existing branch that already carries the change. */
@@ -198,6 +200,7 @@ export function buildStageFlow(pipeline: Pipeline): StageFlow {
     prepare?: PrepareStage;
     refactor?: RefactorStage;
   } = {};
+  if (stages.workflows.mode === "test-plan") flow.workflows = testPlanWorkflowsStage(stages.workflows.directory);
   if (stages.workflows.mode === "preset") {
     flow.workflows = presetWorkflowsStage({
       builds: stages.workflows.builds,
@@ -233,6 +236,7 @@ export function describePipeline(pipeline: Pipeline): string {
   const { workflows, prepare, refactor } = pipeline.stages;
   const workflowsText = workflows.mode === "ai"
     ? "ai"
+    : workflows.mode === "test-plan" ? `test-plan(${workflows.directory})`
     : `preset(${String(workflows.builds.length)} builds: ${workflows.builds.map((b) => b.id).join(", ")})`;
   const prepareText = prepare.mode === "create" ? "create" : `reuse(${prepare.branch})`;
   const refactorText = refactor.mode === "ai"

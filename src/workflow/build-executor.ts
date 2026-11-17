@@ -19,6 +19,7 @@ import type {
   WorkflowEvent,
 } from "./types.js";
 export interface ExecuteBuildWorkflowOptions {
+  readonly signal?: AbortSignal;
   readonly onProgress?: WorkflowProgressObserver;
   readonly cwd: string;
   /** Workflow source entry; required for workflow-driven builds. */
@@ -72,6 +73,9 @@ export async function executeBuildWorkflow(
     policy: options.policy,
     onProgress: options.onProgress,
   });
+  const cancel = (): void => { void broker.close(); };
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  if (options.signal?.aborted) cancel();
   const steps: BuildWorkflowStepResult[] = [];
   const events: WorkflowEvent[] = [];
   try {
@@ -206,6 +210,7 @@ export async function executeBuildWorkflow(
       assertedArtifacts: buildKind === "workflow-driven" ? assertedFromDriven : broker.getAssertedPaths(),
     };
   } finally {
+    options.signal?.removeEventListener("abort", cancel);
     await broker.close();
   }
 }
@@ -224,6 +229,7 @@ async function runDrivenWorkflow(
 ): Promise<{ readonly artifact: BuildArtifact; readonly assertedPaths: readonly string[] } | { readonly error: string }> {
   if (options.entry === undefined) return { error: "workflow-driven build requires the workflow entry" };
   const driven = await runWorkflow({
+    signal: options.signal,
     onProgress: options.onProgress,
     entry: options.entry,
     cwd: options.cwd,

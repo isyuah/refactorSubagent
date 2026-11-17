@@ -29,6 +29,7 @@ import type { FeedbackState } from "./types.js";
  */
 
 export interface FeedbackLoopConfig {
+  readonly allowFreshTestRepair?: boolean;
   readonly baseTask: string;
   /** Total repair attempts allowed (the initial round is not counted). */
   readonly budget: number;
@@ -86,7 +87,7 @@ export type RepairRoundContext =
   | {
       lane: "test";
       adoptBuilds: readonly { readonly id: string; readonly entry: string }[];
-      dialogueId: string;
+      dialogueId: string | null;
       testEntry: string;
       feedback: string;
       /** The measured candidate branch keeps carrying the unchanged code. */
@@ -354,7 +355,7 @@ export async function runFeedbackLoop(config: FeedbackLoopConfig): Promise<Feedb
       const dialogueId = result.workflowsDialogueId ?? persisted.dialogues.testWriter ?? null;
       const testEntry = config.locateExamEntry();
       const patch = result.patch;
-      if (dialogueId === null || testEntry === null) {
+      if ((dialogueId === null && !config.allowFreshTestRepair) || testEntry === null) {
         return finish("missing-input", "原测试编写对话编号或测试脚本路径不可用。");
       }
       if (patch === null) {

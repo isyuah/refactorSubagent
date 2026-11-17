@@ -583,6 +583,21 @@ describe("runFeedbackLoop", () => {
     expect(context.feedback).toContain("脚本错误");
   });
 
+  test("an imported test plan without a local dialogue can start its first repair conversation", async () => {
+    const captured: Captured = { rounds: [], repairContexts: [], notifications: [], pinnedCalls: 0 };
+    const outcome = await runFeedbackLoop({ ...makeConfig([
+      fakeResult({ state: "ABORTED", branch: "candidate", workflowsDialogue: null,
+        failure: { category: "test", component: "test-workflow:baseline", reason: "TypeError: ctx.fs.read is not a function" } }),
+      fakeResult({ state: "ACCEPTED", branch: "candidate" }),
+    ], captured), allowFreshTestRepair: true });
+    expect(outcome.stoppedBecause).toBe("accepted");
+    const repair = captured.repairContexts[0]!;
+    expect(repair.lane).toBe("test");
+    if (repair.lane !== "test") throw new Error("expected test lane");
+    expect(repair.dialogueId).toBeNull();
+    expect(outcome.rounds).toHaveLength(2);
+  });
+
   test("a test repair consumes its budget before an interrupted session begins", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "rfr-test-budget-"));
     try {

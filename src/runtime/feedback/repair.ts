@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent } from "../../agents/driver.js";
+import { buildWriterDefinition, BUILD_WRITER_AGENT_TOOLS } from "../../agents/build-writer.js";
 import { REFACTOR_AGENT_TOOLS } from "../../agents/refactor.js";
 import { LocalDependencyRegistry } from "../../agents/dep-registry.js";
 import { createDependencyMcpServer } from "../../agents/dep-registry-server.js";
@@ -8,6 +9,9 @@ import { VerificationAnalysisStore } from "../../agents/verification-analysis.js
 import { FileSessionStore } from "../session-store.js";
 import type { RefactorStage } from "../stage-flow.js";
 import { halt } from "../stage-flow.js";
+import type { HostPreflight, ProjectDetection } from "../../artifacts/index.js";
+import type { VerificationMaterialInput } from "../../workflow/verification-materials.js";
+import { workflowPreflightContext } from "../../agents/workflow-facts.js";
 import type { RefactorTrigger, RepairEvidence } from "./types.js";
 
 /**
@@ -156,6 +160,7 @@ export function composeBuildRepairBrief(evidence: RepairEvidence, context: {
   failedBuildId: string;
   failedBuildEntry: string;
   failedBuildSource?: string;
+  materials?: readonly VerificationMaterialInput[];
   expectedArtifacts?: readonly string[];
   otherSideOutcome?: string;
 }): string {
@@ -169,6 +174,10 @@ export function composeBuildRepairBrief(evidence: RepairEvidence, context: {
     lines.push("---- 方案当前内容 ----");
     lines.push(context.failedBuildSource);
     lines.push("---- 内容结束 ----");
+  }
+  if (context.materials !== undefined && context.materials.length > 0) {
+    lines.push("当前注册的辅助材料（修复提交时一并传入 generateBuildWorkflow 的 materials；磁盘旧副本不属于新交付）：");
+    lines.push(JSON.stringify(context.materials.map(({ path, content }) => ({ path, content })), null, 2));
   }
   lines.push(`失败原因：${evidence.summary}`);
   if (context.expectedArtifacts !== undefined && context.expectedArtifacts.length > 0) {
@@ -195,11 +204,13 @@ export function composeBuildRepairBrief(evidence: RepairEvidence, context: {
  */
 export async function runBuildWriterRepairSession(options: {
   readonly repoDir: string;
+  readonly signal?: AbortSignal;
+  readonly runAgentFn?: typeof runAgent;
   readonly sessionRoot: string;
   readonly sessionId: string;
   readonly task: string;
-  readonly host: unknown;
-  readonly project: unknown;
+  readonly host: HostPreflight;
+  readonly project: ProjectDetection;
   readonly brief: string;
   readonly dialogueRoot: string;
   readonly logger?: Parameters<typeof runAgent>[0]["logger"];
@@ -210,25 +221,29 @@ export async function runBuildWriterRepairSession(options: {
     workspaceRoot: options.repoDir,
     sessionRoot: options.sessionRoot,
     sessionId: options.sessionId,
-    host: options.host as never,
-    project: options.project as never,
+    host: options.host,
+    project: options.project,
   });
   const verificationAnalysis = new VerificationAnalysisStore(
     join(options.repoDir, ".refactor", "runs", options.sessionId, "workflows", "verification-analysis.json"),
     options.task,
   );
   const mcpServer = createDependencyMcpServer({ registry, verificationAnalysis });
+  const definition = buildWriterDefinition("dep-registry", workflowPreflightContext(options.host, options.project));
   let run: Awaited<ReturnType<typeof runAgent>>;
   try {
-    run = await runAgent({
+    run = await (options.runAgentFn ?? runAgent)({
+      signal: options.signal,
       cwd: options.repoDir,
       prompt: options.brief,
-      allowedTools: ["Read", "Glob", "Grep", "Bash"],
+      systemPrompt: definition.prompt,
+      skills: definition.skills,
+      allowedTools: [...BUILD_WRITER_AGENT_TOOLS],
       extraAllowedTools: [
         "mcp__dep-registry__inspectWorkflow",
         "mcp__dep-registry__generateBuildWorkflow",
       ],
-      mcpServers: { "dep-registry": mcpServer as never },
+      mcpServers: { "dep-registry": mcpServer },
       // A fresh registry session: the repair registers a NEW run-local revision
       // under this repair session id; shared library workflows stay untouched.
       maxTurns: options.limits?.maxTurns ?? undefined,

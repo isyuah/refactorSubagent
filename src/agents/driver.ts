@@ -59,6 +59,7 @@ export interface DriverRun {
 }
 
 export interface DriverOptions {
+  signal?: AbortSignal;
   role?: string;
   cwd: string;
   prompt: string;
@@ -150,6 +151,9 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
     },
   });
+  const cancelled = (): void => { abortController.abort(); q.close(); };
+  o.signal?.addEventListener("abort", cancelled, { once: true });
+  if (o.signal?.aborted) cancelled();
   let result = "";
   let structuredOutput: unknown;
   let isError = true;
@@ -215,10 +219,11 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
       timedOut = true;
       abortController.abort();
       q.close();
-    } else if (!timedOut) {
+    } else if (!timedOut && !o.signal?.aborted) {
       throw error;
     }
   } finally {
+    o.signal?.removeEventListener("abort", cancelled);
     clearTimeout(stallTimer);
     q.close();
     clearTimeout(timer);
@@ -230,6 +235,7 @@ export async function runAgent(o: DriverOptions): Promise<DriverRun> {
     result = result.length === 0 ? reason : `${result}\n${reason}`;
     isError = true;
   }
+  if (o.signal?.aborted) { result = "agent session cancelled"; isError = true; }
   // A resume must land in the SAME conversation. A different id means the SDK
   // silently started a new chat (session missing, expired, or unsupported) —
   // surface it so callers never mistake a fresh chat for a continuation.

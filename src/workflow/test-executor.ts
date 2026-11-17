@@ -15,6 +15,7 @@ import type {
 } from "./types.js";
 
 export interface ExecuteTestWorkflowOptions {
+  readonly signal?: AbortSignal;
   readonly onProgress?: WorkflowProgressObserver;
   /** Workflow source entry (self-driven test workflow). */
   readonly entry: string;
@@ -106,6 +107,7 @@ export async function runTestSide(
   entry: string,
   cwd: string,
   options: {
+    readonly signal?: AbortSignal;
     readonly onProgress?: WorkflowProgressObserver;
     readonly host?: HostPreflight;
     readonly project?: ProjectDetection;
@@ -115,6 +117,7 @@ export async function runTestSide(
   },
 ): Promise<TestRunSide> {
   const result = await runWorkflow({
+    signal: options.signal,
     onProgress: options.onProgress,
     entry,
     cwd,
@@ -138,6 +141,7 @@ async function runOnce(
   cwd: string,
 ): Promise<TestRunSide> {
   return runTestSide(options.entry, cwd, {
+    signal: options.signal,
     onProgress: options.onProgress,
     host: options.host,
     project: options.project,

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ExpectationBaseline, HostPreflight, ProjectDetection } from "../../artifacts/index.js";
 import { resolveLimits } from "../../config/limits.js";
@@ -18,6 +18,7 @@ import {
   loadEffectivePlan, planFromCheckpointView, replaceBuild, saveEffectivePlan,
   workflowContentHash,
 } from "./effective-plan.js";
+import { readVerificationMaterials } from "../../workflow/verification-materials.js";
 import { composeBuildRepairBrief, continuedRefactorStage, runBuildWriterRepairSession } from "./repair.js";
 import { freshFeedbackState, loadFeedbackOwner, loadFeedbackState, saveFeedbackOwner } from "./state.js";
 
@@ -40,11 +41,23 @@ export async function runFeedbackStageFlow(
       ...loadCheckpointDialogues(sessionRoot, options.resumeFrom), ...state.dialogues,
     });
   }
+  const verificationScope = request.workflowContext?.scope ?? state.verificationScope;
+  if (verificationScope !== undefined) state.verificationScope = verificationScope;
   const firstRound = (state.rounds.at(-1)?.round ?? 0) + 1;
   const e2eDir = (sid: string): string => join(sessionRoot, ".refactor", "e2e", sid);
   const progress = new FeedbackRunProgress({ session: sessionId, owner, resumeFrom: options.resumeFrom,
     stateDir, e2eRoot: join(sessionRoot, ".refactor", "e2e"), budget: options.budget,
     budgetUsed: state.budgetUsed, onProgress: request.onProgress });
+  if (request.workflowContext?.dialogue !== undefined && options.resumeFrom === null) {
+    const source = request.workflowContext.dialogue;
+    const transcript = join(source.root, "sessions", source.id);
+    if (existsSync(transcript)) {
+      const target = join(e2eDir(owner), "sessions", source.id);
+      mkdirSync(join(e2eDir(owner), "sessions"), { recursive: true });
+      cpSync(transcript, target, { recursive: true, errorOnExist: true, force: false });
+      state.dialogues.testWriter = source.id;
+    }
+  }
   const sharedRequest = { ...request, dialogueRoot: e2eDir(owner), onProgress: progress.forward };
   const readArtifact = (sid: string, name: string): unknown => {
     const path = join(e2eDir(sid), "artifacts", name);
@@ -71,6 +84,7 @@ export async function runFeedbackStageFlow(
 
   try {
     const outcome = await runFeedbackLoop({
+      allowFreshTestRepair: verificationScope !== undefined,
       baseTask: request.task,
       budget: options.budget,
       onFeedback: progress.onFeedback,
@@ -97,6 +111,7 @@ export async function runFeedbackStageFlow(
         return composeBuildRepairBrief(evidence, {
           round, failedBuildId: failed.id, failedBuildEntry: failed.entry,
           failedBuildSource: readFileSync(failed.entry, "utf8"),
+          materials: readVerificationMaterials(failed.entry),
           otherSideOutcome: evidence.side === "candidate" ? "原版使用同一方案构建成功。" : "构建在原版失败，候选版尚未执行。",
         });
       },
@@ -146,7 +161,7 @@ export async function runFeedbackStageFlow(
             flow: {
               ...request.flow,
               workflows: continuedWorkflowsStage({
-                dialogueId: context.dialogueId, feedback: context.feedback, testEntry: context.testEntry,
+                ...(context.dialogueId === null ? {} : { dialogueId: context.dialogueId }), scope: verificationScope, feedback: context.feedback, testEntry: context.testEntry,
                 dialogueRoot: e2eDir(owner), adoptBuilds: context.adoptBuilds,
               }),
               prepare,

@@ -53,7 +53,13 @@ export interface ConfigCommand {
   scope: "project" | "user";
 }
 
+export interface TestsCommand {
+  kind: "tests"; action: "prepare" | "review"; repo: string; scope: string | null; from: string | null;
+  out: string | null; session: string | null; sessionRoot: string | null;
+  ui: "auto" | "tui" | "plain"; verbosity: CliVerbosity; format: CliFormat; color: boolean; noInteractive: boolean;
+}
 export interface RunCommand {
+  tests: string | null;
   verbosity: CliVerbosity;
   progress: CliProgress;
   color: boolean;
@@ -97,7 +103,8 @@ export type CliCommand =
   | WorkflowListCommand
   | ConfigCommand
   | LimitsCommand
-  | RunCommand;
+  | RunCommand
+  | TestsCommand;
 
 export class CliUsageError extends Error {
   constructor(message: string) {
@@ -122,6 +129,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
   }
   if (command === "preflight") return parsePreflight(args);
   if (command === "run") return parseRun(args);
+  if (command === "tests") return parseTests(args);
   if (command === "workflow") return parseWorkflow(args);
   if (command === "config") return parseConfig(args);
   if (command === "limits") return parseLimits(args);
@@ -171,6 +179,7 @@ function parseRun(args: string[]): RunCommand {
   let noInteractive = false;
   let repo = ".";
   let task: string | null = null;
+  let tests: string | null = null;
   let session: string | null = null;
   let sessionRoot: string | null = null;
   let worktreeRoot: string | null = null;
@@ -195,6 +204,7 @@ function parseRun(args: string[]): RunCommand {
     }
     if (arg === "--no-color") { color = false; continue; }
     if (arg === "--no-interactive") { noInteractive = true; continue; }
+    if (arg === "--tests") { tests = nextValue(args, ++index, arg); continue; }
     if (arg === "--task") {
       task = nextValue(args, ++index, "--task");
       continue;
@@ -237,9 +247,45 @@ function parseRun(args: string[]): RunCommand {
     repo = arg;
     sawRepo = true;
   }
-  const command = { kind: "run" as const, repo, session, sessionRoot, worktreeRoot, injections, resume, autoRetry, format, verbosity, progress, color, noInteractive };
+  const command = { kind: "run" as const, tests, repo, session, sessionRoot, worktreeRoot, injections, resume, autoRetry, format, verbosity, progress, color, noInteractive };
   if (task === null || !task.trim()) throw new RunTaskRequiredError(command);
   return { ...command, task };
+}
+
+function parseTests(args: string[]): TestsCommand {
+  const action = args.shift();
+  if (action !== "prepare" && action !== "review") throw new CliUsageError("tests requires prepare or review");
+  const result: TestsCommand = { kind: "tests", action, repo: ".", scope: null, from: null, out: null, session: null,
+    sessionRoot: null, ui: "auto", verbosity: "detailed", format: "human", color: true, noInteractive: false };
+  let sawRepo = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--no-color") { result.color = false; continue; }
+    if (arg === "--no-interactive") { result.noInteractive = true; continue; }
+    if (arg === "--scope") { result.scope = nextValue(args, ++i, arg); continue; }
+    if (arg === "--from") { result.from = nextValue(args, ++i, arg); continue; }
+    if (arg === "--out") { result.out = nextValue(args, ++i, arg); continue; }
+    if (arg === "--session") { result.session = nextValue(args, ++i, arg); continue; }
+    if (arg === "--session-root") { result.sessionRoot = nextValue(args, ++i, arg); continue; }
+    if (arg === "--format") { result.format = parseFormat(nextValue(args, ++i, arg)); continue; }
+    if (arg === "--ui") {
+      const ui = nextValue(args, ++i, arg);
+      if (ui !== "auto" && ui !== "tui" && ui !== "plain") throw new CliUsageError("--ui must be auto, tui or plain");
+      result.ui = ui; continue;
+    }
+    if (arg === "--verbosity") {
+      const value = nextValue(args, ++i, arg);
+      if (value !== "detailed" && value !== "summary") throw new CliUsageError("--verbosity must be detailed or summary");
+      result.verbosity = value; continue;
+    }
+    if (arg.startsWith("--")) throw new CliUsageError(`unknown tests option '${arg}'`);
+    if (sawRepo) throw new CliUsageError("tests accepts at most one repository path");
+    result.repo = arg; sawRepo = true;
+  }
+  if (action === "review" && result.from === null) throw new CliUsageError("tests review requires --from <test plan directory>");
+  if (action === "prepare" && result.from !== null) throw new CliUsageError("use tests review to open --from");
+  if (action === "review" && result.scope !== null) throw new CliUsageError("review uses the saved scope; change it through feedback");
+  return result;
 }
 
 function parsePreflight(args: string[]): PreflightCommand {
@@ -402,7 +448,14 @@ function parseFormat(value: string): CliFormat {
   throw new CliUsageError(`format must be 'human' or 'json', got '${value}'`);
 }
 
-export const CLI_HELP = `Usage:
+export const CLI_HELP = `Test preparation:
+  tests prepare <repo> --scope <behavior> [--ui auto|tui|plain] [--out <plan parent>]
+  tests review <repo> --from <plan directory> [--ui auto|tui|plain]
+  run <repo> --task <refactor task> --tests <plan directory>
+  Tests commands also accept --session, --session-root, --verbosity, --format,
+  --no-color and --no-interactive. Non-interactive preparation saves and exits.
+
+Usage:
   refactor-subagent preflight [repo] [--format human|json]
   refactor-subagent run [repo] [--task <text>] [--session <id>] [--session-root <dir>]
                             [--worktree-root <dir>] [--inject <src>=<dest>]

@@ -35,6 +35,75 @@ bun run scripts/cli.ts run <repo> --task "<重构任务>" --session s1
 bun run scripts/cli.ts limits <repo>       # 当前生效的超时/资源阈值及其来源
 ```
 
+## 先写测试，再决定是否重构
+
+可以先准备一套测试，在原版上试跑并查看具体场景，满意后再开始重构。验证范围与重构需求分开输入：
+前者描述要保护的模块、行为和边界条件，后者描述如何改代码。
+
+```bash
+# 交互终端中自动打开审阅界面；省略 --scope 时提示输入
+bun scripts/cli.ts tests prepare <repo> --scope "保护字符串复制函数的空输入、截断和容量边界"
+
+# 再次打开保存的某个版本，可继续修改和试跑
+bun scripts/cli.ts tests review <repo> --from <repo>/.refactorsa/test-plans/<id>/r1
+
+# 在新运行中复用测试，使用现有完整流程与反馈机制
+bun scripts/cli.ts run <repo> --task "合并重复的容量检查，保持行为不变" --tests <方案目录>
+
+# 非交互方式生成、试跑并保存；stdout 是单个 JSON，进度写入 stderr
+bun scripts/cli.ts tests prepare <repo> --scope "保护解析器的错误处理" --ui plain --format json --out <保存父目录> > preparation.json 2> preparation.log
+
+# 只查看保存结果，不调用 AI、不执行构建
+bun scripts/cli.ts tests review <repo> --from <方案目录> --ui plain --verbosity summary
+```
+
+审阅界面有四页：方案概览、测试场景、实际试跑结果、文件与修改。
+AI 说明会列出验证方式、选择理由、依赖处理和覆盖缺口；场景说明列出输入、观察点与源码依据。
+实际结果单独展示每个构建、采集到的检查项及其观测值、CTest 结果、错误和证据路径。
+场景数与检查项数分别计数，未在场景说明中关联的实际检查项会标出来。
+
+| 按键 | 操作 |
+|---|---|
+| `1`–`4`、`Tab` | 切换页面；方向键、`j`/`k`、PageUp/PageDown 滚动 |
+| `M` | 输入修改意见，优先继续原测试对话；交付后从固定原版提交重新试跑 |
+| `F` | 明确要求修复当前执行错误；构建错误交给独立构建角色，测试和交付错误交回测试角色 |
+| `R` | 使用当前交付重新试跑 |
+| `S` | 保存新版本，可保存尚未完成或试跑失败的草稿 |
+| `C` | 当前交付完整且试跑通过时，输入重构需求，保存并进入现有 CLI 完整流程 |
+| `Q`、`Esc` | 退出审阅；不会自动开始重构，也不会自动保存版本 |
+| Ctrl+C | 中断当前操作，恢复终端并保留已采集材料和证据 |
+
+测试编写阶段只读代码、交付脚本与辅助材料；编译和执行由宿主完成。
+准备流程创建固定提交的原版工作目录，每次试跑从干净副本开始，避免残留产物或已删除的辅助文件影响结果；不创建候选分支，也不生成 `ACCEPTED`/`REJECTED`。
+准备期间的失败先交给人查看，修复由上述操作显式触发，不自动消耗正式运行的反馈次数。
+试跑通过表示这套脚本在记录的原版上成功执行；覆盖是否满足需求可结合场景、辅助代码和实际观测审阅。
+
+默认保存到目标仓库 `.refactorsa/test-plans/<id>/r1`、`r2`……，每次保存创建新版本。
+`--out` 指定保存父目录，程序在其中创建 `r<N>`。每个版本包含 `plan.json`、全部测试与构建脚本、
+注册的辅助代码/mock/数据、方案与场景说明、试跑证据和日志；编译产物不打包。
+整个版本目录可以复制后复用，加载时校验文件清单和哈希；源目录或准备工作目录删除后仍可使用。
+准备现场另保存在 `--session-root` 下的 `.refactor/test-preparations/<session>/`，正常退出会移除其原版 worktree。
+
+本机的 AI 对话指针独立放在目标仓库 `.refactor/test-plan-dialogues/`，不放进可移植方案。
+原对话仍存在时继续该对话；移到另一台机器或对话已删除时，修改会建立新对话并提供当前方案和意见。
+正式运行使用本次运行的脚本副本，重新执行两侧构建与测试；后续修复沿用现有反馈规则，不覆盖已保存版本。
+`--tests` 替换测试准备阶段，不能与显式配置的其他 workflow 输入或 `--resume` 同时使用；
+恢复一次已经开始的正式运行时，直接使用其 `--resume` 检查点即可。
+
+`tests` 命令还支持 `--session`、`--session-root`、`--verbosity detailed|summary`、`--no-color` 和 `--no-interactive`。
+`--ui auto` 只在 stdin/stderr 都是交互终端、非 CI、非 JSON、且终端支持控制序列时启用 TUI；
+`--ui plain` 始终使用普通文本，`--ui tui` 在条件不满足时报错。
+非交互 `prepare` 必须提供非空 `--scope`，交付和试跑结束后保存退出；`review --ui plain` 只读取已有方案。
+默认详细模式显示 AI 正常文字和命令输出，摘要模式省略正文与正常输出。
+退出码为 0 表示原版试跑通过或正常查看未运行草稿，1 表示交付/执行失败，2 表示参数错误，130 表示取消。
+
+无需调用模型的离线演示会执行一个微型 Git 项目的构建和测试，并保存界面回放与示例方案：
+
+```bash
+bun scripts/replay-test-preparation.ts --out runs/test-preparation-demo
+# 输出 review.ansi（终端彩色回放）、review.txt、detailed/summary 报告及 test-plan/r1
+```
+
 ## 在具体项目中运行与查看进度
 
 目标目录需要是已有提交的 Git 仓库，并包含 C 源文件。先提交需要作为基准的代码，

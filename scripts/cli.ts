@@ -1,3 +1,5 @@
+import { executeTestsCommand } from "../src/cli/tests-command.js";
+import { loadTestPlan, loadLocalDialogue } from "../src/testing/bundle.js";
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -41,7 +43,7 @@ try {
   const { overrides, remaining } = extractLimitArgs(Bun.argv.slice(2));
   const { overrides: pipelineOverrides, remaining: argv } = extractPipelineArgs(remaining);
   const command = await resolveCliInput(argv);
-  installOwnedProcessSignalHandlers();
+  if (command.kind !== "tests") installOwnedProcessSignalHandlers();
   const exitCode = await execute(command, overrides, pipelineOverrides);
   if (exitCode !== 0) process.exitCode ??= exitCode;
 } catch (cause) {
@@ -68,6 +70,14 @@ async function execute(
   }
   if (command.kind === "preflight") return executePreflight(command, overrides);
   if (command.kind === "run") return executeRun(command, overrides, pipelineOverrides);
+  if (command.kind === "tests") {
+    const outcome = await executeTestsCommand(command, overrides);
+    if (outcome.continuation === null) return outcome.exitCode;
+    installOwnedProcessSignalHandlers();
+    return executeRun({ kind: "run", repo: command.repo, task: outcome.continuation.task, tests: outcome.continuation.directory,
+      session: null, sessionRoot: command.sessionRoot, worktreeRoot: null, injections: [], resume: null, autoRetry: 3,
+      format: command.format, verbosity: command.verbosity, progress: "auto", color: command.color, noInteractive: true }, overrides, pipelineOverrides);
+  }
   if (command.kind === "workflow-build") return executeWorkflowBuild(command, overrides);
   if (command.kind === "workflow-list") return executeWorkflowList(command, overrides);
   if (command.kind === "config") return executeConfig(command);
@@ -133,6 +143,15 @@ async function executeRun(
 ): Promise<number> {
   const repo = resolve(command.repo);
   const resolved = resolvePipeline({ repoRoot: repo, overrides: pipelineOverrides });
+  if (command.tests !== null && command.resume !== null) throw new CliUsageError("--tests cannot replace workflows while --resume restores a saved run; start a new run to use a test plan");
+  if (command.tests !== null) {
+    if (resolved.pipeline.stages.workflows.mode !== "ai" || (pipelineOverrides.values ?? []).some(value => value.startsWith("stages.workflows.")))
+      throw new CliUsageError("--tests conflicts with an explicitly configured workflows stage");
+    resolved.pipeline.stages.workflows = { mode: "test-plan", directory: resolve(command.tests) };
+  }
+  const planDirectory = resolved.pipeline.stages.workflows.mode === "test-plan" ? resolve(resolved.pipeline.stages.workflows.directory) : null;
+  const testPlan = planDirectory === null ? null : loadTestPlan(planDirectory);
+  const dialogue = testPlan === null ? null : loadLocalDialogue(join(repo, ".refactor", "test-plan-dialogues"), testPlan.manifest.id);
   const flow = buildStageFlow(resolved.pipeline);
   const sessionId = command.session ?? createRunSessionId();
   const sessionRoot = command.sessionRoot === null ? repo : resolve(command.sessionRoot);
@@ -155,6 +174,7 @@ async function executeRun(
     let autoRetryMeta: { rounds: number; stoppedBecause: string; lastSession: string } | null = null;
     try {
       const request = {
+        ...(testPlan === null ? {} : { workflowContext: { scope: testPlan.content.metadata.scope, ...(dialogue === null ? {} : { dialogue }) } }),
         repoPath: repo,
         task: command.task,
         sessionRoot,
