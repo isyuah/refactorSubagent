@@ -11,7 +11,7 @@
 refactorSubagent/
 ├─ src/                     harness 本体（状态机、阶段、能力代理、配置）
 ├─ shared/                  宿主与测试集共用的进程生命周期管理
-├─ scripts/cli.ts           命令行入口（run / preflight / workflow / limits / config）
+├─ scripts/cli.ts           命令行入口（run / tests / preflight / workflow / limits / config）
 ├─ tests/                   harness 单元与离线 e2e 测试（bun test）
 ├─ docs/                    设计文档（stage-flow、limits、roadmap…）
 │  └─ testset/              测试集文档（见下）
@@ -103,6 +103,60 @@ AI 说明会列出验证方式、选择理由、依赖处理和覆盖缺口；�
 bun scripts/replay-test-preparation.ts --out runs/test-preparation-demo
 # 输出 review.ansi（终端彩色回放）、review.txt、detailed/summary 报告及 test-plan/r1
 ```
+
+### 直接体验：一个没有现成测试的小型 C 库
+
+这个示例用来体验“先审阅测试，再决定是否重构”。项目只有 `text_copy` 字符串复制函数，
+CMake 只构建静态库，没有现成的测试或可执行程序。它没有文件、网络等外部依赖，
+适合编写小型 C 辅助程序直接调用真实实现。
+
+在工具仓库根目录执行以下命令。准备脚本需要 Bun、Git，以及 PATH 中的 GCC、Clang 或 `cc`，
+会创建并提交一个独立的示例 Git 仓库，使用真实编译器构建和试跑；**准备脚本不调用模型**。
+
+```powershell
+bun scripts/setup-test-preparation-demo.ts
+```
+
+默认目录为 `runs/test-preparation-playground/`：`repo/` 是目标项目，`plans/r1/` 是已经试跑通过的
+预置测试方案，`sessions/` 保留执行证据，`experience.json` 记录路径、验证范围、重构需求和完整命令。
+预置方案由仓库提供，便于立即体验界面；接下来的“从零编写”才由 AI 决定测试方式并编写代码。
+重复准备不会覆盖已有目录；需要新的环境时使用 `--out runs/test-preparation-playground-2`。
+
+在 Windows Terminal / PowerShell 等交互终端中打开审阅界面，保持输入和输出连接终端：
+
+```powershell
+bun scripts/cli.ts tests review ./runs/test-preparation-playground/repo --from ./runs/test-preparation-playground/plans/r1 --ui tui
+```
+
+建议按这个顺序体验：
+
+1. 按 `1` 看方案：为什么选择独立辅助程序、使用了什么依赖、有哪些覆盖缺口。
+2. 按 `2` 看十个具体场景：正常复制、恰好容纳、截断、容量为一、空字符串、零容量查询、空串零容量、空源指针、空目标指针和长字符串截断。
+3. 按 `3` 看真实试跑结果。十个检查项分别记录状态、复制长度、原长度、输出、终止符、守卫字节及是否完全未写入。
+4. 按 `4` 查看构建脚本、测试脚本和注册的辅助 C 代码；方向键或 PageDown 滚动。
+5. 按 `R` 重新编译和试跑；按 `S` 保存新版本，随后按 `Q` 退出。以上操作都不调用模型。
+6. 想修改测试时按 `M`，例如输入：`补充容量为 2 的截断场景，以及无效源指针时目标缓冲区所有字节保持不变的独立检查，并同步更新场景说明。` 这会调用 AI，完成后自动试跑，可再次审阅和保存。预置示例没有历史 AI 对话，第一次修改会建立新对话。
+7. 对测试满意后按 `C`，输入：`合并 text_copy 中完整复制与截断复制的重复循环，保持公开接口、状态、长度、终止符、无效输入不写入和缓冲区外字节完全不变。` 程序会保存当前版本，再进入正式重构和两侧验证；这一步会调用 AI。
+
+如果想完整体验 AI 从零编写测试，在另一次运行中执行：
+
+```powershell
+bun scripts/cli.ts tests prepare ./runs/test-preparation-playground/repo --scope '保护 text_copy 的正常复制、恰好容纳、截断、容量为 0/1、空字符串和 NULL 参数；观察返回状态、copied、required、终止符、无效输入不写入和缓冲区外字节。输入遵守头文件中的 NUL 结尾与不重叠前提。' --ui tui
+```
+
+`prepare` 使用现有 SDK 模型与认证配置，先调查并交付测试，再由宿主编译、执行，最后停在审阅界面。
+执行失败时可以按 `F` 明确要求修复；只有交付完整、原版试跑通过时才能按 `C` 继续。
+修改后按 `S` 保存，方案概览会显示新版本的准确位置。以后使用该位置，而不是原来的预置 `plans/r1/`：
+
+```powershell
+bun scripts/cli.ts run ./runs/test-preparation-playground/repo --tests '<方案概览显示的保存目录>' --task '合并 text_copy 的重复复制循环，保持接口和所有行为不变'
+```
+
+`--ui tui` 会在输入或输出被重定向、CI 环境或 `TERM=dumb` 时报错。请在真实交互终端运行；
+如果当前终端支持 ANSI，但环境变量误设为 `dumb`，可在该 PowerShell 会话先执行
+`$env:TERM = 'xterm-256color'`。颜色仍遵循 `--no-color` 和 `NO_COLOR`；需要彩色显示时，可在当前
+PowerShell 会话执行 `Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue`。
+`tests review --ui plain` 只查看普通文字，不会调用 AI 或重新构建。
 
 ## 在具体项目中运行与查看进度
 
