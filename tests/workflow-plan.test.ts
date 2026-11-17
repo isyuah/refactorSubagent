@@ -11,6 +11,7 @@ function tempWorkflow(source: string): string {
   return entry;
 }
 
+// The case budget includes process startup and cleanup beyond the workflow deadline.
 describe("Workflow plan declarations", () => {
   test("declares a tree with caller-supplied ids and returns them", async () => {
     const entry = tempWorkflow(`
@@ -57,7 +58,7 @@ describe("Workflow plan declarations", () => {
     expect(plan.steps[1]!.status).toBe("completed");
     expect(plan.steps[1]!.children![0]!.id).toBe("test.unit");
     expect(plan.steps[1]!.children![0]!.status).toBe("completed");
-  });
+  }, 30_000);
 
   test("rejects begin on an undeclared step", async () => {
     const entry = tempWorkflow(`
@@ -69,7 +70,7 @@ describe("Workflow plan declarations", () => {
     const result = await runWorkflow({ entry, cwd: process.cwd(), timeoutMs: 15_000 });
     expect(result.status).toBe("failed");
     expect(result.failure).toContain("was not declared");
-  });
+  }, 30_000);
 
   test("rejects complete without begin", async () => {
     const entry = tempWorkflow(`
@@ -82,7 +83,7 @@ describe("Workflow plan declarations", () => {
     const result = await runWorkflow({ entry, cwd: process.cwd(), timeoutMs: 15_000 });
     expect(result.status).toBe("failed");
     expect(result.failure).toContain("cannot complete while pending");
-  });
+  }, 30_000);
 
   test("rejects duplicate begin", async () => {
     const entry = tempWorkflow(`
@@ -96,7 +97,7 @@ describe("Workflow plan declarations", () => {
     const result = await runWorkflow({ entry, cwd: process.cwd(), timeoutMs: 15_000 });
     expect(result.status).toBe("failed");
     expect(result.failure).toContain("already running");
-  });
+  }, 30_000);
 
   test("assigns fallback ids when the workflow omits them", async () => {
     const entry = tempWorkflow(`
@@ -117,7 +118,7 @@ describe("Workflow plan declarations", () => {
     expect(result.plan!.steps[0]!.id).toBe("p1");
     expect(result.plan!.steps[0]!.children![0]!.id).toBe("p1.1");
     expect(result.plan!.steps[1]!.id).toBe("p2");
-  });
+  }, 30_000);
 
   test("rejects duplicate ids across the tree", async () => {
     const entry = tempWorkflow(`
@@ -132,7 +133,7 @@ describe("Workflow plan declarations", () => {
     const result = await runWorkflow({ entry, cwd: process.cwd(), timeoutMs: 15_000 });
     expect(result.status).toBe("failed");
     expect(result.failure).toContain("not unique");
-  });
+  }, 30_000);
 
   test("fail marks the step failed and records the error", async () => {
     const entry = tempWorkflow(`
@@ -147,7 +148,7 @@ describe("Workflow plan declarations", () => {
     expect(result.status).toBe("pass");
     expect(result.plan!.steps[0]!.id).toBe("fragile");
     expect(result.plan!.steps[0]!.status).toBe("failed");
-  });
+  }, 30_000);
 
   test("declaration with empty title is rejected", async () => {
     const entry = tempWorkflow(`
@@ -159,5 +160,5 @@ describe("Workflow plan declarations", () => {
     const result = await runWorkflow({ entry, cwd: process.cwd(), timeoutMs: 15_000 });
     expect(result.status).toBe("failed");
     expect(result.failure).toContain("title");
-  });
+  }, 30_000);
 });

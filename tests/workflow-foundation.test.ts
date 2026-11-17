@@ -40,17 +40,18 @@ describe("CLI and Workflow foundation", () => {
       .toThrow(CliUsageError);
   });
 
+  // Windows starts both a process host and a worker; the case must outlive that startup.
   test("runs a pure workflow and returns structured output", async () => {
     const entry = tempWorkflow("export default ({ input }) => ({ doubled: (input as number) * 2 });\n");
     const result = await runWorkflow({
       entry,
       cwd: process.cwd(),
       input: 21,
-      timeoutMs: 5_000,
+      timeoutMs: 15_000,
     });
     expect(result.status).toBe("pass");
     expect(result.result).toEqual({ doubled: 42 });
-  });
+  }, 30_000);
 
   test("rejects direct host access before execution", async () => {
     const entry = tempWorkflow("export default () => process.cwd();\n");
@@ -63,5 +64,5 @@ describe("CLI and Workflow foundation", () => {
     const entry = tempWorkflow("export default async () => { await new Promise(() => {}); };\n");
     const result = await runWorkflow({ entry, cwd: process.cwd(), timeoutMs: 100 });
     expect(result.status).toBe("timeout");
-  });
+  }, 15_000);
 });
