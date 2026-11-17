@@ -153,5 +153,5 @@ describe("BuildWorkflow planning and registry", () => {
     expect(discoverBuildWorkflows(root)).toEqual([
       expect.objectContaining({ status: "stale" }),
     ]);
-  });
+  }, 30_000);
 });

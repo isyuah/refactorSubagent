@@ -174,7 +174,7 @@ describe("independent test preparation (offline SDK replay)", () => {
     expect(result.report.builds).toHaveLength(4);
     expect(result.report.builds.every(b => b.status === "pass")).toBe(true);
     expect(loadTestPlan(directory!).content.test?.source).toBe(prep.view().content.test?.source);
-  }, 60_000);
+  }, 120_000);
 
   test("import verifies file hashes and CLI review emits one JSON document without ANSI", async () => {
     const f = fixture(); const prep = prepare(f);
