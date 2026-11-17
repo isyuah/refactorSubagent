@@ -179,7 +179,7 @@ export function spawnOwnedProcess(options: OwnedProcessOptions): OwnedProcess {
 }
 
 /** Opt-in CLI interruption handling; importing the library does not own signals. */
-export function installOwnedProcessSignalHandlers(): void {
+export function installOwnedProcessSignalHandlers(options: { beforeExit?: () => Promise<void> } = {}): void {
   if (signalHooksInstalled) return;
   signalHooksInstalled = true;
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
@@ -187,12 +187,13 @@ export function installOwnedProcessSignalHandlers(): void {
       if (exiting) return;
       exiting = true;
       process.exitCode = code;
-      void Promise.all([...active].map((owned) => owned.stop())).then((results) => {
+      void Promise.all([...active].map((owned) => owned.stop())).then(async (results) => {
+        await options.beforeExit?.();
         for (const result of results) {
           if (result.error !== null) console.error(`process cleanup on ${signal} failed: ${result.error.message}`);
         }
         process.exit(code);
-      });
+      }).catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exit(code); });
     });
   }
 }

@@ -38,7 +38,7 @@ export interface RunStartup {
   readonly auto_retry?: number;
 }
 
-const PHASES: Readonly<Record<string, string>> = {
+export const PHASES: Readonly<Record<string, string>> = {
   INIT: "初始化", PREFLIGHT: "检查环境与项目", WORKFLOW_SESSION: "设计验证方案并编写脚本",
   PREPARE: "创建原版与候选工作目录", REFACTOR: "重构候选代码", VERIFICATION: "验证",
   BASELINE_BUILD: "构建原版", CANDIDATE_BUILD: "构建候选版",
@@ -48,18 +48,18 @@ const PHASES: Readonly<Record<string, string>> = {
   FEEDBACK_BUILD: "修复构建方案", FEEDBACK_DONE: "运行结束",
   COMPARISON: "比较两侧结果", CLEANUP: "清理工作目录与保存结果",
 };
-const STAGES: Readonly<Record<string, string>> = {
+export const STAGES: Readonly<Record<string, string>> = {
   preflight: "环境与项目检查", workflows: "验证方案与脚本", prepare: "准备工作目录",
   refactor: "重构", verify: "验证（含两侧构建、测试与比较）", cleanup: "清理与保存",
 };
-const STRATEGIES: Readonly<Record<string, string>> = {
+export const STRATEGIES: Readonly<Record<string, string>> = {
   "reuse-existing": "复用现有产物或测试", "library-consumer": "编写库调用程序",
   "source-harness": "编写独立辅助程序", undetermined: "尚未确定",
 };
-const ROLES: Readonly<Record<string, string>> = { "test-writer": "测试编写", "build-writer": "构建编写", refactor: "代码重构", "source-repair": "脚本策略修复", "build-repair": "构建方案修复" };
+export const ROLES: Readonly<Record<string, string>> = { "test-writer": "测试编写", "build-writer": "构建编写", refactor: "代码重构", "source-repair": "脚本策略修复", "build-repair": "构建方案修复" };
 
-const REPAIR_LABELS: Readonly<Record<FeedbackLane, string>> = { refactor: "候选代码修复", test: "测试脚本修复", build: "构建方案修复" };
-const FEEDBACK_STOPS: Readonly<Record<FeedbackStopReason | "finalization-error", string>> = {
+export const REPAIR_LABELS: Readonly<Record<FeedbackLane, string>> = { refactor: "候选代码修复", test: "测试脚本修复", build: "构建方案修复" };
+export const FEEDBACK_STOPS: Readonly<Record<FeedbackStopReason | "finalization-error", string>> = {
   accepted: "验证通过", "budget-exhausted": "已达到自动修复次数上限", "no-progress": "连续两轮的方案或代码及失败原因相同，停止重复修复",
   "routed-stop": "当前问题无法自动修复", "repair-failed": "未获得可用的修复方案",
   "missing-dialogue": "缺少原 AI 对话，无法继续修复", "missing-patch": "缺少可继续使用的候选代码或验证方案",

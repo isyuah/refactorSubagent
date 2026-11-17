@@ -64,6 +64,8 @@ export class TestPreparation {
   private readonly started = performance.now();
   private readonly guard: TrackedRepositoryGuard;
   private readonly localStateDir: string;
+  private readonly listeners = new Set<(view: PreparationView) => void>();
+  subscribe(listener: (view: PreparationView) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
 
   constructor(private readonly options: PreparationOptions) {
     this.repo = resolve(options.repo);
@@ -81,6 +83,7 @@ export class TestPreparation {
       this.planId = loaded.manifest.id;
       this.saved = loaded.directory;
       this.trialOrigin = "saved";
+      this.status = "review";
       this.dialogue = loadLocalDialogue(this.localStateDir, this.planId);
       this.history = loaded.history;
       this.evidenceDirs = loaded.evidenceDirs;
@@ -109,7 +112,9 @@ export class TestPreparation {
   }
   private persist(): void {
     writeFileSync(join(this.directory, "preparation.json"), JSON.stringify(this.view(), null, 2) + "\n");
-    this.options.onChange?.(this.view());
+    const view = this.view();
+    this.options.onChange?.(view);
+    for (const listener of this.listeners) listener(view);
   }
   private ensureWorkspace(): string {
     if (this.workspace !== null) return this.workspace;

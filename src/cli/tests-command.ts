@@ -5,36 +5,37 @@ import { TestPreparation } from "../testing/preparation.js";
 import type { TestsCommand } from "./args.js";
 import { CliUsageError } from "./args.js";
 import { CliInputCancelled, createRunSessionId } from "./input.js";
-import { preparationPages, TestReviewTerminal } from "./test-review.js";
-import { TerminalStyle } from "./terminal.js";
+import { preparationPages } from "./test-report.js";
+import type { Workbench } from "./tui/workbench.js";
+import type { PreparationScreen } from "./tui/preparation.js";
+import { cleanText, TerminalStyle } from "./terminal.js";
 import { RunDisplay } from "./display.js";
 import type { RunProgressEvent } from "../runtime/progress.js";
 
-export async function executeTestsCommand(command: TestsCommand, overrides: LayerOverrides): Promise<{
+export async function executeTestsCommand(command: TestsCommand, overrides: LayerOverrides, workbench: Workbench | null = null): Promise<{
   exitCode: number; continuation: { directory: string; task: string } | null;
 }> {
   const ci = Boolean(process.env.CI) && !/^(false|0)$/i.test(process.env.CI!);
   const interactive = !command.noInteractive && !ci && Boolean(process.stdin.isTTY && process.stderr.isTTY) && command.format !== "json";
-  if (command.ui === "tui" && (!interactive || process.env.TERM === "dumb")) throw new CliUsageError("--ui tui requires an interactive terminal and human output");
-  const tui = interactive && command.ui !== "plain" && process.env.TERM !== "dumb";
-  let scope = command.scope;
+    let scope = command.scope;
   if (command.action === "prepare" && !scope?.trim()) {
     if (!interactive) throw new CliUsageError("tests prepare requires --scope <verification scope> outside an interactive terminal");
     scope = await ask("要保护哪些模块和行为？（/cancel 取消）> ");
     if (!scope) throw new CliInputCancelled();
   }
-  let terminal: TestReviewTerminal | null = null;
+  let terminal: PreparationScreen | null = null;
   const display = new RunDisplay({ verbosity: command.verbosity, progress: "plain", format: command.format, color: command.color });
   const preparation = new TestPreparation({ repo: resolve(command.repo), sessionRoot: resolve(command.sessionRoot ?? command.repo),
     session: command.session ?? createRunSessionId(), ...(scope === null ? {} : { scope }),
     ...(command.from === null ? {} : { from: resolve(command.from) }), limitOverrides: overrides,
     onProgress: (event: RunProgressEvent) => { if (terminal) terminal.receive(event); else display.receive(event); } });
-  const interrupted = (): void => { preparation.cancel(); };
+  const interrupted = (): void => { preparation.cancel(); terminal?.interrupt(); };
   process.on("SIGINT", interrupted); process.on("SIGTERM", interrupted);
   let continuation: { directory: string; task: string } | null = null;
   try {
-    if (tui) {
-      terminal = new TestReviewTerminal(preparation, { color: command.color, verbosity: command.verbosity, ...(command.out === null ? {} : { out: resolve(command.out) }) });
+    if (workbench) {
+      const { PreparationScreen } = await import("./tui/preparation.js");
+      terminal = new PreparationScreen(workbench, preparation, { verbosity: command.verbosity, ...(command.out === null ? {} : { out: resolve(command.out) }) });
       const outcome = await terminal.run(command.action === "prepare" ? () => preparation.author() : undefined);
       if (outcome.kind === "continue") continuation = { directory: outcome.directory, task: outcome.task };
     } else {
@@ -49,6 +50,12 @@ export async function executeTestsCommand(command: TestsCommand, overrides: Laye
     const view = preparation.view();
     const result = { kind: "test-preparation", session: view.session, repo: view.repo,
       status: view.content.metadata.trial.status, saved: view.saved, report: view };
+    if (continuation !== null) return { exitCode: 0, continuation };
+    if (workbench) {
+      await workbench.close();
+      console.log(cleanText(`测试准备：${view.content.metadata.trial.status}\n${view.saved ? "保存方案：" + view.saved : "方案尚未保存"}\n证据目录：${preparation.directory}`));
+      return { exitCode: view.content.metadata.trial.status === "failed" ? 1 : 0, continuation };
+    }
     if (command.format === "json") console.log(JSON.stringify(result, null, 2));
     else {
       const style = new TerminalStyle({ color: command.color, output: process.stdout });
@@ -60,7 +67,7 @@ export async function executeTestsCommand(command: TestsCommand, overrides: Laye
       if (view.saved) console.log(`复用命令：bun scripts/cli.ts run <repo> --task "<重构需求>" --tests "${view.saved}"`);
     }
     return { exitCode: view.content.metadata.trial.status === "failed" ? 1 : 0, continuation };
-  } finally { process.off("SIGINT", interrupted); process.off("SIGTERM", interrupted); display.stop(); terminal?.close(); preparation.close(); }
+  } finally { process.off("SIGINT", interrupted); process.off("SIGTERM", interrupted); display.stop(); preparation.close(); }
 }
 
 async function ask(prompt: string): Promise<string> {

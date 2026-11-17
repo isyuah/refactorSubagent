@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
  *   3. project file   (<repo>/.refactor/<domain>.json)
  *   4. explicit files (--<domain>-file <path> ..., in order)
  *   5. scalar overrides (--<domain> key.path=value ..., in order)
+ *   6. typed edits from the interactive launcher
  *
  * A domain supplies its schema checks, its layer paths, its override value
  * parser and the two nouns used in error messages. Reading, deep merging,
@@ -17,6 +18,8 @@ import { existsSync, readFileSync } from "node:fs";
  */
 
 export interface LayerOverrides {
+  /** Typed configuration assembled by the interactive launcher, applied last. */
+  readonly inline?: Readonly<Record<string, unknown>>;
   /** Extra config files, merged in order after the project layer. */
   readonly files?: readonly string[];
   /** `key.path=value` overrides applied last. */
@@ -74,6 +77,7 @@ export function resolveLayeredConfig<C, T>(
     sources.push(path);
   }
   for (const raw of overrides?.values ?? []) merged = applyOverride(spec, merged, raw);
+  if (overrides?.inline) { merged = mergeLayer(merged, overrides.inline); sources.push("<interactive>"); }
   return { value: spec.resolve(merged), sources, missing };
 }
 
