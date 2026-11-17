@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createPatch } from "diff";
-import { Pipeline, buildStageFlow, resolvePipeline } from "../../config/pipeline.js";
+import { Pipeline, DEFAULT_PIPELINE, buildStageFlow, resolvePipeline } from "../../config/pipeline.js";
 import { Limits, resolveLimits } from "../../config/limits.js";
 import type { LayerOverrides } from "../../config/layers.js";
 import type { RunCommand, TestsCommand } from "../args.js";
@@ -75,7 +75,7 @@ export class LaunchWizard {
   }
   private resolveConfiguration(): { limits: Limits; pipeline: Pipeline } {
     const limits = resolveLimits({ repoRoot: resolve(this.command.repo), overrides: { ...this.originalLimits, files: this.limitFiles } });
-    const pipeline = resolvePipeline({ repoRoot: resolve(this.command.repo), overrides: { ...this.originalPipeline, files: this.pipelineFiles } });
+    const pipeline = this.command.kind === "run" ? resolvePipeline({ repoRoot: resolve(this.command.repo), overrides: { ...this.originalPipeline, files: this.pipelineFiles } }) : { pipeline: structuredClone(DEFAULT_PIPELINE), sources: [] };
     this.limitSources = limits.sources; this.pipelineSources = pipeline.sources;
     return { limits: limits.limits, pipeline: pipeline.pipeline };
   }
