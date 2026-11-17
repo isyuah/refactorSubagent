@@ -78,6 +78,14 @@ describe("OpenTUI launch configuration", () => {
       await t.activate("action:cancel"); expect(await running).toBeInstanceOf(CliInputCancelled);
     } finally { await t.close(); }
   });
+  test("test preparation ignores unused refactor configuration and preserves it for a later continuation", async () => {
+    const repo = repository(); const t = await terminal(120, 38); const command = parseCliArgs(["tests", "prepare", repo, "--scope", "保护边界输入"]);
+    if (command.kind !== "tests") throw new Error("tests required");
+    const pipeline = { files: ["missing-for-this-test.json"], values: ["stages.refactor.mode=patch"] };
+    const wizard = new LaunchWizard(t.ui, command, {}, pipeline); const running = wizard.run();
+    try { await t.activate("action:start"); expect((await running).pipelineOverrides).toEqual(pipeline); }
+    finally { await t.close(); }
+  });
   test("inline edits win over argv, switch discriminated modes cleanly and are schema validated", () => {
     const repo = repository();
     const limits = resolveLimits({ repoRoot: repo, overrides: { values: ["sessions.testWriter.maxTurns=8"], inline: { sessions: { testWriter: { maxTurns: 12 } } } } });

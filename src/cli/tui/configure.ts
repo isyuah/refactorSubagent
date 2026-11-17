@@ -177,10 +177,10 @@ export class LaunchWizard {
     const sections = [section("basic", "基本任务", basic), ...(flow.length ? [section("flow", "执行方案", flow)] : []), section("limits", "模型与限制", limits), section("paths", "目录与注入", paths), section("sources", "配置来源", sources), {
       id: "confirm", title: "确认启动", items: () => [{ id: "review", label: "本次运行", description: failure ?? "配置有效", detail: () => ({ title: "确认启动", paragraphs: [
         { text: `仓库：${resolve(command.repo)}\n${command.kind === "run" ? "重构需求：" + command.task : "保护范围：" + (command.scope ?? "保存方案中的范围")}` },
-        { text: `流程配置来源：\n${this.pipelineSources.join("\n") || "内置默认值"}\n\n限制配置来源：\n${this.limitSources.join("\n") || "内置默认值"}` },
+        { text: (command.kind === "run" ? `流程配置来源：\n${this.pipelineSources.join("\n") || "内置默认值"}\n\n` : "") + `限制配置来源：\n${this.limitSources.join("\n") || "内置默认值"}` },
         { text: failure ?? "必填项和配置校验通过。", tone: failure ? "error" : "success" },
         { text: this.notice, tone: "muted" }, { text: "可导出本次完整配置及启动命令，之后从终端直接复用。", tone: "muted" },
-      ], code: JSON.stringify({ pipeline: this.pipeline, limits: this.limits }, null, 2) }) }],
+      ], code: JSON.stringify(command.kind === "run" ? { pipeline: this.pipeline, limits: this.limits } : { limits: this.limits }, null, 2) }) }],
     } satisfies Section];
     this.ui.setSections(sections);
     // Keep the selected field after edits, including fields revealed by a mode switch.
@@ -219,7 +219,7 @@ export class LaunchWizard {
     const command = { ...this.command, configure: false };
     if (command.kind === "run") command.tests = null;
     return { command, limitOverrides: { ...this.originalLimits, files: this.limitFiles, inline: this.limits },
-      pipelineOverrides: { ...this.originalPipeline, files: this.pipelineFiles, inline: { stages: this.pipeline.stages } } };
+      pipelineOverrides: command.kind === "run" ? { ...this.originalPipeline, files: this.pipelineFiles, inline: { stages: this.pipeline.stages } } : this.originalPipeline };
   }
   private async start(): Promise<void> {
     const failure = this.validate(); if (failure) { this.ui.setNotice(failure); await this.ui.message("无法启动", failure); return; }
