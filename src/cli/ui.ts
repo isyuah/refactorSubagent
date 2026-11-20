@@ -1,7 +1,16 @@
 import { CliUsageError, parseCliArgs, type CliCommand, type RunCommand, type TestsCommand } from "./args.js";
-import { resolveCliInput } from "./input.js";
+import { CliInputCancelled, resolveCliInput } from "./input.js";
 import type { LayerOverrides } from "../config/layers.js";
 import type { Workbench } from "./tui/workbench.js";
+
+/**
+ * 配置向导的取消是否应回到主菜单。用户点「取消」属于操作选择；
+ * Ctrl+C / 窗口中断属于退出意图——两者都表现为 CliInputCancelled，
+ * 必须靠中断标记区分，否则 Ctrl+C 会被误救回菜单。
+ */
+export function cancelReturnsToMenu(error: unknown, interrupted: boolean): boolean {
+  return error instanceof CliInputCancelled && !interrupted;
+}
 
 export interface UiEnvironment { input: { isTTY?: boolean }; output: { isTTY?: boolean }; env: Record<string, string | undefined> }
 const environment = (): UiEnvironment => ({ input: process.stdin, output: process.stderr, env: process.env });
@@ -21,6 +30,7 @@ export interface CliLaunch { command: CliCommand; limitOverrides: LayerOverrides
 export async function prepareCliLaunch(argv: readonly string[], limits: LayerOverrides, pipeline: LayerOverrides): Promise<CliLaunch> {
   const home = argv.length === 0 && interactiveTerminal();
   let command = home ? parseCliArgs(["run"], true) : parseCliArgs(argv, true);
+  let interrupted = false;
   if (!home && command.kind !== "run" && command.kind !== "tests") return { command, limitOverrides: limits, pipelineOverrides: pipeline, workbench: null };
   if ((command.kind === "run" || command.kind === "tests") && resolveUi(command) === "plain") {
     return { command: await resolveCliInput(argv), limitOverrides: limits, pipelineOverrides: pipeline, workbench: null };
@@ -32,7 +42,7 @@ export async function prepareCliLaunch(argv: readonly string[], limits: LayerOve
     console.error(`TUI 初始化失败，改用文字模式：${error instanceof Error ? error.message : String(error)}`);
     return { command: await resolveCliInput(argv), limitOverrides: limits, pipelineOverrides: pipeline, workbench: null };
   }
-  const interrupt = (): void => { workbench.dismissDialog(); workbench.onCancel(); };
+  const interrupt = (): void => { interrupted = true; workbench.dismissDialog(); workbench.onCancel(); };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
     workbench.onCancel = () => { void workbench.close(); };
@@ -50,8 +60,9 @@ export async function prepareCliLaunch(argv: readonly string[], limits: LayerOve
           const configured = await new LaunchWizard(workbench, command, limits, pipeline).run();
           return { ...configured, workbench };
         } catch (error) {
-          if (!(error instanceof CliInputCancelled)) throw error;
-          // 配置向导取消 → 回到主菜单，让用户换个方向重新开始。
+          if (!cancelReturnsToMenu(error, interrupted)) throw error;
+          // 用户点了配置向导的「取消」→ 回到主菜单，让用户换个方向重新开始；
+          // 中断（Ctrl+C）不是取消，见 cancelReturnsToMenu。
         }
       }
     }
