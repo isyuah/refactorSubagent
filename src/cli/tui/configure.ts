@@ -104,9 +104,14 @@ export class LaunchWizard {
     const basic: Field[] = [this.path("repo", "目标仓库", () => command.repo, text => {
       // 相对路径以启动命令时所在的目录为基准；报错时把解析结果亮出来，
       // 让"填到哪里去了"一目了然，而不是让用户对着静默失败猜。
+      // 空输入不能解析成当前目录（resolve("") === cwd）——空值就是没填。
+      if (text.trim().length === 0) {
+        throw new Error("请填写仓库目录：可填相对路径（按启动目录解析）或绝对路径");
+      }
       const resolvedText = resolve(text);
       if (!existsSync(resolvedText) || !statSync(resolvedText).isDirectory()) {
-        throw new Error(`仓库目录不存在：${text}\n（相对路径按启动目录解析为 ${resolvedText}；当前目录：${process.cwd()}）`);
+        // 单行紧凑文案：错误显示区只有两行高，换行会让"当前目录"被裁掉。
+        throw new Error(`仓库目录不存在：${text}（相对路径按启动目录解析为 ${resolvedText}；当前目录：${process.cwd()}）`);
       }
       const previous = command.repo; command.repo = resolvedText;
       try { const next = this.resolveConfiguration(); this.limits = next.limits; this.pipeline = next.pipeline; }

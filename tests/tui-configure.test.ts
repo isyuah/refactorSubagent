@@ -23,31 +23,33 @@ async function field(t: Awaited<ReturnType<typeof terminal>>, id: string): Promi
 }
 
 describe("OpenTUI launch configuration", () => {
-  test("repo 字段接受相对路径，失败时展示解析基准与当前目录", async () => {
+  test("repo 字段接受相对路径：失败时展示解析基准，空值显式报错，修正后通过", async () => {
     const repo = repository(); const t = await terminal(120, 38);
     const wizard = new LaunchWizard(t.ui, command(repo), {}, {}); const running = wizard.run();
-    try {
-      // 路径字段回车打开目录浏览器，默认选中第一项「输入路径」。
-      await field(t, "repo");
-      await t.mockInput.pressEnter(); await t.frame();
+    const editRepo = async (text: string): Promise<void> => {
+      await field(t, "repo");                                  // 目录浏览器
+      await t.mockInput.pressEnter(); await t.frame();          // 默认「输入路径」→ 输入框
       await t.mockInput.pressKey("a", { ctrl: true }); await t.mockInput.pressKey("k", { ctrl: true });
-      await t.mockInput.pasteBracketedText("missing-relative-dir");
-      await t.activate("dialog:submit"); await t.frame();
-      // 校验失败：弹窗保持打开，错误显示在弹窗内（含解析基准与当前目录）。
+      await t.mockInput.pasteBracketedText(text);
+      await t.activate("dialog:submit"); await t.frame();       // 提交 → apply 校验
+    };
+    try {
+      // ① 相对路径：按启动目录解析；失败时把解析结果与当前目录一起说明。
+      await editRepo("missing-relative-dir");
       const frame = await t.frame();
       expect(frame).toContain("仓库目录不存在：missing-relative-dir");
       expect(frame).toContain("相对路径按启动目录解析为");
       expect(frame).toContain(process.cwd());
-      // 无需关闭任何弹窗：直接在同一对话框里改成真实仓库，校验即通过。
-      await field(t, "repo");
-      await t.mockInput.pressKey("a", { ctrl: true }); await t.mockInput.pressKey("k", { ctrl: true });
-      await t.mockInput.pasteBracketedText(repo);
-      // 粘贴辅助会隐式提交：校验通过后弹窗关闭。
-      await t.frame();
+      await t.activate("dialog:close"); await t.frame();        // 关掉「操作失败」弹窗
+      // ② 空值不能被当成当前目录（resolve("") === cwd）。
+      await editRepo("");
+      expect(await t.frame()).toContain("请填写仓库目录");
+      await t.activate("dialog:close"); await t.frame();
+      // ③ 改填真实仓库：校验通过，向导回到表单。
+      await editRepo(repo);
       expect(wizard.validate()).not.toBeNull();
     } finally { await t.close(); void running.catch(() => {}); }
-  });
-  test("edit missing task, choose workflow input and start with ephemeral typed settings", async () => {
+  });  test("edit missing task, choose workflow input and start with ephemeral typed settings", async () => {
     const repo = repository(); const t = await terminal(120, 38); const wizard = new LaunchWizard(t.ui, command(repo), {}, {}); const running = wizard.run();
     try {
       await field(t, "task"); await t.mockInput.pasteBracketedText("提取重复函数\n保留行为"); await t.activate("dialog:submit");
