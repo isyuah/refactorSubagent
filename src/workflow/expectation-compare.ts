@@ -31,6 +31,10 @@ export interface ExpectationComparisonOutcome {
     readonly baselineValue: unknown;
     readonly candidateValue: unknown;
     readonly reason: string;
+    /** 考卷自违（单侧语义）：both-matches 下基线侧的值是否匹配考卷自己声明的
+     *  模式；基线是未经改动的原版代码，不满意味着考卷的期望值与事实矛盾。
+     *  其他跨侧关系（equal 等）无单侧语义，恒为 null。 */
+    readonly baselineMatched: boolean | null;
   }>;
   /** Structural problems: count mismatch, missing pattern, … */
   readonly errors: string[];
@@ -77,7 +81,7 @@ export function compareExpectations(
     if (check.ok) {
       matchedRef.push(entry);
     } else {
-      mismatchedRef.push({ ...entry, reason: check.reason });
+      mismatchedRef.push({ ...entry, reason: check.reason, baselineMatched: baselineSelfMatch(b) });
     }
   }
 
@@ -147,6 +151,22 @@ function evaluateRelation(
     default:
       return { ok: false, reason: `unsupported relation: ${String(relation)}` };
   }
+}
+
+/** 单侧自检：考卷自己的声明在原版代码的观测值上是否自洽。
+ *  只有 both-matches 具备单侧语义（每侧各自对照模式）；其他关系是跨侧比较，
+ *  单看基线一侧无法判定对错 → null。 */
+export function baselineSelfMatch(declaration: ExpectationDeclaration): boolean | null {
+  if ((declaration.relation as ExpectationRelation) !== "both-matches") return null;
+  const pattern = declaration.pattern;
+  if (pattern === undefined || pattern.length === 0) return false;
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern);
+  } catch {
+    return false;
+  }
+  return typeof declaration.value === "string" && regex.test(declaration.value);
 }
 
 function looseEqual(a: unknown, b: unknown): boolean {

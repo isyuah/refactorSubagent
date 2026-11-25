@@ -63,6 +63,9 @@ export const ExpectationComparisonResult = z.object({
       ]),
       matched: z.boolean(),
       reason: z.string().default(""),
+      /** 不匹配时：both-matches 下基线侧是否匹配考卷自己的模式（false = 考卷
+       *  自违，原版代码与考卷期望矛盾）；跨侧关系无单侧语义时为 null/缺省。 */
+      baselineMatched: z.boolean().nullable().optional(),
     }),
   ).default([]),
   /** Structural errors (count mismatch, name mismatch, …). */

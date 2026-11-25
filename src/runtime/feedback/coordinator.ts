@@ -90,9 +90,10 @@ export type RepairRoundContext =
       dialogueId: string | null;
       testEntry: string;
       feedback: string;
-      /** The measured candidate branch keeps carrying the unchanged code. */
-      candidateBranch: string;
-      baseSha: string;
+      /** The measured candidate branch keeps carrying the unchanged code;
+       *  null 表示候选尚未建立（考卷预检在重构前失败）——修复轮将重新建场并跑一次完整重构。 */
+      candidateBranch: string | null;
+      baseSha: string | null;
       sessionId: string;
     }
   | {
@@ -101,8 +102,9 @@ export type RepairRoundContext =
       /** Declared id of the build that failed (from the attribution; null
        *  when the round predated build-id attribution). */
       failedBuildId: string | null;
-      candidateBranch: string;
-      baseSha: string;
+      /** null 表示候选尚未建立（考卷预检在重构前失败）。 */
+      candidateBranch: string | null;
+      baseSha: string | null;
       pinnedWorkflows: WorkflowsStage;
       sessionId: string;
     };
@@ -144,6 +146,20 @@ export function routerInputOf(result: StageFlowResult): RouterInput {
     : comparison.declarations
         .filter((declaration) => !declaration.matched)
         .map((declaration) => ({ name: declaration.name, reason: declaration.reason }));
+  // 考卷自违：both-matches 关系下基线侧（原版代码）不匹配考卷自己声明的模式。
+  // 候选改动改变不了基线侧的观测值，所以这类失配永远无法靠修代码消除——
+  // 它证明考卷的期望值与事实矛盾，而不是候选发生了行为漂移。
+  const baselineSelfViolations = comparison === null
+    ? []
+    : comparison.declarations
+        .filter((declaration) => !declaration.matched && declaration.baselineMatched === false)
+        .map((declaration) => declaration.name);
+  // 考卷预检失败（重构前彩排）：考卷自违清单来自 failure-report.detail。
+  const rawPrecheckViolations = failure?.detail['self_violations'];
+  const precheckSelfViolations: readonly string[] =
+    failure?.detail['precheck'] === true && Array.isArray(rawPrecheckViolations)
+      ? rawPrecheckViolations.filter((name): name is string => typeof name === 'string')
+      : [];
   return {
     state: result.state,
     failure: failure === null
@@ -159,6 +175,8 @@ export function routerInputOf(result: StageFlowResult): RouterInput {
     side,
     buildId,
     mismatches,
+    baselineSelfViolations,
+    precheckSelfViolations,
     failureOwner: failure === null ? null : classifyFailureOwner(failure.reason),
     evidencePaths: [
       join(result.logDir, "artifacts", "expectation-comparison-result.json"),
@@ -358,8 +376,10 @@ export async function runFeedbackLoop(config: FeedbackLoopConfig): Promise<Feedb
       if ((dialogueId === null && !config.allowFreshTestRepair) || testEntry === null) {
         return finish("missing-input", "原测试编写对话编号或测试脚本路径不可用。");
       }
-      if (patch === null) {
-        return finish("missing-patch", "尚未记录候选提交，无法保留已完成的改动。");
+      // 预检在重构前失败时没有候选提交：修复轮重新建场并跑完整重构。
+      const preRun = patch === null && result.failure?.stage === "workflows";
+      if (patch === null && !preRun) {
+        return finish("missing-patch", "本轮没有宿主测量过的候选提交（patch 为空）；无法保留候选分支，停止。");
       }
       const feedback = composeTestFeedback(decision.evidence, { round, testEntry });
       context = {
@@ -368,8 +388,8 @@ export async function runFeedbackLoop(config: FeedbackLoopConfig): Promise<Feedb
         dialogueId,
         testEntry,
         feedback,
-        candidateBranch: patch.branch,
-        baseSha: patch.base_sha,
+        candidateBranch: patch?.branch ?? null,
+        baseSha: patch?.base_sha ?? null,
         sessionId,
       };
       budgetUsed += 1;
@@ -378,8 +398,10 @@ export async function runFeedbackLoop(config: FeedbackLoopConfig): Promise<Feedb
     } else {
       // decision.kind === "repair-build"
       const patch = result.patch;
-      if (patch === null) {
-        return finish("missing-patch", "尚未记录候选提交，无法保留已完成的改动。");
+      // 预检在重构前失败时没有候选提交：构建修好后重新建场并跑完整重构。
+      const buildPreRun = patch === null && result.failure?.stage === "workflows";
+      if (patch === null && !buildPreRun) {
+        return finish("missing-patch", "本轮没有宿主测量过的候选提交（patch 为空）；无法保留候选分支，停止。");
       }
       const brief = config.composeBuildBrief(decision.evidence, round);
       if (brief === null) {
@@ -404,8 +426,8 @@ export async function runFeedbackLoop(config: FeedbackLoopConfig): Promise<Feedb
         lane: "build",
         fixedBuild: fixed,
         failedBuildId: decision.evidence.buildId ?? null,
-        candidateBranch: patch.branch,
-        baseSha: patch.base_sha,
+        candidateBranch: patch?.branch ?? null,
+        baseSha: patch?.base_sha ?? null,
         pinnedWorkflows,
         sessionId,
       };

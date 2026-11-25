@@ -84,6 +84,7 @@ async function execute(
     installOwnedProcessSignalHandlers({ beforeExit: async () => { await workbench?.close(); } });
     const continuation: RunCommand = { kind: "run", ui: command.ui, configure: false, repo: command.repo, task: outcome.continuation.task, tests: outcome.continuation.directory,
       session: null, sessionRoot: command.sessionRoot, worktreeRoot: null, injections: [], resume: null, autoRetry: 3,
+      examPrecheck: false,
       format: command.format, verbosity: command.verbosity, progress: "auto", color: command.color, noInteractive: false };
     if (workbench) {
       const { LaunchWizard } = await import("../src/cli/tui/configure.js");
@@ -201,6 +202,9 @@ async function executeRun(
         ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
         ...(command.injections.length > 0 ? { injections: command.injections } : {}),
         limitOverrides: overrides,
+        // 出卷后先拿原版代码彩排考卷（--exam-precheck；默认关闭——
+        // 离线回放场景固化了旧时序，默认开启需要先重写那些夹具）。
+        examPrecheck: command.examPrecheck,
         onProgress: display.receive,
         configuration: { pipeline: resolved.pipeline, sources: resolved.sources, overrides: pipelineOverrides.values ?? [] },
       };

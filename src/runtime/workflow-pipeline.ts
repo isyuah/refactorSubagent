@@ -559,6 +559,7 @@ function finishSelfDriven(
         relation: m.declaration.relation,
         matched: false,
         reason: m.reason,
+        baselineMatched: m.baselineMatched,
       })),
     ],
     errors: comparison.errors,

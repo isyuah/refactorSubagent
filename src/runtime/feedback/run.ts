@@ -143,7 +143,14 @@ export async function runFeedbackStageFlow(
       },
       runRepairRound: (_round, context) => {
         const base = { ...sharedRequest, sessionId: context.sessionId };
-        const prepare = existingBranchPrepareStage({ branch: context.candidateBranch, baseSha: context.baseSha });
+        // candidateBranch 为 null：考卷预检在重构前失败，候选尚未建立——
+        // 修复轮重新建场（默认 prepare）并跑一次完整重构（默认 refactor）。
+        const prepare = context.candidateBranch === null || context.baseSha === null
+          ? undefined
+          : existingBranchPrepareStage({ branch: context.candidateBranch, baseSha: context.baseSha });
+        const fixed = context.candidateBranch === null
+          ? undefined
+          : fixedRefactorStage(`feedback: candidate branch ${context.candidateBranch} carries the measured change`);
         if (context.lane === "refactor") {
           return runStageFlow({
             ...base,
@@ -164,8 +171,8 @@ export async function runFeedbackStageFlow(
                 ...(context.dialogueId === null ? {} : { dialogueId: context.dialogueId }), scope: verificationScope, feedback: context.feedback, testEntry: context.testEntry,
                 dialogueRoot: e2eDir(owner), adoptBuilds: context.adoptBuilds,
               }),
-              prepare,
-              refactor: fixedRefactorStage(`feedback: candidate branch ${context.candidateBranch} carries the measured change`),
+              ...(prepare === undefined ? {} : { prepare }),
+              ...(fixed === undefined ? {} : { refactor: fixed }),
             },
           });
         }
@@ -180,8 +187,9 @@ export async function runFeedbackStageFlow(
         return runStageFlow({
           ...base,
           flow: {
-            ...request.flow, workflows, prepare,
-            refactor: fixedRefactorStage(`feedback: candidate branch ${context.candidateBranch} carries the measured change`),
+            ...request.flow, workflows,
+            ...(prepare === undefined ? {} : { prepare }),
+            ...(fixed === undefined ? {} : { refactor: fixed }),
           },
         });
       },

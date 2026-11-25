@@ -81,6 +81,8 @@ export interface StageResumeRequest {
   readonly workflowsView?: WorkflowsCheckpointView;
   readonly limitOverrides?: LayerOverrides;
   readonly knownEnvironmentPatterns?: readonly RegExp[];
+  /** 转发给内部 runStageFlow：考卷预检（重构前彩排）。 */
+  readonly examPrecheck?: boolean;
   readonly logger?: E2ELogger;
   readonly onProgress?: StageFlowRequest["onProgress"];
   readonly configuration?: StageFlowRequest["configuration"];
@@ -500,6 +502,7 @@ export async function runStageFlowResume(req: StageResumeRequest): Promise<Stage
     ...(req.knownEnvironmentPatterns !== undefined
       ? { knownEnvironmentPatterns: req.knownEnvironmentPatterns }
       : {}),
+    ...(req.examPrecheck === true ? { examPrecheck: true } : {}),
     ...(req.logger !== undefined ? { logger: req.logger } : {}),
     ...(req.onProgress !== undefined ? { onProgress: req.onProgress } : {}),
     ...(req.configuration !== undefined ? { configuration: req.configuration } : {}),

@@ -33,7 +33,7 @@ function fakeResult(options: {
   commitSha?: string;
   failure?: { category: string; component: string; reason: string } | null;
   failureDetail?: Record<string, unknown>;
-  mismatches?: readonly { name: string; reason: string }[];
+  mismatches?: readonly { name: string; reason: string; relation?: string; baselineMatched?: boolean }[];
 }): StageFlowResult {
   return {
     state: options.state,
@@ -66,9 +66,10 @@ function fakeResult(options: {
               overall: "inconsistent",
               declarations: (options.mismatches ?? []).map((mismatch) => ({
                 name: mismatch.name,
-                relation: "equal",
+                relation: mismatch.relation ?? "equal",
                 matched: false,
                 reason: mismatch.reason,
+                ...(mismatch.baselineMatched !== undefined ? { baselineMatched: mismatch.baselineMatched } : {}),
               })),
               errors: [],
               reason: "fake",
@@ -515,6 +516,43 @@ describe("runFeedbackLoop", () => {
     }
   });
 
+  test("an exam self-violation stops as exam-suspect instead of burning a repair round", async () => {
+    // 1120-f 现场：考卷把文件哈希写死错了（both-matches 的基线侧不匹配），
+    // 修候选代码永远消除不了 → 停止喊人，不产生修复轮、不花预算。
+    const stateDir = mkdtempSync(join(tmpdir(), "rfr-fbstate-"));
+    try {
+      const captured: Captured = { rounds: [], repairContexts: [], notifications: [], pinnedCalls: 0 };
+      const outcome = await runFeedbackLoop(
+        makeConfig(
+          [
+            fakeResult({
+              state: "REJECTED",
+              dialogueId: "conv-1",
+              branch: "refactor/agent-x",
+              commitSha: "c1",
+              mismatches: [{
+                name: "test/test-strscpy.c.digest",
+                reason: "pattern '^…=43b0…$' did not match both sides (baseline no, candidate no)",
+                relation: "both-matches",
+                baselineMatched: false,
+              }],
+            }),
+          ],
+          captured,
+          3,
+          stateDir,
+        ),
+      );
+      expect(outcome.stoppedBecause).toBe("routed-stop");
+      expect(outcome.stopDetail).toContain("self-contradicts");
+      expect(captured.rounds).toEqual(["initial"]); // 没有 repair-2
+      const state = JSON.parse(readFileSync(join(stateDir, "feedback-state.json"), "utf8"));
+      expect(state.budgetUsed).toBe(0);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   test("repairing build B after build A is progress, not a no-progress loop", async () => {
     const captured: Captured = { rounds: [], repairContexts: [], notifications: [], pinnedCalls: 0 };
     const outcome = await runFeedbackLoop(
@@ -662,6 +700,13 @@ describe("runFeedbackLoop", () => {
 });
 
 describe("--auto-retry parsing (carried over from the auto-retry suite)", () => {
+  test("--exam-precheck is opt-in and parses on the run command", () => {
+    const off = parseCliArgs(["run", ".", "--task", "t"]);
+    expect(off.kind === "run" && off.examPrecheck).toBe(false);
+    const on = parseCliArgs(["run", ".", "--task", "t", "--exam-precheck"]);
+    expect(on.kind === "run" && on.examPrecheck).toBe(true);
+  });
+
   test("defaults to 3 (feedback on) and accepts an explicit 0", () => {
     const defaults = parseCliArgs(["run", ".", "--task", "t"]);
     expect(defaults.kind === "run" && defaults.autoRetry).toBe(3);

@@ -44,6 +44,11 @@ export interface RouterInput {
   readonly buildId: string | null;
   /** Behavior diffs of a REJECTED round (empty when none/absent). */
   readonly mismatches: readonly { name: string; reason: string }[];
+  /** 考卷自违：both-matches 关系下基线侧（原版代码）不匹配考卷自己的模式。
+   *  这类失配无法靠修改候选代码消除，说明考卷的期望值与原版事实矛盾。 */
+  readonly baselineSelfViolations: readonly string[];
+  /** 考卷预检（重构前在原版代码上彩排）发现的考卷自违声明名；非预检失败为空。 */
+  readonly precheckSelfViolations: readonly string[];
   /** Owner classification of a test-side failure (script vs program). */
   readonly failureOwner: FailureOwner | null;
   /** Log/evidence paths worth handing to the repairing dialogue. */
@@ -131,6 +136,21 @@ export function routeFailure(input: RouterInput): FeedbackDecision {
   // Rule 5: a verdict, not an execution failure. Only the refactor dialogue
   // hears about it — the exam and the builds are not negotiable here.
   if (input.state === "REJECTED") {
+    // 例外：考卷自违。当全部失配都是 both-matches 且基线侧（未经改动的原版）
+    // 不匹配考卷自己的模式时，这不是候选的漂移——修代码永远改变不了基线侧的
+    // 观测值。判"考卷可疑"并停止，绝不把修复预算烧在无法完成的任务上；也绝不
+    // 因此改动考卷（铁律：判决不可讨价还价）。
+    const allSelfViolations =
+      input.mismatches.length > 0 &&
+      input.baselineSelfViolations.length === input.mismatches.length;
+    if (allSelfViolations) {
+      return {
+        kind: "needs-diagnosis",
+        detail:
+          "exam self-contradicts the baseline: the pristine code already fails the exam's own " +
+          `expectation(s) ${input.baselineSelfViolations.join(", ")} — repairing the candidate cannot fix this`,
+      };
+    }
     return {
       kind: "repair-refactor",
       trigger: "behavior-mismatch",
@@ -179,6 +199,11 @@ export function routeFailure(input: RouterInput): FeedbackDecision {
   // Rules 3/4: test-side failures split by WHO failed. Nonzero exits the
   // exam deliberately recorded never reach here (those are mismatches).
   if (category === "test") {
+    // 预检自违：重构尚未开始，原版代码就违反了考卷自己的 both-matches 断言
+    // ——这是考卷缺陷（冻结值写错），交回原出题对话修正后再走全流程。
+    if (input.precheckSelfViolations.length > 0) {
+      return { kind: "repair-test", evidence: evidenceBase };
+    }
     const owner = input.failureOwner ?? classifyFailureOwner(reason);
     const side = input.side ?? "baseline";
     if (owner === "script") {
