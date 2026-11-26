@@ -153,7 +153,7 @@ export interface StageFlowRequest {
    * 出卷后、重构前先在原版代码上完整执行一遍考卷（构建 + 测试 + 自洽检查）。
    * 考卷缺陷（构建方案写歪、脚本报错、both-matches 冻结值写错）在这里暴露，
    * 由反馈路由交给对应修复通道，而不是让重构烧完时间才发现。
-   * 默认关闭；un 命令行入口开启（testset 的预置考卷无需重复彩排）。
+   * 默认关闭；run 命令行入口开启（testset 的预置考卷无需重复彩排）。
    */
   readonly examPrecheck?: boolean;
   readonly logger?: E2ELogger;
@@ -451,22 +451,35 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       saveStageCheckpoints(store, checkpoints);
       if (req.examPrecheck === true && declared !== null) {
         const precheckDeclared = declared;
-        // 出卷后、重构前：先拿原版代码完整彩排一遍考卷。考卷缺陷在这里
-        // 暴露并携带结构化归因中止，由反馈路由决定修复通道。
-        logger.phase("EXAM_PRECHECK");
-        await precheckDeclaredExam({
-          repoPath: req.repoPath,
-          host: preflight.host,
-          project: preflight.project,
-          limits: ctx.limits,
-          ...(logger !== undefined ? { logger } : {}),
-          // 与声明集一一对应：归因与修复简报都按声明的 build id 定位。
-          builds: precheckDeclared.buildResolutions.map((resolution, index) => ({
-            id: precheckDeclared.declaredSet.builds[index]?.id ?? resolution.manifest.id,
-            resolution,
-          })),
-          test: precheckDeclared.testResolution,
-        });
+        // 预检只对"默认建场 + 自驱动考卷"成立：
+        //  - 自定义 prepare 可能按配置的 baseSha 建基线，HEAD 未必是它要用的提交；
+        //  - 声明式考卷（CTest/TestSpec）不走自驱动执行器，需另做预演路径。
+        const selfDriven = precheckDeclared.testResolution.workflow === null;
+        const defaultPrepare = flow.prepare === undefined;
+        if (!selfDriven || !defaultPrepare) {
+          logger.info("exam precheck skipped", {
+            reason: selfDriven ? "custom prepare stage (base commit unknown)" : "declarative exam (not self-driven)",
+          });
+        } else {
+          logger.phase("EXAM_PRECHECK");
+          await precheckDeclaredExam({
+            repoPath: req.repoPath,
+            host: preflight.host,
+            project: preflight.project,
+            limits: ctx.limits,
+            ...(logger !== undefined ? { logger } : {}),
+            // 与声明集一一对应：归因与修复简报都按声明的 build id 定位。
+            builds: precheckDeclared.buildResolutions.map((resolution, index) => ({
+              id: precheckDeclared.declaredSet.builds[index]?.id ?? resolution.manifest.id,
+              resolution,
+            })),
+            test: precheckDeclared.testResolution,
+            // 与真实验证同等的输入面：辅助材料与 --inject 文件一并落地，
+            // 否则读材料的考卷会在预检里误报 ENOENT。
+            ...(precheckDeclared.materials.length > 0 ? { materials: precheckDeclared.materials } : {}),
+            ...(req.injections !== undefined && req.injections.length > 0 ? { injections: req.injections } : {}),
+          });
+        }
       }
 
       currentStage = "prepare";

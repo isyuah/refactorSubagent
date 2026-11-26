@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { halt, runStageFlow } from "../src/runtime/stage-flow.js";
 import { presetWorkflowsStage } from "../src/runtime/stage-presets.js";
+import { materialHash } from "../src/workflow/verification-materials.js";
 
 /**
  * 考卷预检：出卷后、重构前，先在未经改动的原版代码上完整彩排考卷。
@@ -113,6 +114,44 @@ export default async (ctx) => {
     expect(result.failure?.detail["precheck"]).toBeUndefined();
   }, 240_000);
 
+  test("the precheck materializes declared materials and --inject files like the real verification", async () => {
+    // 1120-f 类场景：考卷读辅助材料与判例注入文件。预检必须和真实验证
+    // 一样把它们落进彩排树，否则会误报 ENOENT 并被当成脚本错误。
+    const { repo, sessionRoot } = createRepo(`
+export const workflowKind = "test-workflow-driven";
+export default async (ctx) => {
+  await ctx.validator.assertFile("build/app.exe", "fixture executable");
+  const material = await ctx.fs.readFile("build/verification/input.txt");
+  const oracle = await ctx.fs.readFile("refactor-task/oracle.txt");
+  ctx.expect("material", material);
+  ctx.expect("oracle", oracle);
+};
+`);
+    writeFileSync(join(repo, "workflows", "build.ts.materials.json"), JSON.stringify({
+      version: 1,
+      materials: [{ path: "build/verification/input.txt", content: "old", sha256: materialHash("old") }],
+    }));
+    mkdirSync(sessionRoot, { recursive: true });
+    const oracleSource = join(sessionRoot, "oracle-src.txt");
+    writeFileSync(oracleSource, "judge-oracle");
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-qm", "materials + injection fixture"]);
+    const result = await runStageFlow({
+      repoPath: repo,
+      task: "precheck materials and injections",
+      sessionRoot,
+      sessionId: "precheck-materials",
+      examPrecheck: true,
+      injections: [{ source: oracleSource, dest: "refactor-task/oracle.txt" }],
+      flow: {
+        workflows: presetFlow(),
+        refactor: async () => halt("reached refactoring after a clean precheck", { category: "internal", component: "test-harness" }),
+      },
+    });
+    expect(result.state).toBe("ABORTED");
+    expect(result.failure?.component).toBe("test-harness");
+    expect(result.failure?.detail["precheck"]).toBeUndefined();
+  }, 240_000);
   test("a build workflow that fails on the pristine tree is attributed as a baseline build failure", async () => {
     const { repo, sessionRoot } = createRepo(`
 export const workflowKind = "test-workflow-driven";

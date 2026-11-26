@@ -25,16 +25,18 @@ describe("compareExpectations — baseline self-verification", () => {
     expect(outcome.mismatched).toHaveLength(0);
   });
 
-  test("both-matches: 仅基线侧不匹配 → 考卷自违，baselineMatched=false", () => {
-    // 考卷把期望值写死成 43b0…，而原版实测是 e3710…（1120-f 现场）。
+  test("both-matches: 仅基线侧不匹配（候选侧匹配）→ 考卷自违，baselineMatched=false", () => {
+    // 真正的单侧象限：候选值匹配考卷模式，基线值不匹配。这样把
+    // baselineSelfMatch(b) 误写成 baselineSelfMatch(c) 时本断言会失败。
     const outcome = compareExpectations(
       [decl("test/test-strscpy.c.digest", "both-matches", "test/test-strscpy.c=e3710c8d", "^test/test-strscpy\\.c=43b0aeae$")],
-      [decl("test/test-strscpy.c.digest", "both-matches", "test/test-strscpy.c=e3710c8d", "^test/test-strscpy\\.c=43b0aeae$")],
+      [decl("test/test-strscpy.c.digest", "both-matches", "test/test-strscpy.c=43b0aeae", "^test/test-strscpy\\.c=43b0aeae$")],
     );
     expect(outcome.overall).toBe("inconsistent");
     expect(outcome.mismatched).toHaveLength(1);
     expect(outcome.mismatched[0]!.baselineMatched).toBe(false);
     expect(outcome.mismatched[0]!.reason).toContain("baseline no");
+    expect(outcome.mismatched[0]!.reason).toContain("candidate ok");
   });
 
   test("both-matches: 仅候选侧不匹配 → 真漂移，baselineMatched=true", () => {

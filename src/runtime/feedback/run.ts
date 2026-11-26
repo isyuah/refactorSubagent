@@ -154,6 +154,9 @@ export async function runFeedbackStageFlow(
         if (context.lane === "refactor") {
           return runStageFlow({
             ...base,
+            // 重构道的考卷由有效方案钉死并做过哈希核对，预检的彩排结果已被
+            // 上一轮使用——每轮再跑一遍基线构建/测试只会重复烧时间。
+            ...(request.examPrecheck === true ? { examPrecheck: false } : {}),
             flow: {
               ...request.flow,
               workflows: context.pinnedWorkflows, prepare,
