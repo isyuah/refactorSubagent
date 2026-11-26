@@ -83,6 +83,8 @@ export interface StageResumeRequest {
   readonly knownEnvironmentPatterns?: readonly RegExp[];
   /** 转发给内部 runStageFlow：考卷预检（重构前彩排）。 */
   readonly examPrecheck?: boolean;
+  /** 转发给内部 runStageFlow：预检判定的本轮 base（配置 reuse / 修复轮）。 */
+  readonly precheckBaseSha?: string;
   readonly logger?: E2ELogger;
   readonly onProgress?: StageFlowRequest["onProgress"];
   readonly configuration?: StageFlowRequest["configuration"];
@@ -503,6 +505,7 @@ export async function runStageFlowResume(req: StageResumeRequest): Promise<Stage
       ? { knownEnvironmentPatterns: req.knownEnvironmentPatterns }
       : {}),
     ...(req.examPrecheck === true ? { examPrecheck: true } : {}),
+    ...(req.precheckBaseSha !== undefined ? { precheckBaseSha: req.precheckBaseSha } : {}),
     ...(req.logger !== undefined ? { logger: req.logger } : {}),
     ...(req.onProgress !== undefined ? { onProgress: req.onProgress } : {}),
     ...(req.configuration !== undefined ? { configuration: req.configuration } : {}),

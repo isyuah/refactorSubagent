@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildStageFlow, resolvePipeline } from "../src/config/pipeline.js";
+import { DEFAULT_PIPELINE, buildStageFlow, configuredPrepareBase, resolvePipeline } from "../src/config/pipeline.js";
 
 function tempRoots(): { repo: string; home: string } {
   const root = mkdtempSync(join(tmpdir(), "rfr-pipeline-"));
@@ -80,6 +80,19 @@ describe("pipeline stage-source config", () => {
     writePipeline(repo, { stages: { refactor: { mode: "none" } } });
     const orphan = resolvePipeline({ repoRoot: repo, homeDir: home }).pipeline;
     expect(() => buildStageFlow(orphan)).toThrow(/prepare\.mode 'reuse'/);
+  });
+
+  test("a reused prepare declares the base the exam precheck must dry-run against", () => {
+    const { repo, home } = tempRoots();
+    writePipeline(repo, {
+      stages: {
+        prepare: { mode: "reuse", branch: "refactor/task-1", baseSha: "a".repeat(40) },
+      },
+    });
+    const { pipeline } = resolvePipeline({ repoRoot: repo, homeDir: home });
+
+    expect(configuredPrepareBase(pipeline)).toBe("a".repeat(40));
+    expect(configuredPrepareBase(DEFAULT_PIPELINE)).toBeUndefined();
   });
 
   test("a preset workflows stage needs at least one build source", () => {

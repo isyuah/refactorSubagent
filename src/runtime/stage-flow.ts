@@ -459,11 +459,17 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
         //    提交——调用方通过 precheckBaseSha 显式声明 base，与 HEAD 一致才彩排。
         const selfDriven = precheckDeclared.testResolution.workflow === null;
         const head = resolveHead(req.repoPath);
-        const precheckBase = req.precheckBaseSha ?? head;
-        if (!selfDriven || precheckBase !== head) {
+        // 修复轮与配置 reuse 会显式给出 base；自定义 prepare 没有声明 base
+        // 时无法判断 HEAD 是否正确，保守跳过而不是彩排错的提交。
+        const precheckBase = req.precheckBaseSha ?? (flow.prepare === undefined ? head : null);
+        if (!selfDriven || precheckBase === null || precheckBase !== head) {
           logger.warn("exam precheck skipped", {
-            reason: selfDriven ? "the run base differs from the current HEAD" : "declarative exam (not self-driven)",
-            base: precheckBase,
+            reason: !selfDriven
+              ? "declarative exam (not self-driven)"
+              : precheckBase === null
+                ? "custom prepare stage does not declare its base commit"
+                : "the run base differs from the current HEAD",
+            base: precheckBase ?? "unknown",
             head,
           });
         } else {

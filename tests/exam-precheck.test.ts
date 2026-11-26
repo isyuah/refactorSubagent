@@ -55,6 +55,17 @@ const presetFlow = () => presetWorkflowsStage({
   testEntry: "workflows/test.ts",
 });
 
+/** 若预检被错误地放到 HEAD 上执行，这条 both-matches 自违会立刻中止在 workflows。 */
+const selfViolatingTest = `
+export const workflowKind = "test-workflow-driven";
+export default async (ctx) => {
+  await ctx.validator.assertFile("build/app.exe", "fixture executable");
+  const run = await ctx.process.run({ program: "build/app.exe", args: [], cwd: ".", timeoutMs: 30000 });
+  ctx.expect("exit", "both-matches", String(run.exitCode), "^0$");
+  ctx.expect("frozen", "both-matches", "actual-value", "^frozen-wrong$");
+};
+`;
+
 describe("exam precheck (pristine-tree dry run)", () => {
   test("a frozen both-matches value the baseline violates aborts BEFORE refactoring, with attribution", async () => {
     const { repo, sessionRoot } = createRepo(`
@@ -184,5 +195,45 @@ export default async () => {
     expect(result.failure?.category).toBe("build");
     expect(result.failure?.component).toBe("build-workflow:baseline");
     expect(result.failure?.detail).toMatchObject({ precheck: true, build_id: "gcc-app" });
+  }, 240_000);
+
+  test("a declared base that differs from HEAD skips the precheck instead of dry-running the wrong commit", async () => {
+    const { repo, sessionRoot } = createRepo(selfViolatingTest);
+    const result = await runStageFlow({
+      repoPath: repo,
+      task: "precheck base mismatch",
+      sessionRoot,
+      sessionId: "precheck-base-mismatch",
+      examPrecheck: true,
+      // 配置 reuse 的旧 base：HEAD 不是本轮基线，预检必须放弃。
+      precheckBaseSha: "0".repeat(40),
+      flow: {
+        workflows: presetFlow(),
+        prepare: async () => halt("reached prepare after a skipped precheck", { category: "internal", component: "test-harness" }),
+      },
+    });
+    expect(result.state).toBe("ABORTED");
+    expect(result.failure?.stage).toBe("prepare");
+    expect(result.failure?.component).toBe("test-harness");
+    expect(result.failure?.detail["precheck"]).toBeUndefined();
+  }, 240_000);
+
+  test("a custom prepare stage without a declared base skips the precheck", async () => {
+    const { repo, sessionRoot } = createRepo(selfViolatingTest);
+    const result = await runStageFlow({
+      repoPath: repo,
+      task: "precheck custom prepare",
+      sessionRoot,
+      sessionId: "precheck-custom-prepare",
+      examPrecheck: true,
+      flow: {
+        workflows: presetFlow(),
+        prepare: async () => halt("reached prepare after a skipped precheck", { category: "internal", component: "test-harness" }),
+      },
+    });
+    expect(result.state).toBe("ABORTED");
+    expect(result.failure?.stage).toBe("prepare");
+    expect(result.failure?.component).toBe("test-harness");
+    expect(result.failure?.detail["precheck"]).toBeUndefined();
   }, 240_000);
 });
