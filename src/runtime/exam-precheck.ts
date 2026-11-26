@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { HostPreflight, ProjectDetection } from "../artifacts/index.js";
 import type { Limits } from "../config/limits.js";
 import type { BuildWorkflowResolution } from "../workflow/build-workflow.js";
@@ -12,6 +12,7 @@ import { baselineSelfMatch } from "../workflow/expectation-compare.js";
 import { StageFailureError } from "./stage-failure.js";
 import type { E2ELogger } from "./e2e-log.js";
 import { applyInjections, type InjectionSpec } from "./inject.js";
+import { VerificationIntegrity } from "./verification-integrity.js";
 import { executeBuildFor, runObservedTest, type SideExecutionRequest } from "./workflow-side.js";
 
 /**
@@ -64,24 +65,39 @@ export async function precheckDeclaredExam(options: ExamPrecheckOptions): Promis
         { category: "internal", component: "exam-precheck", retryable: false },
       );
     }
-    // 与真实验证同等的输入面：辅助材料写入预检树，注入文件在"候选提交前"的
-    // 等价时刻注入。临时树不参与候选测量，不会泄漏给重构会话。
-    for (const material of options.materials ?? []) {
-      const target = join(worktree, material.path);
-      mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(target, material.content, "utf8");
-    }
+    // 与真实验证同等的输入面：注入文件先落地，再由 VerificationIntegrity
+    // 按真实路径守卫写入辅助材料（拒绝覆盖 tracked 文件、拒绝经 symlink/
+    // junction 写出树外）。预检树被恶意来源写坏也不影响仓库。
+    let injectedFiles: { path: string; sha256: string }[] = [];
     if (options.injections !== undefined && options.injections.length > 0) {
-      applyInjections([worktree], options.injections);
+      const reports = applyInjections([worktree], options.injections);
+      injectedFiles = reports.flatMap((report) => report.files.map((file) => ({ path: file.path, sha256: file.sha256 })));
     }
-    // 预检只是"彩排"：不设契约完整性守卫（临时树被写坏也不影响仓库）。
+    const head = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: worktree,
+      encoding: "utf8",
+      shell: false,
+      windowsHide: true,
+    }).stdout.trim();
+    const integrity = new VerificationIntegrity({
+      originalRepo: worktree,
+      worktrees: [{ root: worktree, commit: head }],
+      workflows: [
+        ...options.builds.map((build) => ({ entry: build.resolution.entry, sourceHash: build.resolution.sourceHash })),
+        { entry: options.test.entry, sourceHash: options.test.sourceHash },
+      ],
+      materials: options.materials ?? [],
+      injectedFiles,
+    });
     const request: SideExecutionRequest = {
       host: options.host,
       project: options.project,
       test: options.test,
       limits: options.limits,
       ...(options.logger !== undefined ? { logger: options.logger } : {}),
-      integrity: { check: () => {} },
+      // 复用真实验证的完整性守卫：构建/测试期间 tracked 文件或材料被改动
+      // 即失败（与 verify 段同一标准）。
+      integrity,
     };
     for (const [index, build] of options.builds.entries()) {
       const execution = await executeBuildFor(

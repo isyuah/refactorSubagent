@@ -156,6 +156,8 @@ export interface StageFlowRequest {
    * 默认关闭；run 命令行入口开启（testset 的预置考卷无需重复彩排）。
    */
   readonly examPrecheck?: boolean;
+  /** 预检只应在本轮实际使用的 base 恰为当前 HEAD 时运行；修复轮显式传入。 */
+  readonly precheckBaseSha?: string;
   readonly logger?: E2ELogger;
   readonly onProgress?: ProgressObserver;
   /** Optional entry-point configuration metadata for the durable run report. */
@@ -451,14 +453,18 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       saveStageCheckpoints(store, checkpoints);
       if (req.examPrecheck === true && declared !== null) {
         const precheckDeclared = declared;
-        // 预检只对"默认建场 + 自驱动考卷"成立：
-        //  - 自定义 prepare 可能按配置的 baseSha 建基线，HEAD 未必是它要用的提交；
-        //  - 声明式考卷（CTest/TestSpec）不走自驱动执行器，需另做预演路径。
+        // 预检只对"自驱动考卷 + 实际 base 就是 HEAD"成立：
+        //  - 声明式考卷（CTest/TestSpec）不走自驱动执行器，需另做预演路径；
+        //  - prepare 若按配置的 baseSha 建基线（reuse 模式），HEAD 未必是它要用的
+        //    提交——调用方通过 precheckBaseSha 显式声明 base，与 HEAD 一致才彩排。
         const selfDriven = precheckDeclared.testResolution.workflow === null;
-        const defaultPrepare = flow.prepare === undefined;
-        if (!selfDriven || !defaultPrepare) {
-          logger.info("exam precheck skipped", {
-            reason: selfDriven ? "custom prepare stage (base commit unknown)" : "declarative exam (not self-driven)",
+        const head = resolveHead(req.repoPath);
+        const precheckBase = req.precheckBaseSha ?? head;
+        if (!selfDriven || precheckBase !== head) {
+          logger.warn("exam precheck skipped", {
+            reason: selfDriven ? "the run base differs from the current HEAD" : "declarative exam (not self-driven)",
+            base: precheckBase,
+            head,
           });
         } else {
           logger.phase("EXAM_PRECHECK");

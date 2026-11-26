@@ -168,6 +168,8 @@ export async function runFeedbackStageFlow(
         if (context.lane === "test") {
           return runStageFlow({
             ...base,
+            // 修复轮不移动 HEAD：把本轮实际使用的 base 交给预检判定。
+            ...(context.baseSha !== null ? { precheckBaseSha: context.baseSha } : {}),
             flow: {
               ...request.flow,
               workflows: continuedWorkflowsStage({
@@ -189,6 +191,7 @@ export async function runFeedbackStageFlow(
         if (workflows === null) throw new Error("delivered build repair no longer matches its recorded sources");
         return runStageFlow({
           ...base,
+          ...(context.baseSha !== null ? { precheckBaseSha: context.baseSha } : {}),
           flow: {
             ...request.flow, workflows,
             ...(prepare === undefined ? {} : { prepare }),

@@ -123,8 +123,9 @@ export default async (ctx) => {
   await ctx.validator.assertFile("build/app.exe", "fixture executable");
   const material = await ctx.fs.readFile("build/verification/input.txt");
   const oracle = await ctx.fs.readFile("refactor-task/oracle.txt");
-  ctx.expect("material", material);
-  ctx.expect("oracle", oracle);
+  // both-matches 锁住内容本身：写错字节时用例必须失败（equal 只证明可读）。
+  ctx.expect("material", "both-matches", material, "^old$");
+  ctx.expect("oracle", "both-matches", oracle, "^judge-oracle$");
 };
 `);
     writeFileSync(join(repo, "workflows", "build.ts.materials.json"), JSON.stringify({
