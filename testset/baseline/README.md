@@ -23,4 +23,4 @@ git clone --depth 1 --branch v1.52.1 https://github.com/libuv/libuv.git libuv
 判定的可信度来自 `resources/sources/libuv.json` 的 `commit` 与 `resources/` 里的材料摘要，
 与本地这份检出无关。
 
-维护约定（改判据材料之后要做的固定动作）见 [`../docs/testset/README.md`](../docs/testset/README.md)。
+维护约定（改判据材料之后要做的固定动作）见 [`../../docs/testset/README.md`](../../docs/testset/README.md)。

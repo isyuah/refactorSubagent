@@ -55,6 +55,7 @@ bun run scripts/e2e-generated-workflow.ts --root R --session s1 \
   --limit sessions.refactor.deadlineMs=7200000
 
 # 换该阶段会话的模型（名字原样交给 agent CLI；非 model 键只接受正数或 null）
+bun run scripts/cli.ts run ./repo --task "..." \
   --limit sessions.testWriter.model=codeagent
 ```
 
@@ -132,7 +133,7 @@ absent: C:\Users\Yu\.refactor\limits.json
 
    ```
    $ ... --limit stages.builMs=1
-   Error: unknown limit override 'stages.builMs' (expected one of: buildMs, ctestMs, testWorkflowMs)
+   Error: unknown limit override 'stages.builMs' (expected one of: buildMs, ctestMs, policyRepairs, testWorkflowMs)
 
    $ # 配置文件里写错
    Error: invalid limits file <path>: stages: Unrecognized key(s) in object: 'build'
@@ -145,7 +146,7 @@ absent: C:\Users\Yu\.refactor\limits.json
 
    ```
    limits resolved: sessions: testWriter=none; refactor=3600000ms;
-   stages: build=900000ms ctest=none testWorkflow=none; commands: process=none
+   stages: build=900000ms ctest=none testWorkflow=none policyRepairs=1; commands: process=none
    ```
 
    `session 目录里的 limits.json` = **本次实际生效的**；`cli limits` = **下一次将要生效的**。
@@ -179,7 +180,7 @@ bun run scripts/e2e-generated-workflow.ts --root R --session redis-1 \
   不是「项目跑得慢」——关掉它，进程被杀时宿主会一直干等。
 - **就绪探测 `readyMs` 保持短**。它等的是 socket/文件出现，不是等工作完成。
 - **`timeoutMs` 写在 workflow 源码里仍然优先**。宿主给的是默认值，模型显式写的单次预算仍然生效；
-  但提示词里已不再给模型可照抄的示例数字，避免配置被抄死的常量盖过。
+  但提示词和 skill 示例中仍可能出现常量（如 `120000`），模型照抄时会覆盖宿主默认值。
 - **结构上限（进程数/字节数）默认非 `null`**。它们不是时间预算，放开会导致失控，需要时显式调大。
 
 ## 9. 实现位置（改代码时看这里）

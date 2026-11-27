@@ -14,8 +14,8 @@ const PARAMETERS: readonly Paragraph[] = [
   { text: "--task <任务描述>（重构）：说明希望怎样改代码，例如「提取重复的参数检查，保持行为不变」。" },
   { text: "--scope <行为描述>（准备测试）：说明要保护的接口、输入、输出或边界情况，例如「检查解析器空输入及非法输入的返回值」。" },
   { text: "--from <方案目录>（审阅测试）：填写包含 plan.json 的具体版本目录，例如 ../my-test-plan/r1。" },
-  { text: "--auto-retry <次数>：初次运行之后最多自动修复几次。默认 3，填 0 关闭；恢复运行时已用次数仍计入上限。" },
-  { text: "--resume <会话编号>：从上次 ABORTED 的结果报告 artifacts/run-summary.json 读取 session。使用同一仓库和任务；若原来指定了 --session-root，恢复时沿用。程序会创建新会话、复用仍有效的检查点并重新验证。" },
+  { text: "--auto-retry <次数>：整个运行最多自动修复几次（含恢复前已用）。默认 3，填 0 关闭。" },
+  { text: "--resume <会话编号>：从上次 ABORTED 的结果报告 artifacts/run-summary.json 读取 session。使用同一仓库和任务；若原运行使用了自定义 --session-root，恢复时也要传入同一个目录。程序会创建新会话、复用仍有效的检查点并重新验证。" },
 ];
 
 const FLOW: readonly Paragraph[] = [

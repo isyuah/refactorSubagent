@@ -21,6 +21,6 @@ export function chooseLaunchTask(ui: Workbench): Promise<(typeof TASKS)[number][
   ui.setTitle("Refactor Subagent · 选择任务");
   ui.setSections([{ id: "tasks", title: "选择任务", items: () => items }, guideSection()]);
   ui.setActions([{ id: "open", label: "打开选中项", run: () => ui.openSelected() }, { id: "cancel", label: "退出", run: cancel }]);
-  ui.setNotice("Enter 打开 · 2 使用指引 · Tab 切换焦点 · Q 退出");
+  ui.setNotice("Enter 打开 · 按 2 查看使用指引 · Tab 切换焦点 · Q 退出");
   return choice.promise;
 }

@@ -89,7 +89,7 @@ export class RunScreen {
     this.rounds.set(1, { number: 1, session: startup.session, state: "进行中", reason: null });
     const sections = this.sections();
     this.ui.setSections(sections); this.ui.onExit = () => { void this.requestExit(); };
-    this.ui.setNotice(`Tab 切换焦点 · ${sections.length} 使用指引 · Q 退出`);
+    this.ui.setNotice(`Tab 切换焦点 · 按 ${sections.length} 查看使用指引 · Q 退出`);
     this.ui.onCancel = () => { process.emit("SIGINT"); };
     this.ui.onFollow = () => this.ui.follow();
     this.actions(); this.timer = setInterval(() => this.updateStatus(), 1000); this.timer.unref(); this.updateStatus();
@@ -192,7 +192,7 @@ export class RunScreen {
         ], follow: true }) })) },
       { id: "comparison", title: "行为对比", items: () => this.comparisonItems() },
       { id: "files", title: "文件差异", items: () => (this.candidate?.changed_files ?? []).map(path => ({ id: path, label: path, detail: () => this.fileDiff(path) })) },
-      { id: "feedback", title: "反馈历史", items: () => [...this.rounds.values()].map(round => ({ id: String(round.number), label: `第 ${round.number} 轮 · ${round.state}`, description: round.reason ?? (round.repair ? `修复 ${round.repair}` : "初次执行"),
+      { id: "feedback", title: "反馈历史", items: () => [...this.rounds.values()].map(round => ({ id: String(round.number), label: `第 ${round.number} 轮 · ${round.state}`, description: round.reason ?? (round.repair ? `修复 ${REPAIR_LABELS[round.repair]}` : "初次执行"),
         detail: () => ({ title: `第 ${round.number} 轮`, paragraphs: [{ text: `${round.state}\n会话：${round.session}` }, { text: round.reason ?? "当前尚无失败原因。" }, ...(round.details ? [{ text: round.details }] : []), { text: `修复角色：${round.repair ? REPAIR_LABELS[round.repair] : "初次执行"}\n完整证据：${round.logDir ?? "运行中"}` },
           ...(this.report?.feedback ? [{ text: `已用修复次数：${this.report.feedback.budget_used}/${this.report.feedback.budget_total}\n停止原因：${this.report.feedback.stop_detail ?? this.report.feedback.stopped_because}` }] : []),
         ] }) })) },

@@ -17,8 +17,7 @@ refactorSubagent/
 │  └─ testset/              测试集文档（见下）
 ├─ testset/                 测试集：用例目录 + 共享资源 + 执行器（见 testset/README.md）
 ├─ libuv/                   源材料检出（不进版本，由用例的 prepare 脚本浅克隆使用）
-├─ runs/                    每次运行的证据（不进版本，含每例的环境目录）
-└─ half-week-report/        阶段性汇报页面
+└─ runs/                    每次运行的证据（不进版本，含每例的环境目录）
 ```
 
 `libuv/`、`runs/` 都在 `.gitignore` 里：前者可由用例的 prepare 脚本从上游 tag 重建，
@@ -70,7 +69,7 @@ bun scripts/cli.ts run <repo> --task "..." --ui plain
 
 | 操作 | 方法 |
 |---|---|
-| 切换分区 | `1`–`9`；也可聚焦顶部导航后使用方向键 |
+| 切换分区 | `1`–`9`（按当前工作台的分区数）；也可聚焦顶部导航后使用方向键 |
 | 切换焦点 | `Tab` / `Shift+Tab`，底部显示当前焦点 |
 | 选择、打开项目 | 列表中使用方向键，`Enter` 打开详情或编辑设置 |
 | 滚动详情 | 聚焦详情后使用方向键、PageUp/PageDown 或鼠标滚轮 |
@@ -210,7 +209,7 @@ bun scripts/cli.ts tests prepare ./runs/test-preparation-playground/repo --scope
 bun scripts/cli.ts run ./runs/test-preparation-playground/repo --tests '<方案概览显示的保存目录>' --task '合并 text_copy 的重复复制循环，保持接口和所有行为不变'
 ```
 
-`--ui tui` 会在输入或输出被重定向、CI 环境或 `TERM=dumb` 时报错。请在真实交互终端运行；
+`--ui tui` 会在 stdin 或 stderr 被重定向、CI 环境或 `TERM=dumb` 时报错。请在真实交互终端运行；
 如果当前终端支持 ANSI，但环境变量误设为 `dumb`，可在该 PowerShell 会话先执行
 `$env:TERM = 'xterm-256color'`。颜色仍遵循 `--no-color` 和 `NO_COLOR`；需要彩色显示时，可在当前
 PowerShell 会话执行 `Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue`。
@@ -252,6 +251,7 @@ bun scripts/cli.ts run <repo> --task "..." --resume task-001 --session task-001-
 | `--progress off` | 关闭实时展示，仍输出结束报告 |
 | `--no-color` | 禁用颜色；也尊重 `NO_COLOR` 环境变量 |
 | `--resume <会话编号>` | 复用指定中止会话中仍有效的阶段检查点，在新会话中重新验证 |
+| `--exam-precheck` | 出卷后先在未经改动的原版代码上彩排考卷（构建全部声明方案并运行一次测试）；默认关闭 |
 
 任务输入只在 stdin 和 stderr 都连接交互终端、未设置有效的 `CI`、且未传 `--no-interactive` 时启用。
 普通文字模式下，输入需求后会列出仓库、任务与会话设置，可选 `[1] 开始运行`、`[2] 重新输入`、`[0] 取消`；直接回车取消。
@@ -336,7 +336,7 @@ SDK 提供时展示会话轮数、用量和费用；缺失时不估算，子会�
 保留实际验证结论，同时以失败退出。
 
 候选改动保存在输出的分支和提交中，**不会自动合并回原分支**；`ACCEPTED` 表示本次验证范围内通过。
-可以先按报告里的 `git diff` 命令审查差异，再自行决定如何集成。网页看板目前废弃，普通运行以 CLI 为准。
+可以先按报告里的 `git diff` 命令审查差异，再自行决定如何集成。
 
 ## 失败反馈与恢复
 
@@ -344,6 +344,11 @@ SDK 提供时展示会话轮数、用量和费用；缺失时不估算，子会�
 `--auto-retry 0` 关闭自动修复。行为不一致或候选代码执行失败时，继续原重构对话；
 测试脚本自身出错时，继续原测试编写对话；原版构建失败时，启动一个构建修复会话。
 环境缺失、宿主错误或原因无法分类时停止，并保留当前结果和证据。
+
+加 `--exam-precheck` 时，出卷后先在未经改动的原版代码上完整跑一遍考卷：原版构建失败交给
+构建修复会话，测试脚本出错或 `both-matches` 期望值与原版事实矛盾交给测试编写会话。此时还没有
+候选改动，修复后会重新建场并跑完整重构。正式验证中若失配全部来自“原版本身就不满足考卷自己的
+`both-matches` 模式”，修代码无法消除，程序直接停止并保留证据，不消耗修复次数。
 
 每轮沿用当前完整方案：修好构建 A 后再修 B，A 的修复会保留；测试修复交付的新脚本、
 构建和辅助材料也会用于后续轮次。旧原版观测仅在基准提交、构建脚本、测试脚本和全部
@@ -383,7 +388,7 @@ CLI 会显示每轮执行的结果、失败原因、自动修复次数与剩余�
 | 文档 | 内容 |
 |---|---|
 | [`docs/testset/README.md`](docs/testset/README.md) | 测试集是什么、目录结构、快速开始、维护约定 |
-| [`docs/testset/03-suite-and-runner.md`](docs/testset/03-suite-and-runner.md) | 执行器手册：用例模型、探测/跳过、blind 注入、选择/校准/冻结/重判/裁判，§10 起为历史实测 |
+| [`docs/testset/03-suite-and-runner.md`](docs/testset/03-suite-and-runner.md) | 执行器手册：用例模型、探测/跳过、blind 注入、选择/校准/冻结/重判/裁判 |
 | [`docs/testset/02-testset-requirements.md`](docs/testset/02-testset-requirements.md) | 构建事实、用例清单、期望声明模型、判定规则、复现命令 |
 | [`docs/testset/01-refactor-targets.md`](docs/testset/01-refactor-targets.md) | 可重构点清单与覆盖缺口（T1–T7） |
 | [`docs/testset/04-rubric.md`](docs/testset/04-rubric.md) | 裁判（rubric）怎么给分 |
@@ -391,7 +396,7 @@ CLI 会显示每轮执行的结果、失败原因、自动修复次数与剩余�
 最短路径：
 
 ```bash
-bun testset/run.ts --list                                  # 45 个用例，按 subject 分组
+bun testset/run.ts --list                                  # 58 个用例，按 subject 分组
 bun testset/run.ts --self-test                             # 执行器自检（合成用例，不碰项目）
 bun testset/run.ts --subject judgement --tag offline       # 离线判据自测（不调模型）
 bun testset/run.ts --only e2e-t1-full --rubric-cmd "<命令>" # 端到端 + 裁判

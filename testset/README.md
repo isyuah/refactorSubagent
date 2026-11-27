@@ -19,8 +19,9 @@
 - [`07-writer-integration.md`](../docs/testset/07-writer-integration.md) — 真实测试编写、固定补丁与无模型复跑
 - [`08-merged-authoring-comparison-2026-10-28.md`](../docs/testset/08-merged-authoring-comparison-2026-10-28.md) — 调查与编写合并的真实运行对比、覆盖与耗时
 - [`09-authoring-without-execution-2026-10-28.md`](../docs/testset/09-authoring-without-execution-2026-10-28.md) — 编写期间只交付代码、宿主执行的单次真实结果
-- [`10-redis-feasibility-and-scenarios-2026-10-28.md`](../docs/testset/10-redis-feasibility-and-scenarios-2026-10-28.md) — Redis 固定源码、真实接入实验与六类全流程候选场景
 - [`11-project-evaluation-cases.md`](../docs/testset/11-project-evaluation-cases.md) — 七个正式 Redis/依赖模拟用例、可信复核与固定正反对照校准
+- [`12-project-ai-results-2026-10-29.md`](../docs/testset/12-project-ai-results-2026-10-29.md) — 七例真实 AI 全流程的结果、耗时与失败归因
+- [`13-failed-cases-rerun-2026-10-29.md`](../docs/testset/13-failed-cases-rerun-2026-10-29.md) — 四个失败场景的修复后重跑与补充验证
 
 ```bash
 cd <repo-root>
@@ -53,15 +54,15 @@ testset/
 ├─ resources/
 │  ├─ sources/           源与 pin（libuv.json：上游 tag + commit + remote 兜底）
 │  ├─ workflows/         预置判据资源（每档一份 manifest + build/test 源）：
-│  │                     judgement（T1–T6，98 条声明）、judgement-hard（H1–H5，95 条）、
+│  │                     judgement（T1–T6，98 条声明）、judgement-hard（H1–H7）、
 │  │                     judgement-h8-structural（结构性重构）
 │  ├─ patches/           候选补丁（行为保持 / 变异 / 篡改 / 结构性参考正解）
 │  ├─ judge/             判据材料（oracle 源），验证前注入 worktree：
 │  │                     libuv-1.52.1/oracle（T1–T6，7 个文件）、
-│  │                     libuv-1.52.1-hard/<target>/oracle_*.c（H1–H5，一目标一目录）
+│  │                     libuv-1.52.1-hard/<target>/oracle_*.c（H1–H7，一目标一目录）
 │  ├─ tasks/             任务简报
 │  └─ parts/             语料部分定义（pure/loop/thread/util）
-└─ baseline/             基线重建材料（overlay；见 baseline/README.md）
+└─ baseline/             基线说明（原 overlay 已废弃；见 baseline/README.md）
 ```
 
 `../libuv/`（源检出，浅克隆）、`../runs/`（每次运行的证据，含每例的 `env/`）都不进版本。
@@ -132,7 +133,7 @@ harness 用 `entryRoot`（= testset 根）判断入口没有逃出允许的目�
 ```bash
 bun install
 bun testset/run.ts --self-test                             # 执行器自检，不碰项目
-bun testset/run.ts --list                                  # 45 个用例
+bun testset/run.ts --list                                  # 58 个用例
 bun testset/run.ts --subject judgement --concurrency 2     # 离线 19 例，零模型成本；Linux 跳过 4 个 Windows 专属项
 bun testset/run.ts --only e2e-t1-blind --rubric-cmd "claude -p" --out runs/blind-1   # 盲测 e2e（要额度）
 ```
@@ -160,8 +161,9 @@ bun testset/run.ts --only e2e-t1-blind --rubric-cmd "claude -p" --out runs/blind
 ## 维护约定
 
 - **判据材料只改 `resources/`**（`judge/**`、`workflows/**`、`patches/**`）。oracle 的 sha256 被
-  `resources/workflows/judgement/test-workflow.ts` 里的 `ORACLE_PINS` 钉住：改了 oracle 必须同步
-  那一份 pin，否则所有判据档用例都会以"判据被改动"失败（这是设计如此，fail-closed）。
+  各判据资源自己的 `test-workflow.ts` 里的 `ORACLE_PINS` 钉住（`judgement`、`judgement-hard`、
+  `judgement-h8-structural`）：改了某个 oracle 必须同步对应 workflow 的那份 pin，否则相关判据档
+  用例都会以"判据被改动"失败（这是设计如此，fail-closed）。
 - **冻结期望**：baseline/candidate 必须在相同系统和工具链下比较；已有历史记录来自 Windows，其他平台需重新校准。
   `--freeze runs/<批>` 把实测失配集写回 `cases/*/case.json` 的 `expect.failuresExact`
   并清掉 `provisional`；状态与期望不符的用例会被拒改并单列出来。

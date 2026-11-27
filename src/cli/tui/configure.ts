@@ -200,7 +200,7 @@ export class LaunchWizard {
     this.ui.setActions([{ id: "edit", label: "打开选中项", run: () => this.ui.openSelected() },
       { id: "save", label: "保存项目默认", run: () => this.saveProject() }, { id: "export", label: "导出启动命令", run: () => this.exportLaunch() }, { id: "start", label: "开始", tone: "success", run: () => this.start() },
       { id: "cancel", label: "取消", tone: "muted", run: () => this.done.reject(new CliInputCancelled()) }]);
-    this.ui.setNotice(`Enter 打开 · ${sections.length} 使用指引 · Tab 切换焦点`);
+    this.ui.setNotice(`Enter 打开 · 按 ${sections.length} 查看使用指引 · Tab 切换焦点 · Q 退出`);
   }
   validate(requireTask = true): string | null {
     try {

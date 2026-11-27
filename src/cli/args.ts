@@ -142,21 +142,22 @@ export function parseCliArgs(argv: readonly string[], allowIncomplete = false): 
 }
 
 function parseConfig(args: string[]): ConfigCommand {
-  let scope: ConfigCommand["scope"] = "project";
+  let scope: ConfigCommand["scope"] | null = null;
   for (const arg of args) {
     if (arg === "--user") {
-      if (scope !== "project") throw new CliUsageError("config accepts only one of --project/--user");
+      if (scope !== null) throw new CliUsageError("config accepts only one of --project/--user");
       scope = "user";
       continue;
     }
     if (arg === "--project") {
-      if (scope !== "project") throw new CliUsageError("config accepts only one of --project/--user");
+      if (scope !== null) throw new CliUsageError("config accepts only one of --project/--user");
+      scope = "project";
       continue;
     }
     if (arg.startsWith("--")) throw new CliUsageError(`unknown config option '${arg}'`);
     throw new CliUsageError(`config accepts no positional arguments, got '${arg}'`);
   }
-  return { kind: "config", scope };
+  return { kind: "config", scope: scope ?? "project" };
 }
 
 function parseLimits(args: string[]): LimitsCommand {
@@ -465,25 +466,26 @@ function parseFormat(value: string): CliFormat {
 
 export const CLI_HELP = `Test preparation:
   tests prepare <repo> --scope <behavior> [--ui auto|tui|plain] [--out <plan parent>]
-  tests review <repo> --from <plan directory> [--ui auto|tui|plain]
+  tests review <repo> --from <plan directory> [--ui auto|tui|plain] [--out <plan parent>]
   run <repo> --task <refactor task> --tests <plan directory>
+  --tests replaces workflow authoring; it cannot be combined with --resume or an explicitly configured workflows stage.
   Tests commands also accept --session, --session-root, --verbosity, --format,
   --configure, --no-color and --no-interactive. Non-interactive preparation saves and exits.
 
 Usage:
-  refactor-subagent preflight [repo] [--format human|json]
-  refactor-subagent run [repo] [--task <text>] [--session <id>] [--session-root <dir>]
+  bun scripts/cli.ts preflight [repo] [--format human|json]
+  bun scripts/cli.ts run [repo] [--task <text>] [--session <id>] [--session-root <dir>]
                             [--worktree-root <dir>] [--inject <src>=<dest>]
                             [--resume <aborted-session-id>] [--auto-retry <max>]
                             [--exam-precheck] [--format human|json]
                             [--verbosity detailed|summary]
                             [--ui auto|tui|plain] [--configure]
                             [--progress auto|plain|off] [--no-color] [--no-interactive]
-  refactor-subagent workflow run <entry.ts> [options]
-  refactor-subagent workflow build <entry.ts> --id <id> --revision <n> [options]
-  refactor-subagent workflow list [--cwd <dir>] [--format human|json]
-  refactor-subagent config [--project | --user]
-  refactor-subagent limits [repo] [--format human|json]
+  bun scripts/cli.ts workflow run <entry.ts> [options]
+  bun scripts/cli.ts workflow build <entry.ts> --id <id> --revision <n> [options]
+  bun scripts/cli.ts workflow list [--cwd <dir>] [--format human|json]
+  bun scripts/cli.ts config [--project | --user]
+  bun scripts/cli.ts limits [repo] [--format human|json]
 
 The run command executes the whole pipeline: host preflight facts, the
 test-writer's verification strategy, the candidate worktrees, the refactor session,
@@ -493,10 +495,14 @@ authoring/refactor stage is AI-driven.
 
 Interactive terminal UI (OpenTUI; Windows and Linux):
   No arguments               Choose run, prepare tests, review a saved plan or read the guide
-  --ui auto                  TUI for interactive stdin/stderr; plain in CI/JSON (default)
-  --ui tui                   Require the TUI; incompatible with --progress plain/off
+  --ui auto                  TUI when stdin/stderr are interactive and TERM is not dumb;
+                             plain in CI/JSON (default)
+  --ui tui                   Require the TUI; incompatible with --progress plain/off,
+                             --format json, --no-interactive, non-interactive stdin/stderr,
+                             CI and TERM=dumb
   --ui plain                 Ordinary text, including the existing task prompt
-  --configure                Review/edit complete settings before starting
+  --configure                Review/edit complete settings before starting; requires the
+                             interactive TUI, --format human and --progress auto
 Missing task/scope/plan inputs open the configuration wizard in TUI mode.
 Complete arguments start directly. Wizard edits affect this launch only;
 project defaults require an explicit save and show a diff before writing.
@@ -506,7 +512,7 @@ sections; PgUp/PgDn scrolls details; Q exits or offers cancellation.
 Run display:
   --verbosity detailed       AI text, tool activity, native output and full report (default)
   --verbosity summary        Important activity and results, without AI text or native output
-  --progress auto            TUI on interactive terminals; plain lines elsewhere; off for JSON (default)
+  --progress auto            Live progress in the selected UI; final report only for JSON (default)
   --progress plain           Plain live events on stderr, also with --format json
   --progress off             Final report only
   --no-color                 Disable colors (NO_COLOR is also respected)
@@ -542,7 +548,7 @@ Feedback repairs:
                               script errors, both-matches values the baseline itself
                               violates) surface before any refactoring time is spent.
                               A defect routes to the matching repair lane (build repair /
-                              exam repair) or stops with the evidence kept.
+                              exam repair) or stops with the evidence kept. Off by default.
   --auto-retry <max>          Total repair attempts for this run (default 3).
                               Behavior mismatches and candidate code failures
                               continue the original refactor conversation.
@@ -572,7 +578,7 @@ Anything not configured keeps its AI implementation. Examples:
   --stage stages.prepare.mode=create              fresh candidate branch
 
 Config options:
-  --project                   Install workflow-spec skill into ./claude/skills (default)
+  --project                   Install workflow-spec skill into ./.claude/skills (default)
   --user                      Install workflow-spec skill into ~/.claude/skills
 
 The config command installs the tool's workflow-spec skill (exact API/schema
@@ -588,7 +594,7 @@ Resolution order, later wins:
   < --limits-file < --limit
 
 Time budgets default to null (no deadline); resource caps keep their defaults.
-"refactor-subagent limits" prints the effective values and their layers.
+"bun scripts/cli.ts limits" prints the effective values and their layers.
 Examples:
   --limit stages.buildMs=900000 --limit stages.ctestMs=null
   --limit resources.build.maxProcesses=16
@@ -605,12 +611,13 @@ Workflow build options:
   --revision <n>              Positive workflow revision
   --cwd <dir>                 Project working directory
   --manifest-out <path>       Save the generated manifest as JSON
-  --save                      Persist source, output, and manifest under .refactorsa
+  --save                      Persist source, output, and manifest under
+                              .refactorsa/build-workflows/<id>/r<revision>/
   --timeout-ms <n>            Maximum workflow duration (default: limits.commands.processMs)
   --format human|json         Output format (default: human)
 
-The workflow host currently provides process-level execution and source-policy
-checks. Capability-based filesystem/process access is added in the next phase.`;
+The workflow host provides capability-based filesystem and process access,
+together with source-policy checks.`;
 
 function parseUi(value: string): CliUi {
   if (value !== "auto" && value !== "tui" && value !== "plain") throw new CliUsageError("--ui must be auto, tui or plain");
