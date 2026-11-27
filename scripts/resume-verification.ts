@@ -8,6 +8,7 @@
  * against those artifacts — no AI round trips.
  *
  * Usage: bun run scripts/resume-verification.ts --root <e2e-root> --session <id>
+ *        [--limits-file <path>] [--limit <key=value>]
  */
 import { mkdirSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -32,7 +33,7 @@ function parseOptions(args: readonly string[]): Options {
   const root = valueAfter(args, "--root");
   const sessionId = valueAfter(args, "--session");
   if (root === null || sessionId === null) {
-    console.error("用法: bun run scripts/resume-verification.ts --root <e2e-root> --session <id>");
+    console.error("用法: bun run scripts/resume-verification.ts --root <e2e-root> --session <id> [--limits-file <path>] [--limit <key=value>]");
     process.exit(2);
   }
   return { root, sessionId, limitOverrides };

@@ -1,16 +1,14 @@
 # libuv v1.52.1 重构测试集 —— 需求说明
 
-> 消费方：`E:/Proj/refactorSubagent` 的声明制流程（`runAgentWorkflowVerification` → `runDeclaredWorkflowVerification` → 自驱 TestWorkflow + `ctx.expect` 逐位置比较）。
-> 所有数字与行为都是本机实测（Windows 11 x64 / GCC 15.2 / CMake 4.3.1 / Ninja 1.13.2 / Debug）。
+> 消费方：本仓库的声明制流程（`runAgentWorkflowVerification` → `runDeclaredWorkflowVerification` → 自驱 TestWorkflow + `ctx.expect` 逐位置比较）。
+> 文中的命令以 Windows/MinGW 示例为主；Linux 使用对应配方。编译器与 CMake 版本会漂移，复现时以实际探测结果为准。
 > 当前共享判据 revision 2 已加入 Windows/Linux 平台选择：workflow 读取 `ctx.facts.host`，
 > C oracle 按编译目标检查错误码 ABI 和请求类型布局，摘要 pin 随材料同步更新。
-> 本文的 `.exe` 命令及历史数字保留 Windows 首次校准语境，其他平台以对应运行批次为证。
 >
-> **2026-09-17 重设计后的路径**：判据 workflow 与 oracle 迁到 `testset/resources/`（工作流入口通过
-> preset 的 `entryRoot` 从库外解析）；oracle 由 harness 在候选提交之后、验证之前注入到两侧 worktree 的
-> `refactor-task/oracle/`，因此本文里"worktree 内"的命令与快照路径仍然逐字有效。逐文件摘要 pin 内嵌在
-> `resources/workflows/judgement/test-workflow.ts` 的 `ORACLE_PINS` / `UPSTREAM_PINS` 里（不再读
-> `refactor-task/PINS.json`）。§12 起是历史运行记录，其中的命令与路径属于旧布局。
+> 判据 workflow 与 oracle 位于 `testset/resources/`（工作流入口通过 preset 的 `entryRoot` 从库外解析）；
+> oracle 由 harness 在候选提交之后、验证之前注入到两侧 worktree 的 `refactor-task/oracle/`。
+> 逐文件摘要 pin 内嵌在 `resources/workflows/judgement/test-workflow.ts` 的
+> `ORACLE_PINS` / `UPSTREAM_PINS` 里。
 
 ## 1. 目标与分层
 
@@ -59,7 +57,7 @@ cmake --build <worktree>/build --target uv_run_tests_a -j 8
 2. **判据完整性检查**（两个 pin，缺一不可）：
    - **oracle 源码**：`const snap = await ctx.fs.snapshot("refactor-task/oracle")`（该目录由 harness 在验证前注入，候选会话期不存在），把结果规范化为 `name=sha256` 排序拼接的字符串，与该 workflow 源码里的 `ORACLE_PINS` 逐项比对：
      `ctx.expect("oracle.sources.digest", "both-matches", canonical, "^oracle_common\\.h=248fd657…;…")`，另加 `ctx.expect("oracle.sources.snapshot", canonical)`（equal，抓两侧漂移）。
-   - **自带用例的判据本体**：对源码里的 `UPSTREAM_PINS`（`test/task.h`、`test/runner.c`、`test/runner-win.c`、`test/run-tests.c`、`test/test-list.h` + 14 个用例源码）逐个文件同样声明 `both-matches` + `equal`。
+   - **自带用例的判据本体**：对源码里的 `UPSTREAM_PINS`（`test/task.h`、`test/runner.c`、`test/run-tests.c`、`test/test-list.h` + 10 个用例源码；Windows 另含 `test/runner-win.c`）逐个文件同样声明 `both-matches` + `equal`。
    理由：改 **oracle** 会改变判据逻辑；改 **`test/**`** 会弱化判据本身（例如把 `ASSERT_EQ` 换成空语句、删掉几条断言）——两者都不会让 TAP 行或退出码变化，只有摘要能发现。
    摘要按 LF 字节计算：环境由 `cloneSource` 以 `--no-checkout` + `core.autocrlf=false` 检出，工作区行尾固定为 LF。
 3. 逐个编译 oracle（两侧同一命令，输出落在 `build/**` 以符合 `executableGlobs`）：
@@ -114,8 +112,8 @@ gcc -O0 -g -I . -I include -I src -I refactor-task/oracle \
 
 每个 oracle 的逐条语义（"必须保持不变"的完整清单）见 `01-refactor-targets.md`；机器可读的权威版本是 `testset/cases/*/case.json`（期望值）与 `testset/resources/**`（判据材料与 pin）。
 
-> **加难档（2026-09-21 新增）**：T1–T6 之外另有 H1–H5 五个目标，判据在
-> `testset/resources/workflows/judgement-hard/`（95 条声明：5 个新 oracle + 13 条已校准上游用例，
+> **加难档（H1–H7）**：T1–T6 之外另有 H1–H7 七个目标，判据在
+> `testset/resources/workflows/judgement-hard/`（Windows 侧 65 条声明：7 个新 oracle + 5 条已校准上游用例，
 > 后者来自 `parts/{loop,util}.json`），外加结构性重构判据 `judgement-h8-structural/`
 > （复用本节这 6 个 oracle + 11 条上游用例）。新 oracle 的清单与"必须保持"要点见
 > `01-refactor-targets.md` 的"加难档"一节。
@@ -158,9 +156,9 @@ gcc -O0 -g -I . -I include -I src -I refactor-task/oracle \
 | `getaddrinfo_basic` / `_basic_sync` / `_concurrent` | 依赖 `localhost` 解析；并发版走 threadpool，负载下会晃 |
 | `getnameinfo_basic_ip4` / `_ip4_sync` / `_ip6` | `flags=0` 走真实 PTR 反查；`_ip6` 还要求主机启用 IPv6 |
 | `ip6_addr_link_local` | 枚举真实网卡；VPN/Hyper-V/WSL 适配器变化会改变枚举结果（无 `fe80::` 时该用例空转通过） |
-| 整个 `uv_run_tests_a.exe`（无参数） | 全量套件含上述环境敏感用例，历史上在本机保持非绿色；只在需要"完整套件证据"时单独跑，不进入判定 |
+| 整个 `uv_run_tests_a.exe`（无参数） | 全量套件含上述环境敏感用例，在本机稳态非绿色；只在需要"完整套件证据"时单独跑，不进入判定 |
 
-## 8. 复现命令（本机实测）
+## 8. 复现命令（Windows/MinGW 示例）
 
 ```bash
 # 1. 配置 + 构建（out-of-source，源码保持干净）
@@ -186,7 +184,7 @@ done
 
 ## 9. 反例证据：自带用例层失明，oracle 层抓住
 
-> 该结论已在测试套件里批量复现：5 个行为变异体实测 4 个上游全绿、只有 oracle 抓到，见 `03-suite-and-runner.md` §10。
+> 该结论在测试套件的变异体用例里复现：上游用例全绿，oracle 仍能抓住，见 `testset/cases/judgement-mutant-*` 与 `03-suite-and-runner.md` 的判据说明。
 
 两次 mutation 都在本机实跑（改动后 rebuild + 跑自带用例 + 跑 oracle，最后 `git checkout --` 还原并复验）。
 
@@ -219,143 +217,3 @@ oracle: 4 项失败 —— ntop6-plain 渲染变化 + ntop6-plain-short 边界�
 - `src/idna.c` 的截断与溢出路径（`UV_E2BIG`/`UV_ENOBUFS`）、`uv_utf16_to_wtf8` / `uv_utf16_length_as_wtf8` 无任何测试调用者；要做该目标需新增 oracle，并注意 `assert` 在 Release 下消失导致的不变量差异。
 - `src/random.c`（输出不可确定 + threadpool）与 `src/queue.h` / `src/uv-common.h`（宏语义被 29+ TU 复制）不适合作为行为保持型目标，已在 `01` 标注为不建议。
 - 共享库 runner（`uv_run_tests.exe` + `uv.dll`）目前未纳入；若将来要验证 ABI/导出面，需要额外声明 `uv.dll` 与 `import lib` 产物并处理 PATH。
-
-## 12. 验收演练：判据自测 → AI 重构（M1a / M1b / T3）
-
-判据 workflow 落地后（`libuv/refactor-task/workflows/{build,test}-workflow.ts`，随基线提交），用 harness 的**预置阶段**跑了一次端到端判据自测：`--pipeline-file` 注入两份 workflow + 候选补丁，`workflows`/`refactor` 两个槽被替换，`verify` 仍是宿主实现——真构建、真跑 14 个自带用例与 6 个 oracle、98 条声明逐位置比较，全程零模型调用。
-
-### 12.1 M1a：不调模型的判据自测
-
-```bash
-cd E:/Proj/refactorSubagent
-bun run scripts/cli.ts run E:/Proj/refactorSubagent/libuv --task "<task>" \
-  --pipeline-file E:/Proj/refactorSubagent/testset/pipeline/m1a-accept.json \
-  --session m1a-accept-s2 --session-root E:/Proj/refactorSubagent/runs/m1a-accept
-```
-
-| 运行 | 候选 | 状态 | 比较结果 |
-|---|---|---|---|
-| `m1a-accept-s2` | `patches/m1a-accept.patch`（`src/strtok.c` 加一行注释） | **ACCEPTED**（exit 0） | 98/98 一致 |
-| `m1a-reject-s2` | `patches/m1a-reject.patch`（§9 的 M1：丢弃空/尾 token） | **REJECTED**（exit 1） | 95/98：`oracle_strtok.exit`、`.summary`、`.stdout` 失配 |
-
-reject 运行里候选侧的 oracle 逐条输出（7 项）：
-
-```text
-strtok-oracle: empty-token-between FAIL expected="[a]|[]|[b]|END" got="[a]|END"
-strtok-oracle: trailing-separator  FAIL expected="[abc]|[]|END" got="[abc]|END"
-strtok-oracle: leading-separator   FAIL expected="[]|[abc]|END" got="END"
-strtok-oracle: all-separators      FAIL expected="[]|[]|[]|[]|END" got="END"
-strtok-oracle: empty-input         FAIL expected="[]|END" got="END"
-strtok-oracle: runs-and-edges      FAIL expected="[]|[]|[x]|[]|[y]|[]|END" got="END"
-strtok-oracle: mutate-second-token FAIL expected="" got="(null)"
-```
-
-同时 14 个自带用例（42 条声明）全绿，`strtok` 仍是 `ok 1 - strtok`、exit 0——§9 的"上游失明、oracle 抓住"这次是在真实管线复现的，而不是手工实验。
-
-### 12.2 M1b：判据冻结，只让 AI 重构（首个真实 ACCEPT）
-
-同一套预置判据（`workflows.mode=preset`），只把 `refactor` 槽换回 AI 会话：任务文本 = `TASK.md` 的 T1（重构 `src/strtok.c`，不改可观测行为），限制 `sessions.refactor.deadlineMs=1800000`、`maxTurns=60`。
-
-```bash
-bun run scripts/cli.ts run E:/Proj/refactorSubagent/libuv --task "<T1 简报>" \
-  --pipeline-file E:/Proj/refactorSubagent/testset/pipeline/m1b-strtok-ai.json \
-  --session m1b-strtok-s1 --session-root E:/Proj/refactorSubagent/runs/m1b-strtok \
-  --limit sessions.refactor.deadlineMs=1800000 --limit sessions.refactor.maxTurns=60
-```
-
-结果：**ACCEPTED**，98/98 声明一致，两侧 build pass，`changed_files=["src/strtok.c"]`。墙钟 249 s（PREFLIGHT→准备 6.9 s；**refactor 会话 56.7 s**；两侧构建 56.6 s / 90.0 s；两侧测试 16.0 s / 21.1 s）。
-
-候选实际做了什么（`git diff 9ddbf62 refactor/agent-m1b-strtok-s1`，18 增 15 删，只动 `src/strtok.c`）：
-
-```diff
-+/* Reports whether `c` occurs in the NUL-terminated separator set `sep`. */
-+static int uv__strtok_is_sep(char c, const char* sep) {
-+  while (*sep != '\0') {
-+    if (c == *sep)
-+      return 1;
-+    sep++;
-+  }
-+  return 0;
-+}
-+
- char* uv__strtok(char* str, const char* sep, char** itr) {
--  const char* sep_itr;
--  char* tmp;
-   char* start;
-+  char* tmp;
- 
--  if (str == NULL)
--    start = tmp = *itr;
--  else
--    start = tmp = str;
--
-+  tmp = str != NULL ? str : *itr;
-   if (tmp == NULL)
-     return NULL;
- 
-+  start = tmp;
-   while (*tmp != '\0') {
--    sep_itr = sep;
--    while (*sep_itr != '\0') {
--      if (*tmp == *sep_itr) {
--        *itr = tmp + 1;
--        *tmp = '\0';
--        return start;
--      }
--      sep_itr++;
-+    if (uv__strtok_is_sep(*tmp, sep)) {
-+      *itr = tmp + 1;
-+      *tmp = '\0';
-+      return start;
-     }
-     tmp++;
-   }
-+
-   *itr = NULL;
-   return start;
- }
-```
-
-三处形态都命中 `TASK.md` 的允许清单（抽 `static` 谓词、平坦化循环体、合并赋值分支），判据（含 21 项 `uv__strtok` oracle 检查，覆盖空 token / 尾随 / 前导 / 全分隔符 / 空输入 / `sep==""` / 原地破坏 / `*itr` 推进 / 返回值恒为 token 起点）全部一致。**这是"AI 重构 + 冻结判据"第一次在 libuv 上拿到 ACCEPT。**
-
-对比 §9 的 M1：同一个 `src/strtok.c`，一个"看起来像清理"的改动被 oracle 抓住判 REJECT，一个真正的行为保持重构拿到 ACCEPT——判据在两个方向上都工作。
-
-### 12.3 M1a 首轮演练抓到的两个判据缺陷（已修）
-
-1. **`test/**` 的 15 个摘要是在 CRLF 工作区上算的**：任何 LF checkout 都会让这 15 条 `both-matches` 两侧同时失配（首轮 accept 判成 REJECTED）。修法：仓库根 `.gitattributes` 加 `* -text`（不动上游那行 `test/fixtures/lorem_ipsum.txt text eol=lf`）、克隆内 `core.autocrlf=false`、摘要按 blob 字节重算。
-2. **oracle 汇总行的名字取自源内宏**：`strtok-oracle`，不是文件名 `oracle_strtok`；按文件名写的 6 条 `summary` 声明两侧都不匹配。修法：workflow 内维护 `ORACLE_SUMMARY_NAMES` 映射。
-
-结论：**判据本身必须先被验证**。这两条都不会让任何一条用例"变红"，只会在判定时表现为莫名其妙的 REJECT——所以 M1a 是使用本测试集之前的前置步骤。
-
-### 12.4 加难：T3 `src/inet.c`（判据一字未改，ACCEPTED）
-
-任务简报换成 T3（298 行、4 个 `static` 内部函数 + 2 个公开入口，48 项 `oracle_inet` 检查 + 4 个自带用例 `ip4_addr`/`ip6_pton`/`ip6_sin6_len`/`ip_name`），**判据仍是同一份 `test-workflow.ts`（同 98 条声明）**——加难度只加在任务侧，判据不动。
-
-```bash
-TASK=$(cat E:/Proj/refactorSubagent/testset/tasks/t3-inet.task.txt)
-bun run scripts/cli.ts run E:/Proj/refactorSubagent/libuv --task "$TASK" \
-  --pipeline-file E:/Proj/refactorSubagent/testset/pipeline/m1b2-inet-ai.json \
-  --session m1b2-inet-s1 --session-root E:/Proj/refactorSubagent/runs/m1b2-inet \
-  --limit sessions.refactor.deadlineMs=2400000 --limit sessions.refactor.maxTurns=80
-```
-
-结果：**ACCEPTED**，98/98 声明一致，两侧 build pass，`changed_files=["src/inet.c"]`，**124 增 / 56 删**（对比 T1 的 18/15）。墙钟 244 s：准备 6.2 s → **refactor 会话 134.5 s**（T1 为 56.7 s）→ 两侧构建 40.1 s / 39.2 s → 两侧测试 11.6 s / 11.8 s。
-
-候选做出的是跨函数重构（不是改名级别的整理）：
-
-| 新增 `static` | 作用 | 原状 |
-|---|---|---|
-| `inet_ntop_finish(tmp, dst, size, len)` | 统一两处 `uv__strscpy(dst,tmp,size); return 0;` 尾巴，`len` 含结尾 NUL，失败时 `return UV_ENOSPC` 且目标缓冲区一字节不写 | `inet_ntop4` 与 `inet_ntop6` 各写一遍 |
-| `inet_words_from_bytes(src, words, n)` | 把 16 字节按大端拼成 16-bit 词 | `words[i/2] \|= src[i] << ((1-(i%2))<<3)` 位运算循环 |
-| `inet_find_best_run(words, n)` → `struct inet_run {base,len}` | 最长零串扫描（含"串尾仍在进行的 run 也要参评"这一步） | 内联在 `inet_ntop6` 里，用匿名结构体 |
-| `inet_pton6_emit(**tp, endp, val)` | 带边界检查的 16-bit 写入 | 展开在内层循环 |
-
-同时把 `inet_pton4` 的 `saw_digit`/`octets` 状态机改写成 `continue` 平坦结构、把 v4-mapped 判定提成 `embedded_v4` 变量。两处已实测钉死的边界都保住了：单个零组不压缩（`best.len < 2` 保留并加注释）、`inet_ntop_finish` 的 `len > size` 等价于原来的 `(size_t)(tp - tmp) > size`（比较含结尾 NUL）。
-
-判据对比（同一份 98 条，三轮运行的分布）：
-
-| 运行 | 任务 | 候选来源 | 判定 | 声明通过 |
-|---|---|---|---|---|
-| `m1a-reject-s2` | T1 | 手工破坏补丁 | REJECTED | 95/98（仅 `oracle_strtok.*`） |
-| `m1b-strtok-s1` | T1 | AI 会话（57 s） | ACCEPTED | 98/98 |
-| `m1b2-inet-s1` | T3 | AI 会话（134 s） | ACCEPTED | 98/98 |

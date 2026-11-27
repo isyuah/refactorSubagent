@@ -40,6 +40,7 @@ export interface RunStartup {
 
 export const PHASES: Readonly<Record<string, string>> = {
   INIT: "初始化", PREFLIGHT: "检查环境与项目", WORKFLOW_SESSION: "设计验证方案并编写脚本",
+  EXAM_PRECHECK: "考卷预检（重构前彩排）",
   PREPARE: "创建原版与候选工作目录", REFACTOR: "重构候选代码", VERIFICATION: "验证",
   BASELINE_BUILD: "构建原版", CANDIDATE_BUILD: "构建候选版",
   BASELINE_TEST_WORKFLOW: "测试原版", CANDIDATE_TEST_WORKFLOW: "测试候选版",

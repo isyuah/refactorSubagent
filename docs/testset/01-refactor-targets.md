@@ -2,7 +2,7 @@
 
 > 对象：`libuv/`（tag `v1.52.1`，commit `1cfa32f`，`--depth 1` 克隆）。
 > 主机事实：Windows 11 x64 / GCC 15.2 (MinGW) / CMake 4.3.1 / Ninja 1.13.2 / Debug。
-> 所有"必须保持"的条目都来自本次实测（见 `02-testset-requirements.md` 的复现命令），不是从注释推断。
+> 所有"必须保持"的条目都来自实测与源码核对（见 `02-testset-requirements.md` 的复现命令），不是从注释推断。
 
 ## 0. 结论先行
 
@@ -147,13 +147,13 @@
 1. **公开头文件不可改**：`include/uv.h`、`include/uv/errno.h`、`include/uv/win.h` 的任何改动都是 ABI 改动，超出"行为保持"的定义范围。
 2. **测试源码不可改**：`test/**` 是被测代码的判据（oracle 的另一半）。候选 patch 若触碰 `test/`，本次验证的判据即失效——`02` 里的 TestWorkflow 会用 `ctx.expect` 钉住测试源码的 hash。
 3. **`.c` 被测试 include 的模块不可拆分文件**：`strscpy.c`、`strtok.c`、`idna.c` 三者都属于这一类；函数必须留在原文件且保持外部链接。
-4. **不要为了"修 bug"而改行为**：本次实测出的所有怪行为（空 token、`uv_strerror(0)` 的措辞、单零组不压缩、`size >= len+1`）都是**判据的一部分**；修正它们等于改变可观测行为，应当被 REJECTED。
+4. **不要为了"修 bug"而改行为**：实测确认的所有怪行为（空 token、`uv_strerror(0)` 的措辞、单零组不压缩、`size >= len+1`）都是**判据的一部分**；修正它们等于改变可观测行为，应当被 REJECTED。
 
 ---
 
-# 加难档（H1–H8，2026-09-21 新增）
+# 加难档（H1–H8）
 
-T1–T6 是**单文件、38–298 行、任务简报写明"必须保持"清单**的 L1 目标，6/6 实测 ACCEPTED、0 失配——这一档已经饱和（详见 `03-suite-and-runner.md` §11）。H 档按四条轴加难：**改动面**（跨 TU / 跨文件 / 改构建）、**不变量隐蔽度**（自带用例看不见）、**信息量**（简报不再给清单）、**可判性**（需要新 oracle）。
+T1–T6 是**单文件、38–298 行、任务简报写明"必须保持"清单**的 L1 目标，已全部实测 ACCEPTED；H 档按四条轴加难：**改动面**（跨 TU / 跨文件 / 改构建）、**不变量隐蔽度**（自带用例看不见）、**信息量**（简报不再给清单）、**可判性**（需要新 oracle）。
 
 判据统一放在 `testset/resources/workflows/judgement-hard/`（每目标一个 oracle，注入到 `refactor-task/oracle-hard/<target>/`），上游用例只用 `parts/{loop,thread,util}.json` 里已校准 stable-ok 的条目。
 
@@ -208,11 +208,11 @@ T1–T6 是**单文件、38–298 行、任务简报写明"必须保持"清单**
 
 **已实测的 mutant**：三处（`strchr(buf, '=')`、释放器顺手 free(value)、utf16 零长拷贝语义）→ oracle 8 条失败；**自带 `env_vars` 只抓到第一处**就断言退出，其余两处只有 oracle 看得见。
 
-## H6 / H7（同批新增，判据与实测见 `03-suite-and-runner.md` §11）
+## H6 / H7（判据与实测见 `03-suite-and-runner.md` 的 H 档一节）
 
 - **H6 `src/win/core.c`**（879 行）：Windows 侧 `uv_run` 正文。最核心的隐含不变量是 `uv__insert_pending_req` 的**环形** pending 队列（处理期间新到的请求必须留到下一轮），其次是 `uv_backend_timeout` 的 0/超时值取舍（空闲/endgame/stop_flag 时必须是 0）与 `uv_run(DEFAULT)` 进循环前先跑一轮 timers。
   - oracle `oracle_loop.c`（132 检查，只用公开 API）：`uv_loop_alive` 四态、三种 run 模式的返回值与迭代次数、prepare→check 顺序、DEFAULT 首轮回调顺序、backend_timeout 的六种守卫状态、pending 环形队列的投递/复用、fs 请求的 liveness、unref/ref、`uv_loop_close`。
-  - 已实测的 mutant：`uv_backend_timeout` 守卫收成一行 + 删掉首轮 timers（两处"看起来重复"的删除）→ oracle 10 条失败 + 上游 `close_order`/`loop_backend_timeout` 也响。
+  - 已实测的 mutant：删掉 `uv_run(DEFAULT)` 进入循环前的定时器兼容逻辑，使零延时定时器从 prepare/check 之前变成之后 → 上游 `close_order` 与 oracle 都能抓住。
   - **注意**：改坏 backend_timeout 会让上游自带用例**挂死**（libuv runner 在 Windows 上不杀超时子进程），所以判据里只声明快速失败的上游用例，循环语义由 oracle 覆盖。
 - **H7 `src/threadpool.c`**（429 行）：`uv_cancel` 的三态返回（未开始成功 / 已开始 `UV_EBUSY` / 已结束 `UV_EINVAL`）依赖 `uv__work_cancel` 的双锁顺序与 `uv__queue_empty(&w->wq) && w->work != NULL` 判据；`uv__cancelled` 这个"只含 abort() 的 static 函数"是**哨兵**，`uv__queue_init(q)` 与 `w->work = NULL` 的**位置**就是协议本身。
   - oracle `oracle_threadpool.c`（208 检查，3 轮重复）：参数校验、提交→work→after_work 的顺序、三种取消状态、重复 cancel、非 work 请求类型；用信号量构造确定性状态，30 次连续运行 stdout 逐字节一致。

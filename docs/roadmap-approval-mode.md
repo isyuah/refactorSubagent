@@ -1,6 +1,6 @@
 # Roadmap：Workflow 审批模式（Approval Mode）
 
-> 状态：**已记录，未实现**（2026-09-01 讨论，用户明确"这次先不做，比较复杂"）
+> 状态：**已记录，未实现**
 >
 > 关联：`docs/` 下本文件；实现时参考 `src/workflow/` 现有 capability 协议。
 

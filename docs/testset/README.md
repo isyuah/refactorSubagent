@@ -1,15 +1,16 @@
 # 真实项目测试集（仓库内目录）
 
 判定"行为是否保持"的测试工具与期望：用例目录、共享资源、并行执行器、执行器手册。
+06、08、09、12、13 是对应批次的结果与对照证据；更早的过程记录可从 git 历史查找。
 Redis 与外部依赖模拟的新用例及复核方法见 [`11-project-evaluation-cases.md`](11-project-evaluation-cases.md)。
 七例真实 AI 运行的逐阶段耗时、失败归因与质量分析见 [`12-project-ai-results-2026-10-29.md`](12-project-ai-results-2026-10-29.md)。
 四个失败场景修复后的真实重跑、详细失败解释及补充验证见 [`13-failed-cases-rerun-2026-10-29.md`](13-failed-cases-rerun-2026-10-29.md)。
 它住在 harness 仓库里（`testset/` + `docs/testset/`），但**只用 CLI 调用 harness**（`bun scripts/cli.ts run …`），
 不 import 应用源码——测试工具与产品的分层，靠调用边界而不是目录边界来保证。
 
-仓库里只版本化"工具 + 用例 + 资源"这类文本；三类大件刻意不进版本：
-`libuv/`（源材料检出，被 `resources/sources/libuv.json` 的 pin 引用）、`runs/`（历史证据，含每例的环境目录）、
-它们的路径写在 `.gitignore` 里，需要时由用例的 `prepare.ts` 自动重建。
+仓库里只版本化"工具 + 用例 + 资源"这类文本；两类大件刻意不进版本：
+`libuv/`（源材料检出，被 `resources/sources/libuv.json` 的 pin 引用，需要时由用例的 `prepare.ts` 自动重建）、
+`runs/`（历史证据，含每例的环境目录，随时可删）。它们的路径写在 `.gitignore` 里。
 
 ## 目录
 
@@ -33,15 +34,16 @@ refactorSubagent/
 │  │  ├─ judge/libuv-1.52.1/     判据材料（oracle 源），验证前注入 worktree
 │  │  ├─ tasks/                  任务简报（多个用例可共用）
 │  │  └─ parts/                  语料部分定义：pure / loop / thread / util
-│  ├─ baseline/                  基线重建材料（overlay，见 baseline/README.md）
+│  ├─ baseline/                  基线说明（原 overlay 已废弃，见 baseline/README.md）
 │  └─ subjects.json              subject 的显示说明
 ├─ docs/testset/
 │  ├─ README.md                  本文件
 │  ├─ 01-refactor-targets.md     可重构点清单与覆盖缺口
-│  ├─ 02-testset-requirements.md 判据需求、期望声明模型、判定规则（含历史实测）
-│  ├─ 03-suite-and-runner.md     执行器手册 + 历史实测记录
-│  └─ 04-rubric.md               裁判评分标准
-├─ libuv/                        源材料检出（不进版本；浅克隆 + overlay）
+│  ├─ 02-testset-requirements.md 判据需求、期望声明模型、判定规则
+│  ├─ 03-suite-and-runner.md     执行器手册：用例模型、选择/校准/冻结/重判/裁判
+│  ├─ 04-rubric.md               裁判评分标准
+│  └─ 05–09 / 11–13             调查/编写方法与评测证据
+├─ libuv/                        源材料检出（不进版本；浅克隆）
 ├─ runs/                         每次运行的证据（不进版本）
 └─ build/                        手工构建目录（不进版本；执行器不需要它）
 ```
@@ -57,7 +59,7 @@ refactorSubagent/
 
 ```bash
 cd E:/Proj/refactorSubagent
-bun testset/run.ts --list                                  # 44 个用例，按 subject 分组
+bun testset/run.ts --list                                  # 58 个用例，按 subject 分组
 bun testset/run.ts --self-test                             # 执行器自检（合成用例，不碰项目）
 bun testset/run.ts --subject judgement --concurrency 2     # 判据本体：离线、不调模型
 bun testset/run.ts --only refactor-t1-strtok --rubric-cmd "claude -p"

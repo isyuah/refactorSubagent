@@ -1,6 +1,6 @@
 # 管线阶段化：阶段契约与来源配置（stage-flow）
 
-> 状态：阶段化管线已实现；五段流程与辅助验证材料在分支 `codex/verification-strategies` 维护。
+> 状态：阶段化管线已实现；五段流程与辅助验证材料已合入 `main`。
 > core：`src/runtime/stage-flow.ts`（契约 + 组合器 + 默认实现）、`src/runtime/stage-presets.ts`（无 AI 的预置实现）。
 > application：`src/config/pipeline.ts`（把配置翻译成阶段函数）、`src/config/layers.ts`（多源配置引擎）。
 > 入口：`bun run scripts/cli.ts run <repo> --task <text> [--pipeline-file <path>] [--stage k=v]`。
@@ -22,6 +22,12 @@
 | `prepare` | `preflight`, `workflows` | `{ branch, baseSha, worktrees }` | 建候选分支 + baseline/candidate 双 worktree | ✅ |
 | `refactor` | `…`, `candidate` | `{ summary }` | refactor 会话 | ✅ |
 | `verify` | `…`, `patch` | `WorkflowVerificationOutcome` | `runWorkflowVerification`（差分构建 + 跑测试 + 判定） | ⚠️ 允许，但会被标记**非权威** |
+
+workflows 之后还有一个可选的**考卷预检**（`--exam-precheck`，默认关闭；不是独立阶段，失败归
+workflows 阶段）：在 HEAD 的 detached 临时 worktree 上注入辅助材料与 `--inject` 文件，执行全部声明的
+构建和一次测试 workflow，并用 `baselineSelfMatch` 检查 `both-matches` 是否与原版事实自洽。它与真实
+验证同级做完整性守卫，但不提交验证工件、不进状态机；失败以结构化归因抛出，由反馈路由交给构建修复
+或测试编写会话。声明式考卷、配置的 base 与 HEAD 不一致、或 custom prepare 未声明 base 时跳过并记日志。
 
 `ctx`（`StageContext`）是只读运行配置：仓库、任务、会话目录、`SessionStore`、logger、limits、已知环境差异模式。
 
@@ -205,6 +211,13 @@ dep-registry 的源码字符串校验）现在共用同一份实现。
 - `tests/resolve-with-repairs.test.ts`：报出违规 → 写作方修好 → 解析通过；改不好则在预算用尽后抛错；
   预算为 0 不重写；重写解决不了的失败（文件缺失）不重写
 - `tests/pipeline-config.test.ts`：默认全 AI / 单阶段替换 / 键写错被点名 / 覆盖优先级 / `none` 与 `create` 冲突 / 空 `builds` 被拒
+- `tests/exam-precheck.test.ts`：原版代码上彩排——自违的 `both-matches` 在重构前中止并带归因；
+  考卷通过则继续；辅助材料与 `--inject` 如同真实验证；原版构建失败归为 baseline build；base 与
+  HEAD 不一致或 custom prepare 未声明 base 时跳过
+- `tests/expectation-compare.test.ts`：`baselineMatched` 的单侧语义——only-baseline、双侧、
+  跨侧 `equal`、缺模式各情形
+- `tests/feedback-router.test.ts`：六条路由规则；全部失配为考卷自违时停止，混合真实漂移时仍重修；
+  预检自违交给出题对话
 - `tests/verification-strategies.test.ts`：真编译局部 harness 与共享库消费者，两侧真实运行；
   保持行为可接受、改变实现可拒绝、执行期源码/材料变更和源码漂移可中止，盲测覆盖语义保留
 

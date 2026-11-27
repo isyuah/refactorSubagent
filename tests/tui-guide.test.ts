@@ -29,7 +29,7 @@ describe("OpenTUI guide before starting", () => {
     const t = await terminal(65, 24);
     const pending = new LaunchWizard(t.ui, command, {}, {}).run().catch(error => error);
     try {
-      expect(await t.frame()).toContain("7 使用指引");
+      expect(await t.frame()).toContain("按 7 查看使用指引");
       t.mockInput.pressKey("7");
       t.mockInput.pressEnter();
       expect(await t.frame()).toContain("bun scripts/cli.ts run");

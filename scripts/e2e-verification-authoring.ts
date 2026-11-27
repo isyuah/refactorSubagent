@@ -54,7 +54,7 @@ for (let index = 0; index < parsed.remaining.length; index += 1) {
     if (!value || value.startsWith("--")) throw new Error(`${arg} requires a path`);
     if (arg === "--out") outArg = value;
     else replayArg = value;
-  } else throw new Error("Usage: bun scripts/e2e-verification-authoring.ts [--out <new directory>] [--replay <previous directory>] [--controls-only] [--limit ...]");
+  } else throw new Error("Usage: bun scripts/e2e-verification-authoring.ts [--out <new directory>] [--replay <previous directory>] [--controls-only] [--limit <key=value>]... [--limits-file <path>]...");
 }
 const output = outArg ? resolve(outArg) : mkdtempSync(join(tmpdir(), "refactor-writer-e2e-"));
 if (outArg) mkdirSync(output, { recursive: false });
