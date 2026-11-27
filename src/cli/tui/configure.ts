@@ -289,6 +289,7 @@ export function launchCommandLine(command: LaunchCommand, limitsFile: string, pi
   if (command.kind === "run") {
     option("--pipeline-file", pipelineFile); option("--task", command.task); option("--auto-retry", String(command.autoRetry));
     option("--worktree-root", command.worktreeRoot === null ? null : resolve(command.worktreeRoot)); option("--resume", command.resume);
+    if (command.examPrecheck) args.push("--exam-precheck");
     for (const injection of command.injections) option("--inject", `${resolve(injection.source)}=${injection.dest}`);
   } else {
     option("--scope", command.scope); option("--from", command.from === null ? null : resolve(command.from)); option("--out", command.out === null ? null : resolve(command.out));

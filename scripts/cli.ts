@@ -28,6 +28,7 @@ import { extractLimitArgs, resolveLimits } from "../src/config/limits.js";
 import type { LayerOverrides } from "../src/config/layers.js";
 import {
   buildStageFlow,
+  configuredPrepareBase,
   describePipeline,
   extractPipelineArgs,
   resolvePipeline,
@@ -84,6 +85,7 @@ async function execute(
     installOwnedProcessSignalHandlers({ beforeExit: async () => { await workbench?.close(); } });
     const continuation: RunCommand = { kind: "run", ui: command.ui, configure: false, repo: command.repo, task: outcome.continuation.task, tests: outcome.continuation.directory,
       session: null, sessionRoot: command.sessionRoot, worktreeRoot: null, injections: [], resume: null, autoRetry: 3,
+      examPrecheck: false,
       format: command.format, verbosity: command.verbosity, progress: "auto", color: command.color, noInteractive: false };
     if (workbench) {
       const { LaunchWizard } = await import("../src/cli/tui/configure.js");
@@ -169,6 +171,9 @@ async function executeRun(
   const testPlan = planDirectory === null ? null : loadTestPlan(planDirectory);
   const dialogue = testPlan === null ? null : loadLocalDialogue(join(repo, ".refactor", "test-plan-dialogues"), testPlan.manifest.id);
   const flow = buildStageFlow(resolved.pipeline);
+  // reuse 模式按配置的 baseSha 建基线，HEAD 未必是那个提交；把 base 显式
+  // 交给预检判定，不一致时它会跳过而不是彩排错的提交。
+  const precheckBaseSha = configuredPrepareBase(resolved.pipeline);
   const sessionId = command.session ?? createRunSessionId();
   const sessionRoot = command.sessionRoot === null ? repo : resolve(command.sessionRoot);
   const resumeFrom = command.resume;
@@ -201,6 +206,10 @@ async function executeRun(
         ...(command.worktreeRoot !== null ? { worktreeRoot: resolve(command.worktreeRoot) } : {}),
         ...(command.injections.length > 0 ? { injections: command.injections } : {}),
         limitOverrides: overrides,
+        // 出卷后先拿原版代码彩排考卷（--exam-precheck；默认关闭——
+        // 离线回放场景固化了旧时序，默认开启需要先重写那些夹具）。
+        examPrecheck: command.examPrecheck,
+        ...(precheckBaseSha !== undefined ? { precheckBaseSha } : {}),
         onProgress: display.receive,
         configuration: { pipeline: resolved.pipeline, sources: resolved.sources, overrides: pipelineOverrides.values ?? [] },
       };

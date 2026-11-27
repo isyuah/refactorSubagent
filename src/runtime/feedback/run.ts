@@ -143,10 +143,20 @@ export async function runFeedbackStageFlow(
       },
       runRepairRound: (_round, context) => {
         const base = { ...sharedRequest, sessionId: context.sessionId };
-        const prepare = existingBranchPrepareStage({ branch: context.candidateBranch, baseSha: context.baseSha });
+        // candidateBranch 为 null：考卷预检在重构前失败，候选尚未建立——
+        // 修复轮重新建场（默认 prepare）并跑一次完整重构（默认 refactor）。
+        const prepare = context.candidateBranch === null || context.baseSha === null
+          ? undefined
+          : existingBranchPrepareStage({ branch: context.candidateBranch, baseSha: context.baseSha });
+        const fixed = context.candidateBranch === null
+          ? undefined
+          : fixedRefactorStage(`feedback: candidate branch ${context.candidateBranch} carries the measured change`);
         if (context.lane === "refactor") {
           return runStageFlow({
             ...base,
+            // 重构道的考卷由有效方案钉死并做过哈希核对，预检的彩排结果已被
+            // 上一轮使用——每轮再跑一遍基线构建/测试只会重复烧时间。
+            ...(request.examPrecheck === true ? { examPrecheck: false } : {}),
             flow: {
               ...request.flow,
               workflows: context.pinnedWorkflows, prepare,
@@ -158,14 +168,16 @@ export async function runFeedbackStageFlow(
         if (context.lane === "test") {
           return runStageFlow({
             ...base,
+            // 修复轮不移动 HEAD：把本轮实际使用的 base 交给预检判定。
+            ...(context.baseSha !== null ? { precheckBaseSha: context.baseSha } : {}),
             flow: {
               ...request.flow,
               workflows: continuedWorkflowsStage({
                 ...(context.dialogueId === null ? {} : { dialogueId: context.dialogueId }), scope: verificationScope, feedback: context.feedback, testEntry: context.testEntry,
                 dialogueRoot: e2eDir(owner), adoptBuilds: context.adoptBuilds,
               }),
-              prepare,
-              refactor: fixedRefactorStage(`feedback: candidate branch ${context.candidateBranch} carries the measured change`),
+              ...(prepare === undefined ? {} : { prepare }),
+              ...(fixed === undefined ? {} : { refactor: fixed }),
             },
           });
         }
@@ -179,9 +191,11 @@ export async function runFeedbackStageFlow(
         if (workflows === null) throw new Error("delivered build repair no longer matches its recorded sources");
         return runStageFlow({
           ...base,
+          ...(context.baseSha !== null ? { precheckBaseSha: context.baseSha } : {}),
           flow: {
-            ...request.flow, workflows, prepare,
-            refactor: fixedRefactorStage(`feedback: candidate branch ${context.candidateBranch} carries the measured change`),
+            ...request.flow, workflows,
+            ...(prepare === undefined ? {} : { prepare }),
+            ...(fixed === undefined ? {} : { refactor: fixed }),
           },
         });
       },

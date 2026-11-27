@@ -95,6 +95,8 @@ export interface RunCommand {
    * 0 disables repairs; default 3.
    */
   autoRetry: number;
+  /** 出卷后先在原版代码上彩排考卷（构建+测试+自洽检查），缺陷在重构前暴露。 */
+  examPrecheck: boolean;
   format: CliFormat;
 }
 
@@ -191,6 +193,7 @@ function parseRun(args: string[], allowIncomplete: boolean): RunCommand {
   const injections: { source: string; dest: string }[] = [];
   let resume: string | null = null;
   let autoRetry = 3;
+  let examPrecheck = false;
   let format: CliFormat = "human";
   let sawRepo = false;
   for (let index = 0; index < args.length; index++) {
@@ -245,6 +248,10 @@ function parseRun(args: string[], allowIncomplete: boolean): RunCommand {
       autoRetry = parseNonNegativeInteger(nextValue(args, ++index, "--auto-retry"), "--auto-retry");
       continue;
     }
+    if (arg === "--exam-precheck") {
+      examPrecheck = true;
+      continue;
+    }
     if (arg === "--format") {
       format = parseFormat(nextValue(args, ++index, "--format"));
       continue;
@@ -254,7 +261,7 @@ function parseRun(args: string[], allowIncomplete: boolean): RunCommand {
     repo = arg;
     sawRepo = true;
   }
-  const command = { kind: "run" as const, ui, configure, tests, repo, session, sessionRoot, worktreeRoot, injections, resume, autoRetry, format, verbosity, progress, color, noInteractive };
+  const command = { kind: "run" as const, ui, configure, tests, repo, session, sessionRoot, worktreeRoot, injections, resume, autoRetry, examPrecheck, format, verbosity, progress, color, noInteractive };
   if (!allowIncomplete && (task === null || !task.trim())) throw new RunTaskRequiredError(command);
   return { ...command, task: task ?? "" };
 }
@@ -468,7 +475,8 @@ Usage:
   refactor-subagent run [repo] [--task <text>] [--session <id>] [--session-root <dir>]
                             [--worktree-root <dir>] [--inject <src>=<dest>]
                             [--resume <aborted-session-id>] [--auto-retry <max>]
-                            [--format human|json] [--verbosity detailed|summary]
+                            [--exam-precheck] [--format human|json]
+                            [--verbosity detailed|summary]
                             [--ui auto|tui|plain] [--configure]
                             [--progress auto|plain|off] [--no-color] [--no-interactive]
   refactor-subagent workflow run <entry.ts> [options]
@@ -528,6 +536,13 @@ Resume (checkpoint restart):
                               a new run id is generated.
 
 Feedback repairs:
+  --exam-precheck             Dry-run the authored exam on the pristine tree BEFORE
+                              refactoring: build every declared workflow and run the test
+                              workflow once, so exam defects (broken build recipes,
+                              script errors, both-matches values the baseline itself
+                              violates) surface before any refactoring time is spent.
+                              A defect routes to the matching repair lane (build repair /
+                              exam repair) or stops with the evidence kept.
   --auto-retry <max>          Total repair attempts for this run (default 3).
                               Behavior mismatches and candidate code failures
                               continue the original refactor conversation.

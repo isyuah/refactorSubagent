@@ -31,6 +31,8 @@ function input(overrides: Partial<RouterInput>): RouterInput {
     failure: null,
     side: null,
     buildId: null,
+    baselineSelfViolations: [],
+    precheckSelfViolations: [],
     mismatches: [],
     failureOwner: null,
     evidencePaths: [],
@@ -185,6 +187,54 @@ describe("routeFailure — the six routing rules", () => {
       expect(decision.trigger).toBe("behavior-mismatch");
       expect(decision.evidence.mismatches).toHaveLength(1);
     }
+  });
+
+  test("rule 5 exception: all mismatches are baseline self-violations → stop as exam-suspect", () => {
+    // 原版代码自己就不满足考卷的 both-matches 模式：修候选代码永远消除不了，
+    // 判"考卷可疑"停止，不烧修复预算，也绝不在压力下改考卷。
+    const decision = routeFailure(
+      input({
+        state: "REJECTED",
+        mismatches: [{ name: "test/test-strscpy.c.digest", reason: "pattern did not match both sides (baseline no, candidate no)" }],
+        baselineSelfViolations: ["test/test-strscpy.c.digest"],
+      }),
+    );
+    expect(decision.kind).toBe("needs-diagnosis");
+    if (decision.kind === "needs-diagnosis") {
+      expect(decision.detail).toContain("test/test-strscpy.c.digest");
+      expect(decision.detail).toContain("self-contradicts");
+    }
+  });
+
+  test("rule 5 mixed case: a real drift alongside a self-violation still repairs the refactor", () => {
+    const decision = routeFailure(
+      input({
+        state: "REJECTED",
+        mismatches: [
+          { name: "stdout", reason: "values differ: baseline='a' candidate='b'" },
+          { name: "digest", reason: "pattern did not match both sides (baseline no, candidate no)" },
+        ],
+        baselineSelfViolations: ["digest"],
+      }),
+    );
+    expect(decision.kind).toBe("repair-refactor");
+  });
+
+  test("exam precheck self-violation routes to the authoring dialogue (exam repair)", () => {
+    // 重构前彩排发现考卷自违：交回原出题对话修正考卷，而不是让工程去"修行为"。
+    const decision = routeFailure(
+      input({
+        state: "ABORTED",
+        side: "baseline",
+        precheckSelfViolations: ["frozen"],
+        failure: {
+          ...TEST_BASELINE,
+          reason: "exam precheck: the pristine tree violates the exam's own both-matches expectation(s): frozen",
+          detail: { precheck: true, self_violations: ["frozen"] },
+        },
+      }),
+    );
+    expect(decision.kind).toBe("repair-test");
   });
 
   test("rule 6: host and cancel failures stop immediately", () => {

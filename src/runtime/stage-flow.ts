@@ -15,6 +15,7 @@ import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { SessionStore } from "../orchestrator/store.js";
 import { E2ELogger } from "./e2e-log.js";
 import { StageFailureError } from "./stage-failure.js";
+import { precheckDeclaredExam } from "./exam-precheck.js";
 import { FileSessionStore } from "./session-store.js";
 import { detectCProject } from "./project-detector.js";
 import { probeHost } from "./host-preflight.js";
@@ -148,6 +149,15 @@ export interface StageFlowRequest {
   /** CLI layers on top of the user/project config files (see config/limits). */
   readonly limitOverrides?: LayerOverrides;
   readonly knownEnvironmentPatterns?: readonly RegExp[];
+  /**
+   * 出卷后、重构前先在原版代码上完整执行一遍考卷（构建 + 测试 + 自洽检查）。
+   * 考卷缺陷（构建方案写歪、脚本报错、both-matches 冻结值写错）在这里暴露，
+   * 由反馈路由交给对应修复通道，而不是让重构烧完时间才发现。
+   * 默认关闭；run 命令行入口开启（testset 的预置考卷无需重复彩排）。
+   */
+  readonly examPrecheck?: boolean;
+  /** 预检只应在本轮实际使用的 base 恰为当前 HEAD 时运行；修复轮显式传入。 */
+  readonly precheckBaseSha?: string;
   readonly logger?: E2ELogger;
   readonly onProgress?: ProgressObserver;
   /** Optional entry-point configuration metadata for the durable run report. */
@@ -441,6 +451,48 @@ export async function runStageFlow(req: StageFlowRequest): Promise<StageFlowResu
       if (workflows.dialogueId !== undefined) workflowsDialogueId = workflows.dialogueId;
       checkpoints.push({ stage: "workflows", at: now(), data: workflowsCheckpointData(req.repoPath, workflows) });
       saveStageCheckpoints(store, checkpoints);
+      if (req.examPrecheck === true && declared !== null) {
+        const precheckDeclared = declared;
+        // 预检只对"自驱动考卷 + 实际 base 就是 HEAD"成立：
+        //  - 声明式考卷（CTest/TestSpec）不走自驱动执行器，需另做预演路径；
+        //  - prepare 若按配置的 baseSha 建基线（reuse 模式），HEAD 未必是它要用的
+        //    提交——调用方通过 precheckBaseSha 显式声明 base，与 HEAD 一致才彩排。
+        const selfDriven = precheckDeclared.testResolution.workflow === null;
+        const head = resolveHead(req.repoPath);
+        // 修复轮与配置 reuse 会显式给出 base；自定义 prepare 没有声明 base
+        // 时无法判断 HEAD 是否正确，保守跳过而不是彩排错的提交。
+        const precheckBase = req.precheckBaseSha ?? (flow.prepare === undefined ? head : null);
+        if (!selfDriven || precheckBase === null || precheckBase !== head) {
+          logger.warn("exam precheck skipped", {
+            reason: !selfDriven
+              ? "declarative exam (not self-driven)"
+              : precheckBase === null
+                ? "custom prepare stage does not declare its base commit"
+                : "the run base differs from the current HEAD",
+            base: precheckBase ?? "unknown",
+            head,
+          });
+        } else {
+          logger.phase("EXAM_PRECHECK");
+          await precheckDeclaredExam({
+            repoPath: req.repoPath,
+            host: preflight.host,
+            project: preflight.project,
+            limits: ctx.limits,
+            ...(logger !== undefined ? { logger } : {}),
+            // 与声明集一一对应：归因与修复简报都按声明的 build id 定位。
+            builds: precheckDeclared.buildResolutions.map((resolution, index) => ({
+              id: precheckDeclared.declaredSet.builds[index]?.id ?? resolution.manifest.id,
+              resolution,
+            })),
+            test: precheckDeclared.testResolution,
+            // 与真实验证同等的输入面：辅助材料与 --inject 文件一并落地，
+            // 否则读材料的考卷会在预检里误报 ENOENT。
+            ...(precheckDeclared.materials.length > 0 ? { materials: precheckDeclared.materials } : {}),
+            ...(req.injections !== undefined && req.injections.length > 0 ? { injections: req.injections } : {}),
+          });
+        }
+      }
 
       currentStage = "prepare";
       logger.phase("PREPARE");

@@ -231,6 +231,12 @@ export function buildStageFlow(pipeline: Pipeline): StageFlow {
   return flow;
 }
 
+/** Base commit the prepare stage checks out, when the pipeline pins one.
+ *  The exam precheck refuses to dry-run against an unrelated HEAD. */
+export function configuredPrepareBase(pipeline: Pipeline): string | undefined {
+  return pipeline.stages.prepare.mode === "reuse" ? pipeline.stages.prepare.baseSha : undefined;
+}
+
 /** One-line summary for logs and run records. */
 export function describePipeline(pipeline: Pipeline): string {
   const { workflows, prepare, refactor } = pipeline.stages;
